@@ -1,0 +1,5 @@
+connection:
+  default_host: "mt5-server"
+  fallback_hosts: ["172.21.0.2", "172.21.0.3", "172.21.0.4"]
+  port: 8001
+  timeout: 10
