@@ -26,3 +26,8 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+# --- 本地開發隔離區與環境 ---
+legacy_scripts/
+docker-wine/
+pywine/
