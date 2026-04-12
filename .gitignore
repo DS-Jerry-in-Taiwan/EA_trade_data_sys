@@ -1,0 +1,28 @@
+# --- 敏感帳密與數據 ---
+service/config/accounts.json
+core/accounts.json
+.env
+.env*
+*.key
+*.pem
+
+# --- 數據檔案 ---
+*.csv
+*.log
+*.tar.gz
+
+# --- Python 環境 ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# --- OpenCode 設定與緩存 ---
+.opencode/
+.opencode.json
+
+# --- 系統檔案 ---
+.DS_Store
+.idea/
+.vscode/

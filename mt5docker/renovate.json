@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "automerge": false,
+  "dockerfile": {
+    "fileMatch": [
+      "Dockerfile"
+    ]
+  },
+  "docker-compose": {
+    "fileMatch": [
+      "compose.yaml"
+    ]
+  },
+  "pip_requirements": {
+    "fileMatch": [
+      "requirements.txt"
+    ],
+  "packageRules": [
+      {
+        "matchManagers": ["pip_requirements"],
+        "matchPackageNames": ["*"],
+        "enabled": false
+      },
+      {
+        "matchManagers": ["pip_requirements"],
+        "matchPackageNames": ["MetaTrader5", "pymt5linux"],
+        "enabled": true
+      }
+    ]
+  },
+  "commitMessagePrefix": "chore(deps): "
+}
