@@ -6,9 +6,9 @@ services:
       - VNC_PWD=jerry1234
     volumes:
       # 配置與腳本目錄
-      - /home/ubuntu/projects/trade_data_dowload/mt5docker:/mt5docker
-      # MT5 實體安裝檔案持久化
-      - /home/ubuntu/projects/trade_data_dowload/mt5docker/MT5_Data:/opt/wineprefix/drive_c/Program Files/MetaTrader 5
+      - .:/mt5docker
+      # MT5 可攜式設定檔持久化（AppData）
+      - "./MT5_Data:/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5"
     entrypoint: /mt5docker/start_server.sh
     ports:
       - 5901:5901
@@ -21,7 +21,7 @@ services:
     container_name: python-runner
     volumes:
       # 將整個專案代碼映射到 /app
-      - /home/ubuntu/projects/trade_data_dowload:/app
+      - ..:/app
     entrypoint: /app/mt5docker/start_runner.sh
     depends_on:
       - mt5-server

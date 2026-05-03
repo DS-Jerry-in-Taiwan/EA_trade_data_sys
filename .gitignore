@@ -31,3 +31,7 @@ env/
 legacy_scripts/
 docker-wine/
 pywine/
+
+# --- MT5 容器持久化資料（每次執行自動產生）---
+mt5docker/MT5_Data/
+docs/
