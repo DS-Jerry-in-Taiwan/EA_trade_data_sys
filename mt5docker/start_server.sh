@@ -24,17 +24,22 @@ if [ -z "$MT5_EXE" ]; then
     MT5_EXE=$(find /opt/wineprefix/drive_c/ -name terminal64.exe | head -n 1)
 fi
 
+# 同步帳密
+bash /mt5docker/sync_mt5cfg.sh
 # 啟動 MT5
 cd "$(dirname "$MT5_EXE")"
 echo '>>> Launching MT5 terminal...'
 wine "${MT5_EXE}" /portable /config:/mt5docker/mt5cfg.ini &
 
 # API Proxy 監控循環
+echo '>>> Starting API Proxy...'
+wine C:/Python/python.exe -m pymt5linux --host 0.0.0.0 --port 8001 C:/Python/python.exe &
+sleep 3
 echo '>>> Starting API Proxy monitoring loop...'
 while true; do
   if ! pgrep -f "pymt5linux" > /dev/null; then
     echo "$(date): API Proxy is down, restarting..."
-    wine python -m pymt5linux --host 0.0.0.0 --port 8001 C:/Python/python.exe &
+    wine C:/Python/python.exe -m pymt5linux --host 0.0.0.0 --port 8001 C:/Python/python.exe &
   fi
   sleep 30
 done
