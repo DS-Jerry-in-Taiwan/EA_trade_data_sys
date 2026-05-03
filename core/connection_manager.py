@@ -1,10 +1,19 @@
+import os
 import yaml
 import json
 import socket
 from pymt5linux import MetaTrader5
 
 class MT5Connector:
-    def __init__(self, settings_path='/app/service/config/settings.yaml', accounts_path='/app/service/config/accounts.json'):
+    def __init__(self, settings_path=None, accounts_path=None):
+        settings_path = settings_path or os.getenv('MT5_SETTINGS_PATH', '/app/service/config/settings.yaml')
+        accounts_path = accounts_path or os.getenv('MT5_ACCOUNTS_PATH', '/app/service/config/accounts.json')
+        
+        if not os.path.exists(settings_path):
+            raise FileNotFoundError(f"Settings file not found: {settings_path}")
+        if not os.path.exists(accounts_path):
+            raise FileNotFoundError(f"Accounts file not found: {accounts_path}")
+        
         with open(settings_path, 'r') as f:
             self.settings = yaml.safe_load(f)
         with open(accounts_path, 'r') as f:
