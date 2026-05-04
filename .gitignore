@@ -10,6 +10,7 @@ core/accounts.json
 *.csv
 *.log
 *.tar.gz
+service/data/
 
 # --- Python 環境 ---
 __pycache__/

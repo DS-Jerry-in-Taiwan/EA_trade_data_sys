@@ -3,3 +3,21 @@ connection:
   fallback_hosts: ["172.21.0.2", "172.21.0.3", "172.21.0.4"]
   port: 8001
   timeout: 10
+
+tick_service:
+  enabled: true
+  symbols: ["XAUUSD"]
+  update_interval_seconds: 60
+  output_dir: "/app/service/data/ticks"
+
+history_service:
+  enabled: true
+  symbols:
+    - name: "XAUUSD"
+      timeframes: ["M5", "M15", "H1"]
+  update_interval_seconds: 60
+  data_path: "/app/service/data/history"
+
+api_gateway:
+  host: "0.0.0.0"
+  port: 8090

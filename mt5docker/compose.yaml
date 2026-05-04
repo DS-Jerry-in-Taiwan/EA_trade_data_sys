@@ -22,6 +22,8 @@ services:
     volumes:
       # 將整個專案代碼映射到 /app
       - ..:/app
+    ports:
+      - "0.0.0.0:8090:8090"
     entrypoint: /app/mt5docker/start_runner.sh
     depends_on:
       - mt5-server
