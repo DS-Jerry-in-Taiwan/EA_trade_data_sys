@@ -1,0 +1,95 @@
+{
+  "dashboard": {
+    "title": "MT5 Trading Monitor",
+    "tags": ["mt5", "trading"],
+    "timezone": "browser",
+    "schemaVersion": 39,
+    "version": 0,
+    "panels": [
+      {
+        "id": 1,
+        "title": "XAUUSD Bid",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 4, "x": 0, "y": 0},
+        "targets": [{"expr": "mt5_tick_bid{symbol=\"XAUUSD\"}", "legendFormat": "Bid", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 2,
+        "title": "XAUUSD Ask",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 4, "x": 4, "y": 0},
+        "targets": [{"expr": "mt5_tick_ask{symbol=\"XAUUSD\"}", "legendFormat": "Ask", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 3,
+        "title": "MT5 Connection",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 4, "x": 8, "y": 0},
+        "targets": [{"expr": "mt5_connected", "legendFormat": "Connected", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 4,
+        "title": "Account Balance",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 4, "x": 12, "y": 0},
+        "targets": [{"expr": "mt5_account_balance", "legendFormat": "Balance", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 5,
+        "title": "Account Equity",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 4, "x": 16, "y": 0},
+        "targets": [{"expr": "mt5_account_equity", "legendFormat": "Equity", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 6,
+        "title": "Service Uptime",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 4, "x": 20, "y": 0},
+        "targets": [{"expr": "service_uptime_seconds", "legendFormat": "Uptime", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 7,
+        "title": "XAUUSD Price Trend",
+        "type": "timeseries",
+        "gridPos": {"h": 10, "w": 12, "x": 0, "y": 6},
+        "targets": [
+          {"expr": "mt5_tick_bid{symbol=\"XAUUSD\"}", "legendFormat": "Bid", "datasource": {"uid": "eflbrtoxz3apsb"}},
+          {"expr": "mt5_tick_ask{symbol=\"XAUUSD\"}", "legendFormat": "Ask", "datasource": {"uid": "eflbrtoxz3apsb"}}
+        ],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 8,
+        "title": "API Request Rate",
+        "type": "timeseries",
+        "gridPos": {"h": 10, "w": 6, "x": 12, "y": 6},
+        "targets": [{"expr": "rate(api_requests_total[5m])", "legendFormat": "{{endpoint}}", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 9,
+        "title": "API Latency P99",
+        "type": "timeseries",
+        "gridPos": {"h": 10, "w": 6, "x": 18, "y": 6},
+        "targets": [{"expr": "histogram_quantile(0.99, rate(api_request_duration_seconds_bucket[5m]))", "legendFormat": "p99", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      },
+      {
+        "id": 10,
+        "title": "Data Freshness (Tick Age)",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [{"expr": "time() - mt5_last_tick_timestamp{symbol=\"XAUUSD\"}", "legendFormat": "Tick age (s)", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "datasource": {"uid": "eflbrtoxz3apsb"}
+      }
+    ]
+  },
+  "overwrite": true
+}
