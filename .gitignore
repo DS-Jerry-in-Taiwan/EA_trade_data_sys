@@ -1,16 +1,20 @@
 # --- 敏感帳密與數據 ---
 service/config/accounts.json
 core/accounts.json
+mt5docker/mt5cfg.ini
+mt5docker/accounts.json
 .env
 .env*
 *.key
 *.pem
 
-# --- 數據檔案 ---
+# --- 數據檔案與暫存輸出 ---
 *.csv
 *.log
 *.tar.gz
 service/data/
+mt5docker/exness_screen.png
+fetch_gold_may11_13.py
 
 # --- Python 環境 ---
 __pycache__/
@@ -32,6 +36,7 @@ env/
 legacy_scripts/
 docker-wine/
 pywine/
+fetch_m5_data_v4.py
 
 # --- MT5 容器持久化資料（每次執行自動產生）---
 mt5docker/MT5_Data/
