@@ -20,6 +20,7 @@ class HistoryService:
         self.interval = cfg.get('update_interval_seconds', 60)
         self.data_path = cfg.get('data_path', '/app/service/data/history')
         self.mt5_client = MT5Client()
+        self._resolver_initialized = False
         os.makedirs(self.data_path, exist_ok=True)
 
     def _get_timeframe_attr(self, tf_str):
@@ -32,8 +33,15 @@ class HistoryService:
             print(f'[{datetime.now()}] MT5 connection failed')
             return
 
+        # Lazy init resolver (第一次成功連線後執行一次)
+        if not self._resolver_initialized:
+            symbols_list = [s['name'] for s in self.symbols]
+            self.mt5_client.init_resolver(symbols_list)
+            self._resolver_initialized = True
+
         for sym_conf in self.symbols:
             symbol = sym_conf['name']
+            broker_symbol = self.mt5_client.resolve(symbol)
             for tf_str in sym_conf['timeframes']:
                 tf = self._get_timeframe_attr(tf_str)
                 if tf is None:
@@ -44,7 +52,7 @@ class HistoryService:
 
                 try:
                     future = _executor.submit(lambda: self.mt5_client.call(
-                        lambda m: m.copy_rates_from_pos(symbol, tf, 0, 100)))
+                        lambda m: m.copy_rates_from_pos(broker_symbol, tf, 0, 100)))
                     rates = future.result()
 
                     if rates is not None and len(rates) > 1:

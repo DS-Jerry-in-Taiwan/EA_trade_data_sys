@@ -17,6 +17,7 @@ class TickService:
         self.interval = cfg.get('update_interval_seconds', 60)
         self.output_dir = cfg.get('output_dir', '/app/service/data/ticks')
         self.mt5_client = MT5Client()
+        self._resolver_initialized = False
         os.makedirs(self.output_dir, exist_ok=True)
 
     def fetch_ticks(self):
@@ -24,13 +25,22 @@ class TickService:
             print(f'[{datetime.now()}] MT5 connection failed, retrying next cycle...')
             return {}
 
+        # Lazy init resolver (第一次成功連線後執行一次)
+        if not self._resolver_initialized:
+            self.mt5_client.init_resolver(self.symbols)
+            self._resolver_initialized = True
+            if self.mt5_client._resolver and self.mt5_client._resolver.unresolved:
+                print(f'[TickService] WARNING: Unresolved symbols: '
+                      f'{self.mt5_client._resolver.unresolved}')
+
         result = {}
         for symbol in self.symbols:
             try:
-                tick = self.mt5_client.call(lambda m: m.symbol_info_tick(symbol))
+                broker_symbol = self.mt5_client.resolve(symbol)
+                tick = self.mt5_client.call(lambda m: m.symbol_info_tick(broker_symbol))
                 if tick:
                     data = {
-                        'symbol': symbol,
+                        'symbol': symbol,  # 保持 logical name
                         'bid': tick.bid,
                         'ask': tick.ask,
                         'last': tick.last,

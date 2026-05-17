@@ -5,6 +5,15 @@ Test every endpoint exposed by the API Gateway.
 Skip tests gracefully when MT5 connectivity is missing.
 """
 import pytest
+import yaml
+
+# Dynamically read symbols from settings.yaml
+try:
+    with open("/app/service/config/settings.yaml") as f:
+        _cfg = yaml.safe_load(f)
+    _KNOWN_SYMBOLS = set(_cfg.get("tick_service", {}).get("symbols", []))
+except Exception:
+    _KNOWN_SYMBOLS = {"XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"}  # fallback
 
 
 class TestHealthEndpoint:
@@ -45,7 +54,7 @@ class TestSymbolsEndpoint:
             sym_names = {s["name"] for s in sym_list}
         else:
             sym_names = set(sym_list)
-        known_symbols = {"XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"}
+        known_symbols = _KNOWN_SYMBOLS
         assert known_symbols.intersection(sym_names), \
             f"No known symbols found in {sym_names}"
 
@@ -53,12 +62,12 @@ class TestSymbolsEndpoint:
 class TestTicksEndpoint:
     """C3: /ticks/<symbol>"""
 
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"])
+    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_ticks_status(self, api, symbol):
         resp = api(f"/ticks/{symbol}")
         assert resp.status_code in (200, 404, 502), f"Unexpected status {resp.status_code} for {symbol}"
 
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"])
+    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_ticks_data_shape(self, api, symbol):
         resp = api(f"/ticks/{symbol}")
         if resp.status_code != 200:
@@ -74,12 +83,12 @@ class TestTicksEndpoint:
 class TestRatesEndpoint:
     """C4: /rates/<symbol>"""
 
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"])
+    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_rates_status(self, api, symbol):
         resp = api(f"/rates/{symbol}")
         assert resp.status_code in (200, 404, 502), f"Unexpected status {resp.status_code} for {symbol}"
 
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"])
+    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_rates_data_shape(self, api, symbol):
         resp = api(f"/rates/{symbol}")
         if resp.status_code != 200:

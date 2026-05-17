@@ -33,17 +33,24 @@ class TickFetcher(threading.Thread):
         self.symbols = cfg.get('symbols', ['XAUUSDm'])
         self.interval = cfg.get('update_interval_seconds', 60)
         self.mt5_client = MT5Client()
+        self._resolver_initialized = False
 
     def run(self):
         print('[TickFetcher] Background thread started')
         while True:
             try:
                 if self.mt5_client.ensure_connected():
+                    # Lazy init resolver
+                    if not self._resolver_initialized:
+                        self.mt5_client.init_resolver(self.symbols)
+                        self._resolver_initialized = True
+
                     for symbol in self.symbols:
-                        tick = self.mt5_client.call(lambda m: m.symbol_info_tick(symbol))
+                        broker_symbol = self.mt5_client.resolve(symbol)
+                        tick = self.mt5_client.call(lambda m: m.symbol_info_tick(broker_symbol))
                         if tick:
                             data = {
-                                'symbol': symbol,
+                                'symbol': symbol,  # 保持 logical name
                                 'bid': tick.bid,
                                 'ask': tick.ask,
                                 'last': tick.last,
@@ -117,13 +124,17 @@ def query_rates_by_range(symbol):
     if not mt5_client.ensure_connected():
         return jsonify({'error': 'MT5 not connected'}), 503
 
+    # Resolve symbol
+    mt5_client.init_resolver([symbol])
+    broker_symbol = mt5_client.resolve(symbol)
+
     mt5 = mt5_client.mt5
     tf = getattr(mt5, f'TIMEFRAME_{timeframe}', None)
     if tf is None:
         return jsonify({'error': f'Unknown timeframe: {timeframe}'}), 400
 
     try:
-        rates = mt5_client.call(lambda m: m.copy_rates_range(symbol, tf, start_dt, end_dt))
+        rates = mt5_client.call(lambda m: m.copy_rates_range(broker_symbol, tf, start_dt, end_dt))
     except Exception as e:
         return jsonify({'error': f'MT5 query failed: {str(e)}'}), 500
 
@@ -168,12 +179,17 @@ def list_symbols():
         if not account_svc.mt5_client.ensure_connected():
             return jsonify({'symbols': cfg_symbols, 'source': 'config'})
 
+        # Lazy init resolver on account_svc's mt5_client
+        if not hasattr(account_svc.mt5_client, '_resolver') or account_svc.mt5_client._resolver is None:
+            account_svc.mt5_client.init_resolver(cfg_symbols)
+
         result = []
         for name in cfg_symbols:
-            info = account_svc.mt5_client.call(lambda m: m.symbol_info(name))
+            broker_name = account_svc.mt5_client.resolve(name)
+            info = account_svc.mt5_client.call(lambda m: m.symbol_info(broker_name))
             if info:
                 result.append({
-                    'name': info.name,
+                    'name': name,  # 保持 logical name
                     'digits': info.digits,
                     'spread': info.spread,
                     'description': info.description if hasattr(info, 'description') else '',
