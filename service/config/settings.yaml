@@ -6,7 +6,7 @@ connection:
 
 tick_service:
   enabled: true
-  symbols: ["XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"]
+  symbols: ["XAUUSDm", "BTCUSD", "EURUSDm", "GBPUSDm"]
   update_interval_seconds: 60
   output_dir: "/app/service/data/ticks"
 
@@ -15,7 +15,7 @@ history_service:
   symbols:
     - name: "XAUUSDm"
       timeframes: ["M5", "M15", "H1"]
-    - name: "BTCUSDm"
+    - name: "BTCUSD"
       timeframes: ["M5", "M15", "H1"]
     - name: "EURUSDm"
       timeframes: ["M5", "M15", "H1"]
