@@ -4,9 +4,12 @@ import sys
 import yaml
 import pandas as pd
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, '/app')
-from core.connection_manager import MT5Connector
+from service.core.mt5_client import MT5Client
+
+_executor = ThreadPoolExecutor(max_workers=4)
 
 
 class HistoryService:
@@ -16,31 +19,16 @@ class HistoryService:
         self.symbols = cfg.get('symbols', [])
         self.interval = cfg.get('update_interval_seconds', 60)
         self.data_path = cfg.get('data_path', '/app/service/data/history')
-        self.connector = None
-        self.mt5 = None
+        self.mt5_client = MT5Client()
         os.makedirs(self.data_path, exist_ok=True)
 
-    def _ensure_connected(self):
-        if self.mt5 is None:
-            self.connector = MT5Connector()
-            self.mt5 = self.connector.connect()
-        return self.mt5 is not None
-
     def _get_timeframe_attr(self, tf_str):
-        if not self.mt5:
+        if not self.mt5_client.mt5:
             return None
-        return getattr(self.mt5, f'TIMEFRAME_{tf_str}', None)
-
-    def _get_last_timestamp(self, symbol, tf_str):
-        filepath = os.path.join(self.data_path, f'{symbol}_{tf_str}.csv')
-        if os.path.exists(filepath):
-            df = pd.read_csv(filepath)
-            if not df.empty:
-                return pd.to_datetime(df['time'].iloc[-1])
-        return None
+        return getattr(self.mt5_client.mt5, f'TIMEFRAME_{tf_str}', None)
 
     def fetch_incremental(self):
-        if not self._ensure_connected():
+        if not self.mt5_client.ensure_connected():
             print(f'[{datetime.now()}] MT5 connection failed')
             return
 
@@ -52,14 +40,12 @@ class HistoryService:
                     print(f'[{datetime.now()}] Unknown timeframe: {tf_str}')
                     continue
 
-                last_ts = self._get_last_timestamp(symbol, tf_str)
-                print(f'[{datetime.now()}] Fetching {symbol} {tf_str} since {last_ts or "beginning"}...')
+                print(f'[{datetime.now()}] Fetching {symbol} {tf_str} (latest 100 bars)...')
 
                 try:
-                    if last_ts:
-                        rates = self.mt5.copy_rates_range(symbol, tf, last_ts.to_pydatetime(), datetime.now())
-                    else:
-                        rates = self.mt5.copy_rates_from_pos(symbol, tf, 0, 1000)
+                    future = _executor.submit(lambda: self.mt5_client.call(
+                        lambda m: m.copy_rates_from_pos(symbol, tf, 0, 100)))
+                    rates = future.result()
 
                     if rates is not None and len(rates) > 1:
                         new_df = pd.DataFrame(rates)
@@ -86,7 +72,7 @@ class HistoryService:
                 self.fetch_incremental()
             except Exception as e:
                 print(f'[{datetime.now()}] HistoryService error: {e}')
-                self.mt5 = None
+                self.mt5_client.reset()
             time.sleep(self.interval)
 
 
