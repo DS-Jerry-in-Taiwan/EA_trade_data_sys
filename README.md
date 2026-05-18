@@ -74,26 +74,26 @@
 
 > **注意**：請將 `<YOUR_HOST_IP>` 替換為實際主機 IP（可使用 `hostname -I` 或 `ip route get 8.8.8.8 | grep src` 查詢）。
 
-**範例 URL（假設 IP 為 10.223.81.129）：**
+**範例 URL：**
 
 ```bash
 # 健康檢查
-curl http://10.223.81.129:8090/api/v1/health
+curl http://<YOUR_HOST_IP>:8090/api/v1/health
 
 # 即時報價
-curl http://10.223.81.129:8090/api/v1/ticks/XAUUSDm
+curl http://<YOUR_HOST_IP>:8090/api/v1/ticks/XAUUSDm
 
 # K 線歷史（CSV 快取）
-curl "http://10.223.81.129:8090/api/v1/rates/XAUUSDm?timeframe=M5&limit=100"
+curl "http://<YOUR_HOST_IP>:8090/api/v1/rates/XAUUSDm?timeframe=M5&limit=100"
 
 # 直接查詢 MT5（回測用）
-curl "http://10.223.81.129:8090/api/v1/rates/XAUUSDm/query?timeframe=M5&start_time=2025-01-01&end_time=2025-01-07"
+curl "http://<YOUR_HOST_IP>:8090/api/v1/rates/XAUUSDm/query?timeframe=M5&start_time=2025-01-01&end_time=2025-01-07"
 
 # 商品列表
-curl http://10.223.81.129:8090/api/v1/symbols
+curl http://<YOUR_HOST_IP>:8090/api/v1/symbols
 
 # OpenAPI 規格文件
-curl http://10.223.81.129:8090/api/v1/openapi.yaml
+curl http://<YOUR_HOST_IP>:8090/api/v1/openapi.yaml
 ```
 
 > **注意**：Symbol 名稱需與 `settings.yaml` 中設定一致（如 `XAUUSDm`、`EURUSDm`、`GBPUSDm`、`BTC`），API 會自動解析為 Broker 實際商品名稱。
