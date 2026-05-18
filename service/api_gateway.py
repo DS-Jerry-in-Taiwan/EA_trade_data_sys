@@ -71,7 +71,7 @@ class TickFetcher(threading.Thread):
 
 @app.route('/api/v1/ticks/<symbol>')
 def get_tick(symbol):
-    symbol = symbol.upper()
+    # 移除 .upper() - services 存的是 logical name（原樣從 settings.yaml）
     with tick_lock:
         tick = latest_ticks.get(symbol)
     if tick:
@@ -81,7 +81,7 @@ def get_tick(symbol):
 
 @app.route('/api/v1/rates/<symbol>')
 def get_rates(symbol):
-    symbol = symbol.upper()
+    # 移除 .upper() - CSV 檔名用的是 logical name
     timeframe = request.args.get('timeframe', 'M5')
     days = request.args.get('days', 0, type=int)
     limit = request.args.get('limit', 0, type=int)
@@ -222,7 +222,7 @@ def handle_connect():
 
 @socketio.on('subscribe')
 def handle_subscribe(data):
-    symbol = data.get('symbol', '').upper()
+    symbol = data.get('symbol', '')  # 移除 .upper()
     if symbol:
         join_room(symbol)
         emit('subscribed', {'symbol': symbol})
@@ -235,7 +235,7 @@ def handle_subscribe(data):
 
 @socketio.on('unsubscribe')
 def handle_unsubscribe(data):
-    symbol = data.get('symbol', '').upper()
+    symbol = data.get('symbol', '')  # 移除 .upper()
     if symbol:
         print(f'[WS] Client unsubscribed from {symbol}')
 
