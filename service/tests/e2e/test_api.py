@@ -124,7 +124,7 @@ class TestMetricsEndpoint:
         if resp.status_code != 200:
             pytest.skip("Metrics endpoint not available")
         text = resp.text
-        for key in ("tick_count", "symbol_count", "uptime_seconds"):
+        for key in ("mt5_tick_bid", "mt5_connected", "service_uptime_seconds"):
             assert key in text, f"Metrics missing '{key}'"
 
 

@@ -8,6 +8,8 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_file
 from flask_socketio import SocketIO, emit, join_room
 from flask_cors import CORS
+import time as time_module
+import metrics
 
 sys.path.insert(0, '/app')
 from service.core.mt5_client import MT5Client
@@ -59,12 +61,42 @@ class TickFetcher(threading.Thread):
                             }
                             with tick_lock:
                                 latest_ticks[symbol] = data
+                            # 更新 Prometheus metrics
+                            metrics.mt5_tick_bid.labels(symbol=symbol).set(tick.bid)
+                            metrics.mt5_tick_ask.labels(symbol=symbol).set(tick.ask)
+                            if hasattr(tick, 'time') and tick.time:
+                                metrics.mt5_last_tick_timestamp.labels(symbol=symbol).set(tick.time)
+                            else:
+                                metrics.mt5_last_tick_timestamp.labels(symbol=symbol).set(time_module.time())
+                            metrics.mt5_connected.set(1)
                             socketio.emit('tick', data, room=symbol)
                             print(f'[TickFetcher] {symbol}: Bid={tick.bid}, Ask={tick.ask}')
             except Exception as e:
                 print(f'[TickFetcher] Error: {e}')
+                metrics.mt5_connected.set(0)
                 self.mt5_client.reset()
             time.sleep(self.interval)
+
+
+# ─── Request Hooks for Metrics ───
+
+@app.before_request
+def before_request():
+    request._start_time = time_module.time()
+
+
+@app.after_request
+def after_request(response):
+    dt = time_module.time() - request._start_time
+    endpoint = request.path or 'unknown'
+    method = request.method
+    status = response.status_code
+    try:
+        metrics.api_requests_total.labels(method=method, endpoint=endpoint, status=status).inc()
+        metrics.api_request_duration_seconds.labels(method=method, endpoint=endpoint).observe(dt)
+    except Exception:
+        pass
+    return response
 
 
 # ─── REST Routes ───
@@ -157,6 +189,15 @@ def query_rates_by_range(symbol):
 
 @app.route('/api/v1/health')
 def health():
+    # 更新帳戶 metrics
+    try:
+        balance_info = account_svc.get_balance()
+        if balance_info and 'balance' in balance_info:
+            metrics.mt5_account_balance.set(balance_info['balance'])
+            metrics.mt5_account_equity.set(balance_info['equity'])
+    except Exception:
+        pass
+
     with tick_lock:
         tick_count = len(latest_ticks)
     return jsonify({
@@ -165,6 +206,22 @@ def health():
         'symbols_tracked': list(latest_ticks.keys()),
         'timestamp': datetime.now(timezone.utc).isoformat()
     })
+
+
+@app.route('/metrics')
+@app.route('/api/v1/metrics')
+def prometheus_metrics():
+    """Prometheus metrics export endpoint."""
+    # 更新 uptime metric
+    metrics.service_uptime_seconds.set(time_module.time() - _start_time)
+    # 更新連接狀態
+    try:
+        with tick_lock:
+            has_ticks = len(latest_ticks) > 0
+        metrics.mt5_connected.set(1 if has_ticks else 0)
+    except Exception:
+        metrics.mt5_connected.set(0)
+    return metrics.generate_latest(), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 
 @app.route('/api/v1/symbols')
@@ -239,6 +296,8 @@ def handle_unsubscribe(data):
     if symbol:
         print(f'[WS] Client unsubscribed from {symbol}')
 
+
+_start_time = time_module.time()
 
 # ─── Main ───
 

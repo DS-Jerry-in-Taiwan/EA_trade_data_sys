@@ -11,7 +11,7 @@
         "title": "XAUUSD Bid",
         "type": "stat",
         "gridPos": {"h": 6, "w": 4, "x": 0, "y": 0},
-        "targets": [{"expr": "mt5_tick_bid{symbol=\"XAUUSD\"}", "legendFormat": "Bid", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "targets": [{"expr": "mt5_tick_bid{symbol=\"XAUUSDm\"}", "legendFormat": "Bid", "datasource": {"uid": "eflbrtoxz3apsb"}}],
         "datasource": {"uid": "eflbrtoxz3apsb"}
       },
       {
@@ -19,7 +19,7 @@
         "title": "XAUUSD Ask",
         "type": "stat",
         "gridPos": {"h": 6, "w": 4, "x": 4, "y": 0},
-        "targets": [{"expr": "mt5_tick_ask{symbol=\"XAUUSD\"}", "legendFormat": "Ask", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "targets": [{"expr": "mt5_tick_ask{symbol=\"XAUUSDm\"}", "legendFormat": "Ask", "datasource": {"uid": "eflbrtoxz3apsb"}}],
         "datasource": {"uid": "eflbrtoxz3apsb"}
       },
       {
@@ -60,8 +60,8 @@
         "type": "timeseries",
         "gridPos": {"h": 10, "w": 12, "x": 0, "y": 6},
         "targets": [
-          {"expr": "mt5_tick_bid{symbol=\"XAUUSD\"}", "legendFormat": "Bid", "datasource": {"uid": "eflbrtoxz3apsb"}},
-          {"expr": "mt5_tick_ask{symbol=\"XAUUSD\"}", "legendFormat": "Ask", "datasource": {"uid": "eflbrtoxz3apsb"}}
+          {"expr": "mt5_tick_bid{symbol=\"XAUUSDm\"}", "legendFormat": "Bid", "datasource": {"uid": "eflbrtoxz3apsb"}},
+          {"expr": "mt5_tick_ask{symbol=\"XAUUSDm\"}", "legendFormat": "Ask", "datasource": {"uid": "eflbrtoxz3apsb"}}
         ],
         "datasource": {"uid": "eflbrtoxz3apsb"}
       },
@@ -86,7 +86,7 @@
         "title": "Data Freshness (Tick Age)",
         "type": "timeseries",
         "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
-        "targets": [{"expr": "time() - mt5_last_tick_timestamp{symbol=\"XAUUSD\"}", "legendFormat": "Tick age (s)", "datasource": {"uid": "eflbrtoxz3apsb"}}],
+        "targets": [{"expr": "time() - mt5_last_tick_timestamp{symbol=\"XAUUSDm\"}", "legendFormat": "Tick age (s)", "datasource": {"uid": "eflbrtoxz3apsb"}}],
         "datasource": {"uid": "eflbrtoxz3apsb"}
       }
     ]
