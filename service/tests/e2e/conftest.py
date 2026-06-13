@@ -24,9 +24,16 @@ def api_base() -> str:
 @pytest.fixture
 def api(api_base):
     """Shortcut to make GET requests to the API Gateway."""
-    def _get(path):
-        return requests.get(f"{api_base}{path}", timeout=10)
+    def _get(path, headers=None):
+        return requests.get(f"{api_base}{path}", headers=headers, timeout=10)
     return _get
+
+
+@pytest.fixture
+def readonly_headers():
+    """Return readonly API headers when READONLY_API_KEY is configured."""
+    key = os.getenv("READONLY_API_KEY")
+    return {"X-API-Key": key} if key else {}
 
 
 @pytest.fixture(scope="session")
