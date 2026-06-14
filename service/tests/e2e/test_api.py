@@ -96,8 +96,8 @@ class TestRatesEndpoint:
         data = resp.json()
         if not data:
             pytest.skip(f"No rate data for {symbol}")
-        # API wraps data in a dict with 'data' key
-        records = data.get("data", data)
+        # API may return a plain array (CSV cache) or an envelope object.
+        records = data.get("data", data) if isinstance(data, dict) else data
         if not records:
             pytest.skip(f"Empty rate data for {symbol}")
         record = records[0] if isinstance(records, list) else data
@@ -129,21 +129,106 @@ class TestMetricsEndpoint:
 
 
 class TestAccountEndpoint:
-    """C6: /account/balance"""
+    """C6: /account"""
 
-    def test_account_balance_status(self, api):
-        resp = api("/account/balance")
-        assert resp.status_code in (200, 404, 503), \
+    def test_account_status_requires_key_or_configuration(self, api):
+        resp = api("/account")
+        assert resp.status_code in (401, 503), \
             f"Unexpected status {resp.status_code}"
 
-    def test_account_balance_value(self, api):
-        resp = api("/account/balance")
-        if resp.status_code != 200:
-            pytest.skip("Account balance not available")
+    def test_account_value(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured for authenticated account test")
+        resp = api("/account", headers=readonly_headers)
+        if resp.status_code == 503:
+            pytest.skip("MT5 not connected or readonly API key not configured")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
         data = resp.json()
-        assert "balance" in data, "Balance response missing 'balance'"
+        for field in ("login", "balance", "equity", "server"):
+            assert field in data, f"Account response missing '{field}'"
         assert isinstance(data["balance"], (int, float)), \
             f"Balance should be numeric, got {type(data['balance'])}"
+
+
+class TestTradeQueryEndpoints:
+    """Protected readonly trade query endpoints."""
+
+    def test_account_without_key(self, api):
+        resp = api("/account")
+        assert resp.status_code in (401, 503), f"Unexpected status {resp.status_code}"
+        data = resp.json()
+        assert data.get("error") in ("unauthorized", "readonly api key not configured")
+
+    def test_account_with_key(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/account", headers=readonly_headers)
+        if resp.status_code == 503:
+            pytest.skip("MT5 not connected")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        data = resp.json()
+        for field in ("login", "balance", "equity", "server"):
+            assert field in data, f"Account response missing '{field}'"
+
+    def test_positions_with_key(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/positions", headers=readonly_headers)
+        if resp.status_code == 503:
+            pytest.skip("MT5 not connected")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        assert isinstance(resp.json(), list)
+
+    def test_positions_symbol_with_key(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/positions?symbol=XAUUSDm", headers=readonly_headers)
+        if resp.status_code == 503:
+            pytest.skip("MT5 not connected")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        assert isinstance(resp.json(), list)
+
+    def test_history_deals_days_with_key(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/history/deals?days=7", headers=readonly_headers)
+        if resp.status_code == 503:
+            pytest.skip("MT5 not connected")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        data = resp.json()
+        assert isinstance(data, list) or (isinstance(data, dict) and "data" in data)
+
+    def test_history_deals_summary_with_key(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/history/deals?days=7&summary=true", headers=readonly_headers)
+        if resp.status_code == 503:
+            pytest.skip("MT5 not connected")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        data = resp.json()
+        assert "data" in data
+        assert "summary" in data
+
+    def test_history_deals_range_too_large(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/history/deals?days=91", headers=readonly_headers)
+        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}"
+
+    def test_history_orders_days_with_key(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/history/orders?days=7", headers=readonly_headers)
+        if resp.status_code == 503:
+            pytest.skip("MT5 not connected")
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        assert isinstance(resp.json(), list)
+
+    def test_history_orders_range_too_large(self, api, readonly_headers):
+        if not readonly_headers:
+            pytest.skip("READONLY_API_KEY not configured")
+        resp = api("/history/orders?from=2026-01-01&to=2026-05-01", headers=readonly_headers)
+        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}"
 
 
 class TestChartEndpoint:

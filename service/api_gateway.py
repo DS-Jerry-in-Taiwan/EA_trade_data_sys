@@ -4,6 +4,7 @@ import sys
 import time
 import threading
 import yaml
+import hmac
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_file
 from flask_socketio import SocketIO, emit, join_room
@@ -61,13 +62,13 @@ class TickFetcher(threading.Thread):
                             }
                             with tick_lock:
                                 latest_ticks[symbol] = data
-                            # 更新 Prometheus metrics
-                            metrics.mt5_tick_bid.labels(symbol=symbol).set(tick.bid)
-                            metrics.mt5_tick_ask.labels(symbol=symbol).set(tick.ask)
+                            # 更新 Prometheus metrics（使用 broker 實際名稱）
+                            metrics.mt5_tick_bid.labels(symbol=broker_symbol).set(tick.bid)
+                            metrics.mt5_tick_ask.labels(symbol=broker_symbol).set(tick.ask)
                             if hasattr(tick, 'time') and tick.time:
-                                metrics.mt5_last_tick_timestamp.labels(symbol=symbol).set(tick.time)
+                                metrics.mt5_last_tick_timestamp.labels(symbol=broker_symbol).set(tick.time)
                             else:
-                                metrics.mt5_last_tick_timestamp.labels(symbol=symbol).set(time_module.time())
+                                metrics.mt5_last_tick_timestamp.labels(symbol=broker_symbol).set(time_module.time())
                             metrics.mt5_connected.set(1)
                             socketio.emit('tick', data, room=symbol)
                             print(f'[TickFetcher] {symbol}: Bid={tick.bid}, Ask={tick.ask}')
@@ -100,6 +101,117 @@ def after_request(response):
 
 
 # ─── REST Routes ───
+
+def load_gateway_config():
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    return {
+        'api_gateway': cfg.get('api_gateway', {}),
+        'trade_query': cfg.get('trade_query', {}),
+    }
+
+
+def require_readonly_api_key():
+    cfg = load_gateway_config()
+    env_name = cfg.get('api_gateway', {}).get('readonly_api_key_env', 'READONLY_API_KEY')
+    expected_key = os.getenv(env_name)
+    if not expected_key:
+        return jsonify({'error': 'readonly api key not configured'}), 503
+    provided_key = request.headers.get('X-API-Key')
+    if not provided_key or not hmac.compare_digest(provided_key, expected_key):
+        return jsonify({'error': 'unauthorized'}), 401
+    return None
+
+
+def _parse_yyyy_mm_dd(value):
+    try:
+        parsed = datetime.strptime(value, '%Y-%m-%d')
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def parse_trade_query_range():
+    cfg = load_gateway_config().get('trade_query', {})
+    default_days = int(cfg.get('default_days', 7))
+    max_days = int(cfg.get('max_days', 90))
+
+    from_arg = request.args.get('from')
+    to_arg = request.args.get('to')
+    if from_arg or to_arg:
+        if not from_arg or not to_arg:
+            return None, None, {'error': 'invalid date format'}
+        from_dt = _parse_yyyy_mm_dd(from_arg)
+        to_dt = _parse_yyyy_mm_dd(to_arg)
+        if from_dt is None or to_dt is None:
+            return None, None, {'error': 'invalid date format'}
+        if from_dt > to_dt:
+            return None, None, {'error': 'from must be before to'}
+        if (to_dt - from_dt).days > max_days:
+            return None, None, {'error': f'date range too large, max {max_days} days'}
+        return from_dt, to_dt, None
+
+    days_arg = request.args.get('days', default_days)
+    try:
+        days = int(days_arg)
+    except (TypeError, ValueError):
+        return None, None, {'error': 'invalid date format'}
+    if days <= 0:
+        return None, None, {'error': 'invalid date format'}
+    if days > max_days:
+        return None, None, {'error': f'date range too large, max {max_days} days'}
+    to_dt = datetime.now(timezone.utc)
+    from_dt = to_dt - timedelta(days=days)
+    return from_dt, to_dt, None
+
+
+def service_result_to_response(result):
+    if isinstance(result, dict) and result.get('error') == 'MT5 not connected':
+        return jsonify(result), 503
+    if isinstance(result, dict) and result.get('error'):
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+@app.route('/api/v1/account')
+def get_account():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    return service_result_to_response(account_svc.get_account())
+
+
+@app.route('/api/v1/positions')
+def get_positions():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    symbol = request.args.get('symbol')
+    return service_result_to_response(account_svc.get_positions(symbol=symbol))
+
+
+@app.route('/api/v1/history/deals')
+def get_history_deals():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    from_dt, to_dt, parse_error = parse_trade_query_range()
+    if parse_error:
+        return jsonify(parse_error), 400
+    summary = request.args.get('summary', '').lower() == 'true'
+    result = account_svc.get_deals(from_dt=from_dt, to_dt=to_dt, limit=None, include_summary=summary)
+    return service_result_to_response(result)
+
+
+@app.route('/api/v1/history/orders')
+def get_history_orders():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    from_dt, to_dt, parse_error = parse_trade_query_range()
+    if parse_error:
+        return jsonify(parse_error), 400
+    return service_result_to_response(account_svc.get_history_orders(from_dt, to_dt))
 
 @app.route('/api/v1/ticks/<symbol>')
 def get_tick(symbol):
