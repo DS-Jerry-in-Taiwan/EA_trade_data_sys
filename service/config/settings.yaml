@@ -6,7 +6,7 @@ connection:
 
 tick_service:
   enabled: true
-  symbols: ["XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"]
+  symbols: ["XAUUSDm", "EURUSDm", "GBPUSDm", "BTC"]
   update_interval_seconds: 60
   output_dir: "/app/service/data/ticks"
 
@@ -15,11 +15,11 @@ history_service:
   symbols:
     - name: "XAUUSDm"
       timeframes: ["M5", "M15", "H1"]
-    - name: "BTCUSDm"
-      timeframes: ["M5", "M15", "H1"]
     - name: "EURUSDm"
       timeframes: ["M5", "M15", "H1"]
     - name: "GBPUSDm"
+      timeframes: ["M5", "M15", "H1"]
+    - name: "BTC"
       timeframes: ["M5", "M15", "H1"]
   update_interval_seconds: 60
   data_path: "/app/service/data/history"
@@ -27,3 +27,8 @@ history_service:
 api_gateway:
   host: "0.0.0.0"
   port: 8090
+  readonly_api_key_env: "READONLY_API_KEY"
+
+trade_query:
+  default_days: 7
+  max_days: 90

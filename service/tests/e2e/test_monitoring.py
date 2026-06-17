@@ -45,17 +45,17 @@ class TestMetricsObservability:
             "Metrics line count changed between calls (may indicate flapping)"
 
     def test_metrics_tick_count_increasing(self, api):
-        """tick_count metric should be present and non-negative"""
+        """mt5_tick_bid metric should be present and non-negative"""
         resp = api("/metrics")
         if resp.status_code != 200:
             pytest.skip("Metrics endpoint not available")
         text = resp.text
         for line in text.split("\n"):
-            if line.startswith("tick_count"):
+            if line.startswith("mt5_tick_bid"):
                 try:
                     val = float(line.split()[1])
-                    assert val >= 0, f"tick_count is negative: {val}"
+                    assert val >= 0, f"mt5_tick_bid is negative: {val}"
                 except (IndexError, ValueError):
-                    pytest.fail(f"Cannot parse tick_count from line: {line!r}")
+                    pytest.fail(f"Cannot parse mt5_tick_bid from line: {line!r}")
                 return
-        pytest.fail("tick_count not found in metrics output")
+        pytest.fail("mt5_tick_bid not found in metrics output")

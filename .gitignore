@@ -5,6 +5,7 @@ mt5docker/mt5cfg.ini
 mt5docker/accounts.json
 .env
 .env*
+!apps/trade-review-web/.env.local.example
 *.key
 *.pem
 
@@ -25,6 +26,7 @@ env/
 
 # --- OpenCode 設定與緩存 ---
 .opencode/
+.opencode-runtime/
 .opencode.json
 
 # --- 系統檔案 ---

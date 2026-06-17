@@ -10,7 +10,15 @@ from datetime import datetime, timezone
 
 
 REQUIRED_COLUMNS = {"time", "open", "high", "low", "close", "tick_volume"}
-EXPECTED_SYMBOLS = {"XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"}
+
+# Dynamically read symbols from settings.yaml
+import yaml
+try:
+    with open("/app/service/config/settings.yaml") as f:
+        _cfg = yaml.safe_load(f)
+    EXPECTED_SYMBOLS = set(_cfg.get("tick_service", {}).get("symbols", []))
+except Exception:
+    EXPECTED_SYMBOLS = {"XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"}  # fallback
 EXPECTED_TIMEFRAMES = {"M5", "M15", "H1"}
 
 

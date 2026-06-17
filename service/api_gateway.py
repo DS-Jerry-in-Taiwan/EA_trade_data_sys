@@ -4,10 +4,13 @@ import sys
 import time
 import threading
 import yaml
+import hmac
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_file
 from flask_socketio import SocketIO, emit, join_room
 from flask_cors import CORS
+import time as time_module
+import metrics
 
 sys.path.insert(0, '/app')
 from service.core.mt5_client import MT5Client
@@ -33,17 +36,24 @@ class TickFetcher(threading.Thread):
         self.symbols = cfg.get('symbols', ['XAUUSDm'])
         self.interval = cfg.get('update_interval_seconds', 60)
         self.mt5_client = MT5Client()
+        self._resolver_initialized = False
 
     def run(self):
         print('[TickFetcher] Background thread started')
         while True:
             try:
                 if self.mt5_client.ensure_connected():
+                    # Lazy init resolver
+                    if not self._resolver_initialized:
+                        self.mt5_client.init_resolver(self.symbols)
+                        self._resolver_initialized = True
+
                     for symbol in self.symbols:
-                        tick = self.mt5_client.call(lambda m: m.symbol_info_tick(symbol))
+                        broker_symbol = self.mt5_client.resolve(symbol)
+                        tick = self.mt5_client.call(lambda m: m.symbol_info_tick(broker_symbol))
                         if tick:
                             data = {
-                                'symbol': symbol,
+                                'symbol': symbol,  # 保持 logical name
                                 'bid': tick.bid,
                                 'ask': tick.ask,
                                 'last': tick.last,
@@ -52,19 +62,160 @@ class TickFetcher(threading.Thread):
                             }
                             with tick_lock:
                                 latest_ticks[symbol] = data
+                            # 更新 Prometheus metrics（使用 broker 實際名稱）
+                            metrics.mt5_tick_bid.labels(symbol=broker_symbol).set(tick.bid)
+                            metrics.mt5_tick_ask.labels(symbol=broker_symbol).set(tick.ask)
+                            if hasattr(tick, 'time') and tick.time:
+                                metrics.mt5_last_tick_timestamp.labels(symbol=broker_symbol).set(tick.time)
+                            else:
+                                metrics.mt5_last_tick_timestamp.labels(symbol=broker_symbol).set(time_module.time())
+                            metrics.mt5_connected.set(1)
                             socketio.emit('tick', data, room=symbol)
                             print(f'[TickFetcher] {symbol}: Bid={tick.bid}, Ask={tick.ask}')
             except Exception as e:
                 print(f'[TickFetcher] Error: {e}')
+                metrics.mt5_connected.set(0)
                 self.mt5_client.reset()
             time.sleep(self.interval)
 
 
+# ─── Request Hooks for Metrics ───
+
+@app.before_request
+def before_request():
+    request._start_time = time_module.time()
+
+
+@app.after_request
+def after_request(response):
+    dt = time_module.time() - request._start_time
+    endpoint = request.path or 'unknown'
+    method = request.method
+    status = response.status_code
+    try:
+        metrics.api_requests_total.labels(method=method, endpoint=endpoint, status=status).inc()
+        metrics.api_request_duration_seconds.labels(method=method, endpoint=endpoint).observe(dt)
+    except Exception:
+        pass
+    return response
+
+
 # ─── REST Routes ───
+
+def load_gateway_config():
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    return {
+        'api_gateway': cfg.get('api_gateway', {}),
+        'trade_query': cfg.get('trade_query', {}),
+    }
+
+
+def require_readonly_api_key():
+    cfg = load_gateway_config()
+    env_name = cfg.get('api_gateway', {}).get('readonly_api_key_env', 'READONLY_API_KEY')
+    expected_key = os.getenv(env_name)
+    if not expected_key:
+        return jsonify({'error': 'readonly api key not configured'}), 503
+    provided_key = request.headers.get('X-API-Key')
+    if not provided_key or not hmac.compare_digest(provided_key, expected_key):
+        return jsonify({'error': 'unauthorized'}), 401
+    return None
+
+
+def _parse_yyyy_mm_dd(value):
+    try:
+        parsed = datetime.strptime(value, '%Y-%m-%d')
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def parse_trade_query_range():
+    cfg = load_gateway_config().get('trade_query', {})
+    default_days = int(cfg.get('default_days', 7))
+    max_days = int(cfg.get('max_days', 90))
+
+    from_arg = request.args.get('from')
+    to_arg = request.args.get('to')
+    if from_arg or to_arg:
+        if not from_arg or not to_arg:
+            return None, None, {'error': 'invalid date format'}
+        from_dt = _parse_yyyy_mm_dd(from_arg)
+        to_dt = _parse_yyyy_mm_dd(to_arg)
+        if from_dt is None or to_dt is None:
+            return None, None, {'error': 'invalid date format'}
+        if from_dt > to_dt:
+            return None, None, {'error': 'from must be before to'}
+        if (to_dt - from_dt).days > max_days:
+            return None, None, {'error': f'date range too large, max {max_days} days'}
+        return from_dt, to_dt, None
+
+    days_arg = request.args.get('days', default_days)
+    try:
+        days = int(days_arg)
+    except (TypeError, ValueError):
+        return None, None, {'error': 'invalid date format'}
+    if days <= 0:
+        return None, None, {'error': 'invalid date format'}
+    if days > max_days:
+        return None, None, {'error': f'date range too large, max {max_days} days'}
+    to_dt = datetime.now(timezone.utc)
+    from_dt = to_dt - timedelta(days=days)
+    return from_dt, to_dt, None
+
+
+def service_result_to_response(result):
+    if isinstance(result, dict) and result.get('error') == 'MT5 not connected':
+        return jsonify(result), 503
+    if isinstance(result, dict) and result.get('error'):
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+@app.route('/api/v1/account')
+def get_account():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    return service_result_to_response(account_svc.get_account())
+
+
+@app.route('/api/v1/positions')
+def get_positions():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    symbol = request.args.get('symbol')
+    return service_result_to_response(account_svc.get_positions(symbol=symbol))
+
+
+@app.route('/api/v1/history/deals')
+def get_history_deals():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    from_dt, to_dt, parse_error = parse_trade_query_range()
+    if parse_error:
+        return jsonify(parse_error), 400
+    summary = request.args.get('summary', '').lower() == 'true'
+    result = account_svc.get_deals(from_dt=from_dt, to_dt=to_dt, limit=None, include_summary=summary)
+    return service_result_to_response(result)
+
+
+@app.route('/api/v1/history/orders')
+def get_history_orders():
+    auth_error = require_readonly_api_key()
+    if auth_error:
+        return auth_error
+    from_dt, to_dt, parse_error = parse_trade_query_range()
+    if parse_error:
+        return jsonify(parse_error), 400
+    return service_result_to_response(account_svc.get_history_orders(from_dt, to_dt))
 
 @app.route('/api/v1/ticks/<symbol>')
 def get_tick(symbol):
-    symbol = symbol.upper()
+    # 移除 .upper() - services 存的是 logical name（原樣從 settings.yaml）
     with tick_lock:
         tick = latest_ticks.get(symbol)
     if tick:
@@ -74,7 +225,7 @@ def get_tick(symbol):
 
 @app.route('/api/v1/rates/<symbol>')
 def get_rates(symbol):
-    symbol = symbol.upper()
+    # 移除 .upper() - CSV 檔名用的是 logical name
     timeframe = request.args.get('timeframe', 'M5')
     days = request.args.get('days', 0, type=int)
     limit = request.args.get('limit', 0, type=int)
@@ -117,13 +268,17 @@ def query_rates_by_range(symbol):
     if not mt5_client.ensure_connected():
         return jsonify({'error': 'MT5 not connected'}), 503
 
+    # Resolve symbol
+    mt5_client.init_resolver([symbol])
+    broker_symbol = mt5_client.resolve(symbol)
+
     mt5 = mt5_client.mt5
     tf = getattr(mt5, f'TIMEFRAME_{timeframe}', None)
     if tf is None:
         return jsonify({'error': f'Unknown timeframe: {timeframe}'}), 400
 
     try:
-        rates = mt5_client.call(lambda m: m.copy_rates_range(symbol, tf, start_dt, end_dt))
+        rates = mt5_client.call(lambda m: m.copy_rates_range(broker_symbol, tf, start_dt, end_dt))
     except Exception as e:
         return jsonify({'error': f'MT5 query failed: {str(e)}'}), 500
 
@@ -146,6 +301,15 @@ def query_rates_by_range(symbol):
 
 @app.route('/api/v1/health')
 def health():
+    # 更新帳戶 metrics
+    try:
+        balance_info = account_svc.get_balance()
+        if balance_info and 'balance' in balance_info:
+            metrics.mt5_account_balance.set(balance_info['balance'])
+            metrics.mt5_account_equity.set(balance_info['equity'])
+    except Exception:
+        pass
+
     with tick_lock:
         tick_count = len(latest_ticks)
     return jsonify({
@@ -154,6 +318,22 @@ def health():
         'symbols_tracked': list(latest_ticks.keys()),
         'timestamp': datetime.now(timezone.utc).isoformat()
     })
+
+
+@app.route('/metrics')
+@app.route('/api/v1/metrics')
+def prometheus_metrics():
+    """Prometheus metrics export endpoint."""
+    # 更新 uptime metric
+    metrics.service_uptime_seconds.set(time_module.time() - _start_time)
+    # 更新連接狀態
+    try:
+        with tick_lock:
+            has_ticks = len(latest_ticks) > 0
+        metrics.mt5_connected.set(1 if has_ticks else 0)
+    except Exception:
+        metrics.mt5_connected.set(0)
+    return metrics.generate_latest(), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 
 @app.route('/api/v1/symbols')
@@ -168,12 +348,17 @@ def list_symbols():
         if not account_svc.mt5_client.ensure_connected():
             return jsonify({'symbols': cfg_symbols, 'source': 'config'})
 
+        # Lazy init resolver on account_svc's mt5_client
+        if not hasattr(account_svc.mt5_client, '_resolver') or account_svc.mt5_client._resolver is None:
+            account_svc.mt5_client.init_resolver(cfg_symbols)
+
         result = []
         for name in cfg_symbols:
-            info = account_svc.mt5_client.call(lambda m: m.symbol_info(name))
+            broker_name = account_svc.mt5_client.resolve(name)
+            info = account_svc.mt5_client.call(lambda m: m.symbol_info(broker_name))
             if info:
                 result.append({
-                    'name': info.name,
+                    'name': name,  # 保持 logical name
                     'digits': info.digits,
                     'spread': info.spread,
                     'description': info.description if hasattr(info, 'description') else '',
@@ -206,7 +391,7 @@ def handle_connect():
 
 @socketio.on('subscribe')
 def handle_subscribe(data):
-    symbol = data.get('symbol', '').upper()
+    symbol = data.get('symbol', '')  # 移除 .upper()
     if symbol:
         join_room(symbol)
         emit('subscribed', {'symbol': symbol})
@@ -219,10 +404,12 @@ def handle_subscribe(data):
 
 @socketio.on('unsubscribe')
 def handle_unsubscribe(data):
-    symbol = data.get('symbol', '').upper()
+    symbol = data.get('symbol', '')  # 移除 .upper()
     if symbol:
         print(f'[WS] Client unsubscribed from {symbol}')
 
+
+_start_time = time_module.time()
 
 # ─── Main ───
 

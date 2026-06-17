@@ -19,6 +19,8 @@ services:
   python-runner:
     image: jerry/mt5-custom:v1
     container_name: python-runner
+    environment:
+      READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
     volumes:
       # 將整個專案代碼映射到 /app
       - ..:/app

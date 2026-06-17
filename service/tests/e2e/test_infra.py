@@ -91,3 +91,41 @@ class TestMT5Client:
         assert info is not None, "account_info() should return a result"
         assert hasattr(info, 'balance'), "account_info should have 'balance' attribute"
         assert isinstance(info.balance, (int, float)), "balance should be numeric"
+
+    def test_mt5_client_resolver_init(self):
+        """init_resolver should succeed after connection"""
+        import sys
+        sys.path.insert(0, '/app')
+        from service.core.mt5_client import MT5Client
+        c = MT5Client()
+        assert c.ensure_connected(), "Must be connected"
+        c.init_resolver(["XAUUSDm", "BTCUSDm"])
+        assert c._resolver is not None, "Resolver should be initialized"
+        assert c._resolver._initialized, "Resolver should be marked as initialized"
+
+    def test_mt5_client_resolve_exact(self):
+        """resolve() should return exact match when symbol exists in broker"""
+        import sys
+        sys.path.insert(0, '/app')
+        from service.core.mt5_client import MT5Client
+        c = MT5Client()
+        assert c.ensure_connected(), "Must be connected"
+        all_symbols = c._mt5.symbols_get()
+        known = all_symbols[0].name
+        c.init_resolver([known])
+        resolved = c.resolve(known)
+        assert resolved == known, f"Exact match failed: {resolved} != {known}"
+
+    def test_mt5_client_resolve_fuzzy(self):
+        """resolve() should fallback to fuzzy match when exact match fails"""
+        import sys
+        sys.path.insert(0, '/app')
+        from service.core.mt5_client import MT5Client
+        c = MT5Client()
+        assert c.ensure_connected(), "Must be connected"
+        all_symbols = c._mt5.symbols_get()
+        known = all_symbols[0].name
+        logical = known + 'm'  # Add 'm' suffix to test fuzzy stripping
+        c.init_resolver([logical])
+        resolved = c.resolve(logical)
+        assert resolved == known, f"Fuzzy match failed: expected {known}, got {resolved}"

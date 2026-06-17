@@ -21,6 +21,7 @@ class MT5Client:
         self._lock = threading.Lock()
         self._connector = None
         self._mt5 = None
+        self._resolver = None
 
     def ensure_connected(self):
         """檢查連線狀態，斷線時自動重連。多 thread 安全。"""
@@ -67,6 +68,31 @@ class MT5Client:
                     pass
                 self._mt5 = None
                 self._connector = None
+
+    def init_resolver(self, configured_symbols):
+        """初始化 SymbolResolver，建立 symbol 對照表。
+
+        必須在 ensure_connected() 之後呼叫（需已取得 _mt5）。
+        """
+        if self._mt5 is None:
+            raise RuntimeError("MT5 not connected — call ensure_connected() first")
+        from service.core.symbol_resolver import SymbolResolver
+        self._resolver = SymbolResolver()
+        self._resolver.initialize(self._mt5, configured_symbols)
+
+    def resolve(self, logical_name):
+        """將 logical name 解析為 broker 實際名稱。
+
+        若 resolver 未初始化，回傳原名稱（graceful fallback）。
+        """
+        if self._resolver is None:
+            return logical_name
+        return self._resolver.resolve(logical_name)
+
+    def refresh_resolver(self, configured_symbols):
+        """在 reset() 重連後重新初始化 resolver。"""
+        if self._resolver is not None and self._mt5 is not None:
+            self._resolver.refresh(self._mt5, configured_symbols)
 
     def shutdown(self):
         """優雅關閉 MT5 連線。"""
