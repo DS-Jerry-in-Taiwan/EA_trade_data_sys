@@ -89,6 +89,13 @@ class MT5Client:
             return logical_name
         return self._resolver.resolve(logical_name)
 
+    def is_resolved(self, logical_name):
+        """Return whether resolver initialization produced an explicit mapping."""
+        return (
+            self._resolver is not None
+            and logical_name in self._resolver.mapping
+        )
+
     def refresh_resolver(self, configured_symbols):
         """在 reset() 重連後重新初始化 resolver。"""
         if self._resolver is not None and self._mt5 is not None:

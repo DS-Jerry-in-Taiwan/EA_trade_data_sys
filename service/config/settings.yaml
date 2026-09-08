@@ -12,15 +12,21 @@ tick_service:
 
 history_service:
   enabled: true
+  minimum_bars:
+    M5: 500
+    M15: 200
+    H1: 500
+    D1: 200
+  fetch_margin_bars: 20
   symbols:
     - name: "XAUUSDm"
-      timeframes: ["M5", "M15", "H1"]
+      timeframes: ["M5", "M15", "H1", "D1"]
     - name: "EURUSDm"
-      timeframes: ["M5", "M15", "H1"]
+      timeframes: ["M5", "M15", "H1", "D1"]
     - name: "GBPUSDm"
-      timeframes: ["M5", "M15", "H1"]
+      timeframes: ["M5", "M15", "H1", "D1"]
     - name: "BTC"
-      timeframes: ["M5", "M15", "H1"]
+      timeframes: ["M5", "M15", "H1", "D1"]
   update_interval_seconds: 60
   data_path: "/app/service/data/history"
 

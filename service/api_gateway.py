@@ -5,6 +5,8 @@ import time
 import threading
 import yaml
 import hmac
+import math
+import pandas as pd
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_file
 from flask_socketio import SocketIO, emit, join_room
@@ -26,6 +28,17 @@ latest_ticks = {}
 tick_lock = threading.Lock()
 history_path = '/app/service/data/history'
 cfg_path = '/app/service/config/settings.yaml'
+
+SUPPORTED_RATES_TIMEFRAMES = frozenset({'M5', 'M15', 'H1', 'D1'})
+MAX_RATES_LIMIT = 5000
+MAX_RATES_DAYS = 36500
+RATES_COLUMNS = ('time', 'open', 'high', 'low', 'close', 'tick_volume')
+RATES_SOURCE_COLUMN = 'source_symbol'
+RATES_TIMEFRAME_SECONDS = {'M5': 300, 'M15': 900, 'H1': 3600, 'D1': 86400}
+
+
+def _utc_now():
+    return pd.Timestamp.now(tz='UTC')
 
 
 class TickFetcher(threading.Thread):
@@ -225,26 +238,137 @@ def get_tick(symbol):
 
 @app.route('/api/v1/rates/<symbol>')
 def get_rates(symbol):
-    # 移除 .upper() - CSV 檔名用的是 logical name
-    timeframe = request.args.get('timeframe', 'M5')
-    days = request.args.get('days', 0, type=int)
-    limit = request.args.get('limit', 0, type=int)
+    # Symbol names retain their configured spelling; only timeframe is normalized.
+    timeframe = request.args.get('timeframe', 'M5').strip().upper()
+    if timeframe not in SUPPORTED_RATES_TIMEFRAMES:
+        return jsonify({
+            'error': 'Invalid timeframe',
+            'supported_timeframes': sorted(SUPPORTED_RATES_TIMEFRAMES),
+        }), 400
+
+    limit_arg = request.args.get('limit')
+    limit = None
+    if limit_arg is not None:
+        try:
+            if not limit_arg.strip() or any(
+                    char not in '0123456789' for char in limit_arg.strip()):
+                raise ValueError
+            limit = int(limit_arg)
+        except (AttributeError, TypeError, ValueError):
+            return jsonify({'error': f'limit must be an integer between 1 and {MAX_RATES_LIMIT}'}), 400
+        if not 1 <= limit <= MAX_RATES_LIMIT:
+            return jsonify({'error': f'limit must be an integer between 1 and {MAX_RATES_LIMIT}'}), 400
+
+    days_arg = request.args.get('days', '0')
+    try:
+        if not days_arg.strip() or any(char not in '0123456789' for char in days_arg.strip()):
+            raise ValueError
+        days = int(days_arg)
+    except (AttributeError, TypeError, ValueError):
+        return jsonify({'error': f'days must be an integer between 0 and {MAX_RATES_DAYS}'}), 400
+    if not 0 <= days <= MAX_RATES_DAYS:
+        return jsonify({'error': f'days must be an integer between 0 and {MAX_RATES_DAYS}'}), 400
 
     filepath = os.path.join(history_path, f'{symbol}_{timeframe}.csv')
     if not os.path.exists(filepath):
         return jsonify({'error': 'Data not found', 'symbol': symbol, 'timeframe': timeframe}), 404
 
-    import pandas as pd
-    df = pd.read_csv(filepath)
+    ready_path = f'{filepath}.ready'
+    try:
+        with open(ready_path, encoding='utf-8') as ready_file:
+            published_source = ready_file.read().strip()
+    except OSError:
+        return jsonify({'error': 'Market data not ready'}), 503
+    if not published_source:
+        return jsonify({'error': 'Market data not ready'}), 503
+
+    try:
+        df = pd.read_csv(filepath)
+    except Exception:
+        # Do not expose the internal cache path or parser details.
+        return jsonify({'error': 'Unable to read market data'}), 500
+
+    missing_columns = [
+        column for column in (*RATES_COLUMNS, RATES_SOURCE_COLUMN)
+        if column not in df.columns
+    ]
+    if missing_columns:
+        return jsonify({
+            'error': 'Invalid market data',
+            'detail': f'Missing required columns: {", ".join(missing_columns)}',
+        }), 422
+
+    source_values = df[RATES_SOURCE_COLUMN]
+    source_symbols = set(source_values.dropna().astype(str))
+    if (
+        source_values.isna().any()
+        or any(not value.strip() for value in source_symbols)
+        or len(source_symbols) != 1
+        or source_symbols != {published_source}
+    ):
+        return jsonify({
+            'error': 'Invalid market data',
+            'detail': 'CSV source identity is missing or ambiguous',
+        }), 422
+
+    validated = df.loc[:, RATES_COLUMNS].copy()
+    numeric_times = pd.to_numeric(validated['time'], errors='coerce')
+    parsed_times = pd.to_datetime(validated['time'], utc=True, errors='coerce')
+    numeric_mask = numeric_times.notna()
+    if numeric_mask.any():
+        parsed_times.loc[numeric_mask] = pd.to_datetime(
+            numeric_times.loc[numeric_mask], unit='s', utc=True, errors='coerce'
+        )
+    validated['time'] = parsed_times
+    numeric_columns = RATES_COLUMNS[1:]
+    for column in numeric_columns:
+        validated[column] = pd.to_numeric(validated[column], errors='coerce')
+
+    invalid_time = validated['time'].isna().any()
+    invalid_numbers = validated.loc[:, numeric_columns].isna().any().any()
+    non_finite_numbers = any(
+        not value.map(lambda item: math.isfinite(float(item))).all()
+        for _, value in validated.loc[:, numeric_columns].items()
+    )
+    invalid_volume = (validated['tick_volume'] < 0).any()
+    invalid_ohlc = (
+        (validated['high'] < validated[['open', 'close', 'low']].max(axis=1))
+        | (validated['low'] > validated[['open', 'close', 'high']].min(axis=1))
+    ).any()
+    if invalid_time or invalid_numbers or non_finite_numbers or invalid_volume or invalid_ohlc:
+        return jsonify({
+            'error': 'Invalid market data',
+            'detail': 'CSV contains invalid time or OHLCV values',
+        }), 422
+
+    if validated['time'].duplicated().any() or not validated['time'].is_monotonic_increasing:
+        return jsonify({
+            'error': 'Invalid market data',
+            'detail': 'CSV timestamps must be ordered and unique',
+        }), 422
+    timeframe_seconds = RATES_TIMEFRAME_SECONDS[timeframe]
+    # Do not depend on pandas' internal datetime resolution (ns/us varies by version).
+    epoch_seconds = validated['time'].map(lambda value: int(value.timestamp()))
+    misaligned = (epoch_seconds % timeframe_seconds != 0).any()
+    cadence = validated['time'].diff().dropna().dt.total_seconds()
+    invalid_cadence = (cadence % timeframe_seconds != 0).any()
+    now = _utc_now()
+    future_or_forming = (
+        validated['time'] + pd.Timedelta(seconds=timeframe_seconds) > now
+    ).any()
+    if misaligned or invalid_cadence or future_or_forming:
+        return jsonify({
+            'error': 'Invalid market data',
+            'detail': 'CSV contains future, forming, misaligned, or invalid-cadence bars',
+        }), 422
 
     if days > 0:
-        cutoff = datetime.now() - timedelta(days=days)
-        df = df[pd.to_datetime(df['time']) >= cutoff]
-
-    if limit > 0:
-        df = df.tail(limit)
-
-    return jsonify(json.loads(df.to_json(orient='records')))
+        cutoff = now - pd.Timedelta(days=days)
+        validated = validated[validated['time'] >= cutoff]
+    if limit is not None:
+        validated = validated.tail(limit)
+    records = json.loads(validated.to_json(orient='records', date_format='iso'))
+    return jsonify(records)
 
 
 @app.route('/api/v1/rates/<symbol>/query')

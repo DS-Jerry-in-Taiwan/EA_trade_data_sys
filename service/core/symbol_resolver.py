@@ -12,6 +12,9 @@ import threading
 class SymbolResolver:
     """動態 Symbol 解析器。精確比對優先，模糊比對作為 fallback。"""
 
+    CRYPTO_BASES = frozenset({'BTC', 'ETH'})
+    CRYPTO_QUOTES = ('USD', 'USDT')
+
     def __init__(self):
         self._mapping = {}
         self._unresolved = []
@@ -50,6 +53,19 @@ class SymbolResolver:
 
     def _resolve_one(self, logical):
         """單一 symbol 解析流程。"""
+        # Logical crypto names are business aliases, not literal broker
+        # symbols. Resolve them first using a fixed market preference.
+        crypto_base = logical.upper()
+        if crypto_base in self.CRYPTO_BASES:
+            for quote in self.CRYPTO_QUOTES:
+                for candidate in (f'{crypto_base}{quote}m', f'{crypto_base}{quote}'):
+                    broker_symbol = self._find_case_insensitive(candidate)
+                    if broker_symbol:
+                        print(
+                            f'[SymbolResolver] Crypto alias: '
+                            f'"{logical}" → "{broker_symbol}"'
+                        )
+                        return broker_symbol
         # ① 精確比對
         if logical in self._broker_symbols:
             return logical
@@ -62,11 +78,22 @@ class SymbolResolver:
             print(f'[SymbolResolver] Fuzzy match: "{logical}" → "{logical + "m"}"')
             return logical + 'm'
         # ④ 大小寫不敏感
-        for bs in self._broker_symbols:
-            if bs.lower() == logical.lower():
-                print(f'[SymbolResolver] Case-insensitive match: "{logical}" → "{bs}"')
-                return bs
+        case_insensitive = self._find_case_insensitive(logical)
+        if case_insensitive:
+            print(
+                f'[SymbolResolver] Case-insensitive match: '
+                f'"{logical}" → "{case_insensitive}"'
+            )
+            return case_insensitive
         return None
+
+    def _find_case_insensitive(self, candidate):
+        matches = sorted(
+            symbol
+            for symbol in self._broker_symbols
+            if symbol.casefold() == candidate.casefold()
+        )
+        return matches[0] if matches else None
 
     @property
     def mapping(self):
