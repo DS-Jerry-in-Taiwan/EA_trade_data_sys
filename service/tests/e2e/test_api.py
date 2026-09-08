@@ -11,9 +11,18 @@ import yaml
 try:
     with open("/app/service/config/settings.yaml") as f:
         _cfg = yaml.safe_load(f)
-    _KNOWN_SYMBOLS = set(_cfg.get("tick_service", {}).get("symbols", []))
+    _KNOWN_SYMBOLS = {
+        item["name"] for item in _cfg.get("history_service", {}).get("symbols", [])
+    }
 except Exception:
-    _KNOWN_SYMBOLS = {"XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"}  # fallback
+    _KNOWN_SYMBOLS = {"XAUUSDm", "BTC", "EURUSDm", "GBPUSDm"}  # fallback
+
+_RATES_REQUIREMENTS = {"M5": 500, "M15": 200, "H1": 500, "D1": 200}
+_RATES_CASES = [
+    (symbol, timeframe, count)
+    for symbol in sorted(_KNOWN_SYMBOLS)
+    for timeframe, count in _RATES_REQUIREMENTS.items()
+]
 
 
 class TestHealthEndpoint:
@@ -83,25 +92,22 @@ class TestTicksEndpoint:
 class TestRatesEndpoint:
     """C4: /rates/<symbol>"""
 
-    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
-    def test_rates_status(self, api, symbol):
-        resp = api(f"/rates/{symbol}")
-        assert resp.status_code in (200, 404, 502), f"Unexpected status {resp.status_code} for {symbol}"
+    @pytest.mark.parametrize("symbol,timeframe,count", _RATES_CASES)
+    def test_rates_status(self, api, symbol, timeframe, count):
+        resp = api(f"/rates/{symbol}?timeframe={timeframe}&limit={count}")
+        assert resp.status_code == 200, (
+            f"Required rates unavailable for {symbol} {timeframe}: HTTP {resp.status_code}"
+        )
 
-    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
-    def test_rates_data_shape(self, api, symbol):
-        resp = api(f"/rates/{symbol}")
-        if resp.status_code != 200:
-            pytest.skip(f"Rates endpoint not available for {symbol} (HTTP {resp.status_code})")
+    @pytest.mark.parametrize("symbol,timeframe,count", _RATES_CASES)
+    def test_rates_data_shape(self, api, symbol, timeframe, count):
+        resp = api(f"/rates/{symbol}?timeframe={timeframe}&limit={count}")
+        assert resp.status_code == 200
         data = resp.json()
-        if not data:
-            pytest.skip(f"No rate data for {symbol}")
-        # API may return a plain array (CSV cache) or an envelope object.
-        records = data.get("data", data) if isinstance(data, dict) else data
-        if not records:
-            pytest.skip(f"Empty rate data for {symbol}")
-        record = records[0] if isinstance(records, list) else data
-        for field in ("time", "open", "high", "low", "close"):
+        assert isinstance(data, list)
+        assert len(data) >= count
+        record = data[0]
+        for field in ("time", "open", "high", "low", "close", "tick_volume"):
             assert field in record, f"Rate record missing '{field}' for {symbol}"
 
 

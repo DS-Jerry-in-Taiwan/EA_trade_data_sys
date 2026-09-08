@@ -5,6 +5,7 @@ Check that CSV history data is well-formed, chronological, and covers expected
 symbols/timeframes.
 """
 import pandas as pd
+import numpy as np
 import pytest
 from datetime import datetime, timezone
 
@@ -16,10 +17,14 @@ import yaml
 try:
     with open("/app/service/config/settings.yaml") as f:
         _cfg = yaml.safe_load(f)
-    EXPECTED_SYMBOLS = set(_cfg.get("tick_service", {}).get("symbols", []))
+    EXPECTED_SYMBOLS = {
+        item["name"] for item in _cfg.get("history_service", {}).get("symbols", [])
+    }
 except Exception:
-    EXPECTED_SYMBOLS = {"XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"}  # fallback
-EXPECTED_TIMEFRAMES = {"M5", "M15", "H1"}
+    EXPECTED_SYMBOLS = {"XAUUSDm", "BTC", "EURUSDm", "GBPUSDm"}  # fallback
+EXPECTED_TIMEFRAMES = {"M5", "M15", "H1", "D1"}
+TIMEFRAME_SECONDS = {"M5": 300, "M15": 900, "H1": 3600, "D1": 86400}
+MAX_OPEN_AGE_SECONDS = {"M5": 900, "M15": 2700, "H1": 10800, "D1": 259200}
 
 
 @pytest.fixture(scope="module")
@@ -54,10 +59,12 @@ class TestDataShape:
 
     def test_all_expected_timeframes_present(self, history_data):
         """The set of known timeframes must be present in the data"""
-        found_tfs = set()
-        for key in history_data:
-            found_tfs.add(key.split("_")[1])
-        missing = EXPECTED_TIMEFRAMES - found_tfs
+        expected = {
+            f"{symbol}_{timeframe}"
+            for symbol in EXPECTED_SYMBOLS
+            for timeframe in EXPECTED_TIMEFRAMES
+        }
+        missing = expected - set(history_data)
         assert not missing, f"Missing timeframes: {missing}"
 
     def test_required_columns_present(self, history_data):
@@ -78,7 +85,7 @@ class TestDataShape:
 
 class TestChronology:
 
-    MIN_ROWS = {"M5": 50, "M15": 30, "H1": 24}
+    MIN_ROWS = {"M5": 500, "M15": 200, "H1": 500, "D1": 200}
 
     def test_minimum_rows(self, history_data):
         """Each timeframe should have at least a minimum number of rows"""
@@ -94,23 +101,41 @@ class TestChronology:
         """Time column must be strictly increasing"""
         bad = {}
         for name, df in history_data.items():
-            if not (df["time"].diff().dropna() >= pd.Timedelta(0)).all():
+            if not (df["time"].diff().dropna() > pd.Timedelta(0)).all():
                 bad[name] = "non-monotonic time"
         assert not bad, f"Non-monotonic time: {bad}"
 
+    def test_timeframe_cadence_and_crypto_continuity(self, history_data):
+        bad = {}
+        for name, df in history_data.items():
+            symbol, timeframe = name.rsplit("_", 1)
+            interval = TIMEFRAME_SECONDS[timeframe]
+            deltas = df["time"].diff().dropna().dt.total_seconds()
+            if (deltas % interval != 0).any():
+                bad[name] = "non-integral timeframe cadence"
+            elif symbol.upper().startswith(("BTC", "ETH", "CRYPTO")) and (
+                deltas != interval
+            ).any():
+                bad[name] = "continuous-market gap"
+        assert not bad, f"Invalid cadence: {bad}"
+
     def test_recent_data(self, history_data):
-        """Latest row in each configured-symbol CSV must be within last 86400s"""
+        """Caches must be current; bounded weekend tolerance applies off-session."""
         stale = {}
         now = pd.Timestamp.now(tz=timezone.utc)
         for name, df in history_data.items():
-            # Only check configured symbols (with 'm' suffix)
-            if not name.split("_")[0].endswith("m"):
-                continue
             last_time = df["time"].max()
             if last_time.tz is None:
                 last_time = last_time.tz_localize("UTC")
             delta = (now - last_time).total_seconds()
-            if delta > 86400:
+            symbol, timeframe = name.rsplit("_", 1)
+            maximum_age = MAX_OPEN_AGE_SECONDS[timeframe]
+            if (
+                not symbol.upper().startswith(("BTC", "ETH", "CRYPTO"))
+                and now.weekday() in {5, 6}
+            ):
+                maximum_age = 259200
+            if delta > maximum_age:
                 stale[name] = f"{delta:.0f}s old"
         assert not stale, f"Stale data: {stale}"
 
@@ -121,10 +146,17 @@ class TestValues:
         """OHLC values must be positive and high >= low"""
         bad = {}
         for name, df in history_data.items():
-            ohlc_ok = (df[["open", "high", "low", "close"]] > 0).all().all()
+            values = df[["open", "high", "low", "close", "tick_volume"]]
+            ohlc_ok = np.isfinite(values.to_numpy(dtype=float)).all() and (
+                df[["open", "high", "low", "close"]] > 0
+            ).all().all()
             if not ohlc_ok:
                 bad[name] = "non-positive OHLC values found"
-            high_ge_low = (df["high"] >= df["low"]).all()
-            if not high_ge_low:
-                bad[name] = bad.get(name, "") + "; high < low found"
+            price_order = (
+                (df["high"] >= df[["open", "close", "low"]].max(axis=1)).all()
+                and (df["low"] <= df[["open", "close", "high"]].min(axis=1)).all()
+                and (df["tick_volume"] >= 0).all()
+            )
+            if not price_order:
+                bad[name] = bad.get(name, "") + "; OHLCV invariant violation"
         assert not bad, f"Unreasonable OHLC: {bad}"

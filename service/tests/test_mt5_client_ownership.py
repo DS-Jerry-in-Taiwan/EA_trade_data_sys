@@ -10,7 +10,6 @@ import yaml
 connection_manager = types.ModuleType('core.connection_manager')
 connection_manager.MT5Connector = object
 sys.modules.setdefault('core.connection_manager', connection_manager)
-sys.modules.setdefault('pandas', types.ModuleType('pandas'))
 
 from service.account_service import AccountService
 from service.history_service import HistoryService
