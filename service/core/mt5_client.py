@@ -68,6 +68,11 @@ class MT5Client:
             self._mt5 = mt5
             self._refresh_resolver_unsafe()
             return True
+        except ConnectionError:
+            self._close_connection(None, connector)
+            self._connector = None
+            self._mt5 = None
+            return False
         except Exception:
             self._close_connection(None, connector)
             self._connector = None

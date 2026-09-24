@@ -59,6 +59,23 @@ def close_mt5_connection(mt5):
             pass
 
 
+def configure_mt5_transport_timeout(mt5, timeout):
+    """Override pymt5linux's 300s RPyC sync timeout on its real transport."""
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('connection.timeout must be a positive number') from exc
+    if timeout <= 0:
+        raise ValueError('connection.timeout must be a positive number')
+
+    try:
+        transport = object.__getattribute__(mt5, '_MetaTrader5__conn')
+        config = object.__getattribute__(transport, '_config')
+    except (AttributeError, TypeError) as exc:
+        raise ConnectionError('Unable to configure MT5 transport timeout') from exc
+    config['sync_request_timeout'] = timeout
+
+
 class MT5Connector:
     def __init__(self, settings_path=None, accounts_path=None):
         settings_path = settings_path or os.getenv('MT5_SETTINGS_PATH', '/app/service/config/settings.yaml')
@@ -73,6 +90,15 @@ class MT5Connector:
             self.settings = yaml.safe_load(f)
         with open(accounts_path, 'r') as f:
             self.accounts = json.load(f)
+
+        connection = self.settings.get('connection', {})
+        self.timeout = connection.get('timeout', 10)
+        try:
+            self.timeout = float(self.timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('connection.timeout must be a positive number') from exc
+        if self.timeout <= 0:
+            raise ValueError('connection.timeout must be a positive number')
             
     def get_active_account(self):
         active = self.accounts['active_provider']
@@ -94,6 +120,7 @@ class MT5Connector:
         initialized = False
         try:
             mt5 = MetaTrader5(host=host, port=port)
+            configure_mt5_transport_timeout(mt5, self.timeout)
             account = self.get_active_account()
             initialized = mt5.initialize(
                 login=account['login'],

@@ -70,6 +70,12 @@ class FailingConnector(FakeConnector):
         raise OSError('connection lost')
 
 
+class ExpectedFailingConnector(FakeConnector):
+    def connect(self):
+        self.connect_calls += 1
+        raise ConnectionError('MT5 unavailable')
+
+
 class ConnectorFactory:
     def __init__(self, connections):
         self.connections = iter(connections)
@@ -154,11 +160,19 @@ def test_failed_connect_cleans_connector_and_can_retry():
     assert client.ensure_connected() is True
 
 
-def test_connect_exception_closes_connector():
+def test_unexpected_connect_exception_still_raises_and_cleans_connector():
     connector = FailingConnector(None)
     client = MT5Client(lambda: connector)
     with pytest.raises(OSError, match='connection lost'):
         client.ensure_connected()
+    assert connector.close_calls == 1
+
+
+def test_expected_connection_error_returns_false_and_cleans_connector():
+    connector = ExpectedFailingConnector(None)
+    client = MT5Client(lambda: connector)
+
+    assert client.ensure_connected() is False
     assert connector.close_calls == 1
 
 

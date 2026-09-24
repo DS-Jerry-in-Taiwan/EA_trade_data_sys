@@ -25,6 +25,7 @@ class FakeMT5:
 class FakeTransport:
     def __init__(self):
         self.close_calls = 0
+        self._config = {'sync_request_timeout': 300}
 
     def close(self):
         self.close_calls += 1
@@ -72,6 +73,7 @@ def config_files(tmp_path):
             'connection': {
                 'default_host': 'mt5-server',
                 'port': 8001,
+                'timeout': 10,
             },
         })
     )
@@ -102,7 +104,7 @@ def test_connect_uses_only_configured_docker_dns_host(
 ):
     resolution_calls = []
     constructor_calls = []
-    mt5 = FakeMT5()
+    mt5 = RealisticPymt5linuxMT5()
 
     monkeypatch.setattr(
         connection_manager.socket,
@@ -122,6 +124,23 @@ def test_connect_uses_only_configured_docker_dns_host(
     assert resolution_calls == [('mt5-server', 8001)]
     assert constructor_calls == [{'host': 'mt5-server', 'port': 8001}]
     assert mt5.shutdown_calls == 0
+    assert mt5.transport._config['sync_request_timeout'] == 10
+
+
+@pytest.mark.parametrize('timeout', [0, -1, 'invalid', None])
+def test_invalid_transport_timeout_is_rejected(
+    connection_manager, config_files, timeout
+):
+    settings_path, accounts_path = config_files
+    settings = yaml.safe_load(settings_path.read_text())
+    settings['connection']['timeout'] = timeout
+    settings_path.write_text(yaml.safe_dump(settings))
+
+    with pytest.raises(ValueError, match='connection.timeout must be a positive number'):
+        connection_manager.MT5Connector(
+            settings_path=str(settings_path),
+            accounts_path=str(accounts_path),
+        )
 
 
 def test_resolution_failure_does_not_attempt_another_host(
