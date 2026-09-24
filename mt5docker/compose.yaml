@@ -14,6 +14,12 @@ services:
       - 5901:5901
       - 6081:6081
       - 8001:8001
+    healthcheck:
+      test: ["CMD", "/mt5docker/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 150s
     restart: always
 
   python-runner:
@@ -28,5 +34,6 @@ services:
       - "0.0.0.0:8090:8090"
     entrypoint: /app/mt5docker/start_runner.sh
     depends_on:
-      - mt5-server
+      mt5-server:
+        condition: service_healthy
     restart: always
