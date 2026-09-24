@@ -22,6 +22,39 @@ class FakeMT5:
         self.shutdown_calls += 1
 
 
+class FakeTransport:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
+class RealisticPymt5linuxMT5(FakeMT5):
+    """Models pymt5linux: shutdown is remote-only; RPyC is private."""
+
+    def __init__(self, initialize_result=True):
+        super().__init__(initialize_result=initialize_result)
+        self._MetaTrader5__conn = FakeTransport()
+
+    @property
+    def transport(self):
+        return self._MetaTrader5__conn
+
+
+class DynamicRemoteAttributeMT5(RealisticPymt5linuxMT5):
+    def __init__(self):
+        super().__init__()
+        self.synthetic_close_calls = 0
+
+    def __getattr__(self, name):
+        if name == 'close':
+            def synthetic_remote_close():
+                self.synthetic_close_calls += 1
+            return synthetic_remote_close
+        raise AttributeError(name)
+
+
 @pytest.fixture
 def connection_manager(monkeypatch):
     pymt5linux = types.ModuleType('pymt5linux')
@@ -116,7 +149,7 @@ def test_resolution_failure_does_not_attempt_another_host(
 def test_initialization_failure_closes_partial_client(
     connection_manager, config_files, monkeypatch
 ):
-    mt5 = FakeMT5(initialize_result=False)
+    mt5 = RealisticPymt5linuxMT5(initialize_result=False)
     monkeypatch.setattr(
         connection_manager.socket, 'getaddrinfo', lambda *args, **kwargs: [(object(),)]
     )
@@ -126,6 +159,30 @@ def test_initialization_failure_closes_partial_client(
         make_connector(connection_manager, config_files).connect()
 
     assert mt5.shutdown_calls == 1
+    assert mt5.transport.close_calls == 1
+
+
+def test_compatibility_close_is_idempotent_for_private_rpyc_transport(
+    connection_manager,
+):
+    mt5 = RealisticPymt5linuxMT5()
+
+    connection_manager.close_mt5_connection(mt5)
+    connection_manager.close_mt5_connection(mt5)
+
+    assert mt5.shutdown_calls == 1
+    assert mt5.transport.close_calls == 1
+
+
+def test_compatibility_close_ignores_synthetic_remote_close_attribute(
+    connection_manager,
+):
+    mt5 = DynamicRemoteAttributeMT5()
+
+    connection_manager.close_mt5_connection(mt5)
+
+    assert mt5.synthetic_close_calls == 0
+    assert mt5.transport.close_calls == 1
 
 
 def test_proxy_connection_failure_is_reported_for_only_configured_host(

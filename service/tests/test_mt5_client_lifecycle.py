@@ -7,6 +7,18 @@ import pytest
 # Keep these unit tests independent of the container-only pymt5linux package.
 connection_manager = types.ModuleType('core.connection_manager')
 connection_manager.MT5Connector = object
+
+
+def close_mt5_connection(mt5):
+    if mt5 is not None and not getattr(mt5, '_closed', False):
+        mt5._closed = True
+        mt5.shutdown()
+        transport = getattr(mt5, '_MetaTrader5__conn', None)
+        if transport is not None:
+            transport.close()
+
+
+connection_manager.close_mt5_connection = close_mt5_connection
 sys.modules.setdefault('core.connection_manager', connection_manager)
 
 from service.core.mt5_client import MT5Client
@@ -18,6 +30,24 @@ class FakeMT5:
 
     def shutdown(self):
         self.shutdown_calls += 1
+
+
+class FakeTransport:
+    def __init__(self):
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+
+
+class RealisticPymt5linuxMT5(FakeMT5):
+    def __init__(self):
+        super().__init__()
+        self._MetaTrader5__conn = FakeTransport()
+
+    @property
+    def transport(self):
+        return self._MetaTrader5__conn
 
 
 class FakeConnector:
@@ -94,13 +124,14 @@ def test_concurrent_recovery_creates_one_replacement_session():
 
 
 def test_reset_and_shutdown_close_once_and_are_idempotent():
-    mt5 = FakeMT5()
+    mt5 = RealisticPymt5linuxMT5()
     factory = ConnectorFactory([mt5])
     client = MT5Client(factory)
     assert client.ensure_connected()
     client.reset()
     client.shutdown()
     assert mt5.shutdown_calls == 1
+    assert mt5.transport.close_calls == 1
     assert factory.created[0].close_calls == 1
 
 

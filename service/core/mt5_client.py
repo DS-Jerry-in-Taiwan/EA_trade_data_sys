@@ -1,6 +1,6 @@
 import threading
 
-from core.connection_manager import MT5Connector
+from core.connection_manager import MT5Connector, close_mt5_connection
 
 
 class MT5Client:
@@ -76,13 +76,7 @@ class MT5Client:
 
     @staticmethod
     def _close_connection(mt5, connector):
-        if mt5 is not None:
-            shutdown = getattr(mt5, 'shutdown', None)
-            if callable(shutdown):
-                try:
-                    shutdown()
-                except Exception:
-                    pass
+        close_mt5_connection(mt5)
         close = getattr(connector, 'close', None)
         if callable(close):
             try:

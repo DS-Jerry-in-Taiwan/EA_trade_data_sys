@@ -9,6 +9,7 @@ import yaml
 # Unit tests must not import the real pymt5linux transport.
 connection_manager = types.ModuleType('core.connection_manager')
 connection_manager.MT5Connector = object
+connection_manager.close_mt5_connection = lambda mt5: None
 sys.modules.setdefault('core.connection_manager', connection_manager)
 
 from service.account_service import AccountService

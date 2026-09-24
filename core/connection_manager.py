@@ -4,6 +4,61 @@ import json
 import socket
 from pymt5linux import MetaTrader5
 
+
+_CLOSED_MARKER = '_trade_data_connection_closed'
+
+
+def close_mt5_connection(mt5):
+    """Close both MT5 and the transport owned by pymt5linux.
+
+    pymt5linux's ``shutdown()`` only invokes the remote MetaTrader5 shutdown;
+    it does not close the private RPyC connection. Prefer a public ``close``
+    method when the installed wrapper provides one, otherwise close the
+    name-mangled transport used by current pymt5linux releases.
+    """
+    if mt5 is None:
+        return
+
+    # Mark first so cleanup remains idempotent even when either close operation
+    # raises. MetaTrader5 is a local wrapper, so this does not invoke RPyC.
+    try:
+        local_state = object.__getattribute__(mt5, '__dict__')
+        if local_state.get(_CLOSED_MARKER, False):
+            return
+        local_state[_CLOSED_MARKER] = True
+    except Exception:
+        pass
+
+    shutdown = getattr(mt5, 'shutdown', None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:
+            pass
+
+    # Inspect the wrapper class first. Some RPC proxies synthesize arbitrary
+    # instance attributes, so getattr(mt5, 'close') alone is not proof that a
+    # public local transport close API exists.
+    public_close = getattr(type(mt5), 'close', None)
+    if callable(public_close):
+        try:
+            public_close(mt5)
+        except Exception:
+            pass
+        return
+
+    try:
+        transport = object.__getattribute__(mt5, '_MetaTrader5__conn')
+    except (AttributeError, TypeError):
+        transport = None
+    transport_close = getattr(transport, 'close', None)
+    if callable(transport_close):
+        try:
+            transport_close()
+        except Exception:
+            pass
+
+
 class MT5Connector:
     def __init__(self, settings_path=None, accounts_path=None):
         settings_path = settings_path or os.getenv('MT5_SETTINGS_PATH', '/app/service/config/settings.yaml')
@@ -58,7 +113,4 @@ class MT5Connector:
             ) from exc
         finally:
             if mt5 is not None and not initialized:
-                try:
-                    mt5.shutdown()
-                except Exception:
-                    pass
+                close_mt5_connection(mt5)
