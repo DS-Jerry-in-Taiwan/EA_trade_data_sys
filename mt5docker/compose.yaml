@@ -4,6 +4,7 @@ services:
     container_name: mt5-server
     environment:
       - VNC_PWD=jerry1234
+      - MT5_CONFIG_LINUX=/run/mt5/mt5cfg.ini
     volumes:
       # 配置與腳本目錄
       - .:/mt5docker
@@ -11,6 +12,8 @@ services:
       # The same persistent directory is exposed for readiness logs and Wine.
       - "${MT5_DATA_DIR:-./MT5_Data}:/mt5docker/MT5_Data"
       - "${MT5_DATA_DIR:-./MT5_Data}:/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5"
+      # Mount the already-generated config; do not regenerate secrets here.
+      - "${MT5_CONFIG_FILE:-./mt5cfg.ini}:/run/mt5/mt5cfg.ini:ro"
     entrypoint: /mt5docker/start_server.sh
     ports:
       - 5901:5901

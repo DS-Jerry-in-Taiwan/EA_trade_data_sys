@@ -56,8 +56,16 @@ if [ -z "$MT5_EXE" ]; then
     echo '>>> Verify that MT5_DATA_DIR points to the persistent MT5_Data directory before running docker compose.' >&2
     exit 1
 fi
-bash /mt5docker/sync_mt5cfg.sh
-[ -f "$MT5_CONFIG_LINUX" ] || { echo '>>> MT5 config was not generated.' >&2; exit 1; }
+if [ "${MT5_SYNC_CONFIG:-0}" = 1 ] && [ -r /app/service/config/accounts.json ]; then
+    # Legacy opt-in only. Normal deployment consumes the exact read-only file
+    # mounted by MT5_CONFIG_FILE and does not duplicate credentials.
+    bash /mt5docker/sync_mt5cfg.sh
+fi
+[ -f "$MT5_CONFIG_LINUX" ] && [ -r "$MT5_CONFIG_LINUX" ] || {
+    echo '>>> MT5 config is missing or unreadable; refusing to start.' >&2
+    echo '>>> Set MT5_CONFIG_FILE to the existing generated mt5cfg.ini before running docker compose.' >&2
+    exit 1
+}
 MT5_CONFIG_WINDOWS="$(winepath -w "$MT5_CONFIG_LINUX")"
 [ -n "$MT5_CONFIG_WINDOWS" ] || { echo '>>> winepath could not resolve MT5 config.' >&2; exit 1; }
 
