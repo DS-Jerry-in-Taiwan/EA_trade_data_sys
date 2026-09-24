@@ -24,6 +24,8 @@ assert_success exactly_one_normal_terminal
 add_process 102 'C:\Program Files\MetaTrader 5\terminal64.exe' /update
 assert_failure exactly_one_normal_terminal
 [ "$(update_terminal_pids)" = 102 ] || fail 'update terminal was not classified'
+# This is the same fail-closed predicate used by startup and healthcheck.
+[ "$(update_terminal_pids | count_lines)" -gt 0 ] || fail 'LiveUpdate did not fail closed'
 
 clear_processes
 add_process 201 'C:\Program Files\MetaTrader 5\terminal64.exe' /portable
@@ -41,6 +43,21 @@ printf 'LISTEN 0 5 0.0.0.0:8001 0.0.0.0:*\n'
 EOF
 chmod +x "$MOCK_BIN/ss"
 PATH="$MOCK_BIN:$PATH" assert_success rpyc_is_listening
+
+LOG_ROOT="$TMP/logs"; mkdir -p "$LOG_ROOT"
+LOG="$LOG_ROOT/terminal.log"
+SNAPSHOT="$TMP/log.snapshot"
+printf 'old session authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG"
+snapshot_terminal_logs "$LOG_ROOT" "$SNAPSHOT"
+assert_failure log_has_new_authorized_marker "$SNAPSHOT" "$LOG"
+printf 'network scan completed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_failure log_has_new_authorized_marker "$SNAPSHOT" "$LOG"
+printf 'account AUTHORIZED on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_success log_has_new_authorized_marker "$SNAPSHOT" "$LOG"
+
+NEW_LOG="$LOG_ROOT/new-terminal.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$NEW_LOG"
+assert_success log_has_new_authorized_marker "$SNAPSHOT" "$NEW_LOG"
 
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'
 grep -q '/skipupdate' "$ROOT/mt5docker/start_server.sh" || fail 'skip-update switch missing'

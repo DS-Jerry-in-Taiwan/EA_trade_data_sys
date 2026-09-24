@@ -63,3 +63,34 @@ rpyc_is_listening() {
         netstat -ltn 2>/dev/null | awk '$4 ~ /:8001$/ && $6 == "LISTEN" { found=1 } END { exit !found }'
     else return 1; fi
 }
+
+snapshot_terminal_logs() {
+    local log_root="$1" snapshot="$2" log size
+    : > "$snapshot"
+    while IFS= read -r -d '' log; do
+        size="$(stat -c %s "$log" 2>/dev/null || printf 0)"
+        printf '%s\t%s\n' "$size" "$log" >> "$snapshot"
+    done < <(find "$log_root" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
+}
+
+log_baseline_size() {
+    local snapshot="$1" log="$2" size path
+    while IFS=$'\t' read -r size path; do
+        [ "$path" = "$log" ] && { printf '%s\n' "$size"; return; }
+    done < "$snapshot"
+    printf '0\n'
+}
+
+log_has_new_authorized_marker() {
+    local snapshot="$1" log="$2" baseline current
+    baseline="$(log_baseline_size "$snapshot" "$log")"
+    current="$(stat -c %s "$log" 2>/dev/null || printf 0)"
+    [ "$current" -ge "$baseline" ] || baseline=0
+    baseline=$((baseline - (baseline % 2)))
+    # Only inspect bytes appended after launch and never echo account logs.
+    if command -v iconv >/dev/null 2>&1; then
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | iconv -f UTF-16LE -t UTF-8 2>/dev/null | grep -Eiq '(^|[[:space:]])authorized([[:space:]]|$)'
+    else
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000' | grep -Eiq '(^|[[:space:]])authorized([[:space:]]|$)'
+    fi
+}
