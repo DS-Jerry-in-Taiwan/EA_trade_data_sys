@@ -5,6 +5,7 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$SCRIPT_DIR/terminal_lifecycle.sh"
 MT5_CONFIG_LINUX="${MT5_CONFIG_LINUX:-/mt5docker/mt5cfg.ini}"
 MT5_READY_TIMEOUT="${MT5_READY_TIMEOUT:-120}"
+MT5_UPDATE_TIMEOUT="${MT5_UPDATE_TIMEOUT:-180}"
 MT5_LOG_ROOT="${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}"
 CHILD_PIDS=()
 SHUTTING_DOWN=0
@@ -25,20 +26,46 @@ cleanup_stale_runtime() {
     rm -f /tmp/.X100-lock
 }
 find_mt5_exe() { find /opt/wineprefix/drive_c -type f -name terminal64.exe ! -path '*/Logs/*' -print -quit; }
-wait_for_terminal_ready() {
-    local snapshot="$1" deadline log
+launch_terminal() {
+    wine "$MT5_EXE" /portable "/config:$MT5_CONFIG_WINDOWS" /skipupdate &
+    remember_child "$!"
+}
+await_terminal_ready() {
+    local snapshot="$1" deadline log normal_count update_count
     deadline=$((SECONDS + MT5_READY_TIMEOUT))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        exactly_one_normal_terminal || {
-            [ "$(update_terminal_pids | count_lines)" -eq 0 ] || return 2
+        normal_count="$(normal_terminal_pids | count_lines)"
+        update_count="$(update_terminal_pids | count_lines)"
+        [ "$update_count" -le 1 ] || return 12
+        [ "$normal_count" -le 1 ] || return 13
+        if [ "$update_count" -eq 1 ]; then
+            [ "$normal_count" -eq 0 ] && return 10
             sleep 1; continue
-        }
+        fi
+        [ "$normal_count" -eq 1 ] || { sleep 1; continue; }
         while IFS= read -r -d '' log; do
             log_has_new_authorized_marker "$snapshot" "$log" && return 0
         done < <(find "$MT5_LOG_ROOT" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
         sleep 1
     done
     return 1
+}
+await_single_update() {
+    # await_terminal_ready only returns update status after observing exactly
+    # one updater and zero normal terminals. Preserve that observation so an
+    # updater that exits between the two probes is still treated as completed.
+    local deadline normal_count update_count saw_updater=1
+    deadline=$((SECONDS + MT5_UPDATE_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        normal_count="$(normal_terminal_pids | count_lines)"
+        update_count="$(update_terminal_pids | count_lines)"
+        [ "$update_count" -le 1 ] || return 12
+        [ "$normal_count" -eq 0 ] || return 13
+        [ "$update_count" -eq 1 ] && saw_updater=1
+        if [ "$saw_updater" -eq 1 ] && [ "$update_count" -eq 0 ]; then return 0; fi
+        sleep 1
+    done
+    return 15
 }
 
 echo '>>> Cleaning up stale MT5 runtime...'
@@ -73,11 +100,9 @@ launch_snapshot="$(mktemp /tmp/mt5-launch.XXXXXX)"
 snapshot_terminal_logs "$MT5_LOG_ROOT" "$launch_snapshot"
 echo '>>> Launching one MT5 terminal with LiveUpdate suppressed...'
 # /skipupdate is the established MetaTrader startup switch. Readiness and
-# health fail closed if an image/build ignores it and launches with /update.
-wine "$MT5_EXE" /portable "/config:$MT5_CONFIG_WINDOWS" /skipupdate &
-remember_child "$!"
-if ! wait_for_terminal_ready "$launch_snapshot"; then
-    echo '>>> MT5 did not become ready, exited, duplicated, or entered LiveUpdate.' >&2
+# health stay closed during one bounded mandatory update if the build ignores it.
+if ! start_terminal_with_one_update_cycle "$launch_snapshot"; then
+    echo '>>> MT5 readiness/update lifecycle failed or exceeded its bounded maintenance cycle.' >&2
     exit 1
 fi
 rm -f "$launch_snapshot"

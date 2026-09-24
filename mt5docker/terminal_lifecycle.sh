@@ -94,3 +94,20 @@ log_has_new_authorized_marker() {
         tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000' | grep -Eiq '(^|[[:space:]])authorized([[:space:]]|$)'
     fi
 }
+
+start_terminal_with_one_update_cycle() {
+    local snapshot="$1" status
+    launch_terminal
+    if await_terminal_ready "$snapshot"; then return 0; else status=$?; fi
+    [ "$status" -eq 10 ] || return "$status"
+
+    # Mandatory MetaTrader updates are permitted once per container start.
+    # RPyC has not started yet, so health remains strictly unavailable.
+    await_single_update || return $?
+    snapshot_terminal_logs "$MT5_LOG_ROOT" "$snapshot"
+    launch_terminal
+    if await_terminal_ready "$snapshot"; then return 0; else status=$?; fi
+    # A second update request is a loop, not another maintenance cycle.
+    [ "$status" -ne 10 ] || return 14
+    return "$status"
+}
