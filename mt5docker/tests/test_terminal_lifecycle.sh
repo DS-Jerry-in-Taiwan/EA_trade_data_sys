@@ -47,17 +47,17 @@ PATH="$MOCK_BIN:$PATH" assert_success rpyc_is_listening
 LOG_ROOT="$TMP/logs"; mkdir -p "$LOG_ROOT"
 LOG="$LOG_ROOT/terminal.log"
 SNAPSHOT="$TMP/log.snapshot"
-printf 'old session authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG"
+printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG"
 snapshot_terminal_logs "$LOG_ROOT" "$SNAPSHOT"
-assert_failure log_has_new_authorized_marker "$SNAPSHOT" "$LOG"
+assert_failure log_has_new_startup_marker "$SNAPSHOT" "$LOG"
 printf 'network scan completed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
-assert_failure log_has_new_authorized_marker "$SNAPSHOT" "$LOG"
-printf 'account AUTHORIZED on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
-assert_success log_has_new_authorized_marker "$SNAPSHOT" "$LOG"
+assert_failure log_has_new_startup_marker "$SNAPSHOT" "$LOG"
+printf 'STARTUP SUCCESSFULLY INITIALIZED FROM START CONFIG\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_success log_has_new_startup_marker "$SNAPSHOT" "$LOG"
 
 NEW_LOG="$LOG_ROOT/new-terminal.log"
-printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$NEW_LOG"
-assert_success log_has_new_authorized_marker "$SNAPSHOT" "$NEW_LOG"
+printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE > "$NEW_LOG"
+assert_success log_has_new_startup_marker "$SNAPSHOT" "$NEW_LOG"
 
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'
 grep -q '/skipupdate' "$ROOT/mt5docker/start_server.sh" || fail 'skip-update switch missing'

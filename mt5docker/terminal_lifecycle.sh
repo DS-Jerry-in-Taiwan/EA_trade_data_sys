@@ -81,7 +81,7 @@ log_baseline_size() {
     printf '0\n'
 }
 
-log_has_new_authorized_marker() {
+log_has_new_startup_marker() {
     local snapshot="$1" log="$2" baseline current
     baseline="$(log_baseline_size "$snapshot" "$log")"
     current="$(stat -c %s "$log" 2>/dev/null || printf 0)"
@@ -89,9 +89,9 @@ log_has_new_authorized_marker() {
     baseline=$((baseline - (baseline % 2)))
     # Only inspect bytes appended after launch and never echo account logs.
     if command -v iconv >/dev/null 2>&1; then
-        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | iconv -f UTF-16LE -t UTF-8 2>/dev/null | grep -Eiq '(^|[[:space:]])authorized([[:space:]]|$)'
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | iconv -f UTF-16LE -t UTF-8 2>/dev/null | grep -Fiq 'Startup successfully initialized from start config'
     else
-        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000' | grep -Eiq '(^|[[:space:]])authorized([[:space:]]|$)'
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000' | grep -Fiq 'Startup successfully initialized from start config'
     fi
 }
 

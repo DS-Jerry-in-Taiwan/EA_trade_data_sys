@@ -44,7 +44,7 @@ await_terminal_ready() {
         fi
         [ "$normal_count" -eq 1 ] || { sleep 1; continue; }
         while IFS= read -r -d '' log; do
-            log_has_new_authorized_marker "$snapshot" "$log" && return 0
+            log_has_new_startup_marker "$snapshot" "$log" && return 0
         done < <(find "$MT5_LOG_ROOT" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
         sleep 1
     done
