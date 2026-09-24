@@ -16,7 +16,10 @@ sys.path.insert(0, '/app')
 from service.core.mt5_client import MT5Client
 from service.account_service import AccountService
 
-account_svc = AccountService()
+# The gateway process owns exactly one MT5 client. All gateway components and
+# request handlers share it instead of opening independent RPyC sessions.
+mt5_client = MT5Client()
+account_svc = AccountService(mt5_client=mt5_client)
 
 app = Flask(__name__)
 CORS(app)
@@ -29,13 +32,13 @@ cfg_path = '/app/service/config/settings.yaml'
 
 
 class TickFetcher(threading.Thread):
-    def __init__(self):
+    def __init__(self, mt5_client):
         super().__init__(daemon=True)
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f).get('tick_service', {})
         self.symbols = cfg.get('symbols', ['XAUUSDm'])
         self.interval = cfg.get('update_interval_seconds', 60)
-        self.mt5_client = MT5Client()
+        self.mt5_client = mt5_client
         self._resolver_initialized = False
 
     def run(self):
@@ -264,7 +267,6 @@ def query_rates_by_range(symbol):
     except Exception:
         return jsonify({'error': 'Invalid date format. Use ISO 8601 (e.g., 2023-01-01 or 2023-01-01T00:00:00Z)'}), 400
 
-    mt5_client = MT5Client()
     if not mt5_client.ensure_connected():
         return jsonify({'error': 'MT5 not connected'}), 503
 
@@ -414,7 +416,7 @@ _start_time = time_module.time()
 # ─── Main ───
 
 if __name__ == '__main__':
-    fetcher = TickFetcher()
+    fetcher = TickFetcher(mt5_client)
     fetcher.start()
 
     port = int(os.getenv('API_GATEWAY_PORT', 8090))

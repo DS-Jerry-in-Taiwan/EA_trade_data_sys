@@ -10,13 +10,13 @@ from service.core.mt5_client import MT5Client
 
 
 class TickService:
-    def __init__(self, config_path='/app/service/config/settings.yaml'):
+    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None):
         with open(config_path) as f:
             cfg = yaml.safe_load(f).get('tick_service', {})
         self.symbols = cfg.get('symbols', ['XAUUSDm'])
         self.interval = cfg.get('update_interval_seconds', 60)
         self.output_dir = cfg.get('output_dir', '/app/service/data/ticks')
-        self.mt5_client = MT5Client()
+        self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
         self._resolver_initialized = False
         os.makedirs(self.output_dir, exist_ok=True)
 

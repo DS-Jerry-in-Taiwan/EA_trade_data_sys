@@ -13,13 +13,13 @@ _executor = ThreadPoolExecutor(max_workers=4)
 
 
 class HistoryService:
-    def __init__(self, config_path='/app/service/config/settings.yaml'):
+    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None):
         with open(config_path) as f:
             cfg = yaml.safe_load(f).get('history_service', {})
         self.symbols = cfg.get('symbols', [])
         self.interval = cfg.get('update_interval_seconds', 60)
         self.data_path = cfg.get('data_path', '/app/service/data/history')
-        self.mt5_client = MT5Client()
+        self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
         self._resolver_initialized = False
         os.makedirs(self.data_path, exist_ok=True)
 
