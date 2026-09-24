@@ -51,7 +51,11 @@ x11vnc -display :100 -forever -shared -dontdisconnect -rfbport 5901 -rfbauth /ro
 websockify --web /usr/share/novnc 6081 localhost:5901 & remember_child "$!"
 
 MT5_EXE="$(find_mt5_exe)"
-[ -n "$MT5_EXE" ] || { echo '>>> MT5 executable is missing; refusing to start.' >&2; exit 1; }
+if [ -z "$MT5_EXE" ]; then
+    echo '>>> MT5 executable is missing; refusing to start.' >&2
+    echo '>>> Verify that MT5_DATA_DIR points to the persistent MT5_Data directory before running docker compose.' >&2
+    exit 1
+fi
 bash /mt5docker/sync_mt5cfg.sh
 [ -f "$MT5_CONFIG_LINUX" ] || { echo '>>> MT5 config was not generated.' >&2; exit 1; }
 MT5_CONFIG_WINDOWS="$(winepath -w "$MT5_CONFIG_LINUX")"

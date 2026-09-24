@@ -7,8 +7,10 @@ services:
     volumes:
       # 配置與腳本目錄
       - .:/mt5docker
-      # MT5 可攜式設定檔持久化（AppData）
-      - "./MT5_Data:/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5"
+      # Override MT5_DATA_DIR when compose runs from a deployment worktree.
+      # The same persistent directory is exposed for readiness logs and Wine.
+      - "${MT5_DATA_DIR:-./MT5_Data}:/mt5docker/MT5_Data"
+      - "${MT5_DATA_DIR:-./MT5_Data}:/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5"
     entrypoint: /mt5docker/start_server.sh
     ports:
       - 5901:5901
