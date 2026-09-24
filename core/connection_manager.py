@@ -24,23 +24,41 @@ class MT5Connector:
         return self.accounts['providers'][active]
 
     def connect(self):
-        hosts = [self.settings['connection']['default_host']] + self.settings['connection']['fallback_hosts']
-        port = self.settings['connection']['port']
-        
-        for host in hosts:
-            print(f'>>> [TRY] Connecting to {host}:{port}...')
-            mt5 = None
-            try:
-                mt5 = MetaTrader5(host=host, port=port)
-                acc = self.get_active_account()
-                if mt5.initialize(login=acc['login'], password=acc['password'], server=acc['server']):
-                    print(f'>>> [SUCCESS] Connected to {host}')
-                    return mt5
-            except Exception as e:
-                print(f'>>> [FAIL] Host {host} unreachable: {e}')
-            if mt5 is not None:
+        connection = self.settings['connection']
+        host = connection['default_host']
+        port = connection['port']
+
+        try:
+            socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise ConnectionError(
+                f"Unable to resolve MT5 host {host}:{port}"
+            ) from exc
+
+        mt5 = None
+        initialized = False
+        try:
+            mt5 = MetaTrader5(host=host, port=port)
+            account = self.get_active_account()
+            initialized = mt5.initialize(
+                login=account['login'],
+                password=account['password'],
+                server=account['server'],
+            )
+            if not initialized:
+                raise ConnectionError(
+                    f"MT5 initialization failed for {host}:{port}"
+                )
+            return mt5
+        except ConnectionError:
+            raise
+        except Exception as exc:
+            raise ConnectionError(
+                f"Unable to connect to MT5 at {host}:{port}"
+            ) from exc
+        finally:
+            if mt5 is not None and not initialized:
                 try:
                     mt5.shutdown()
                 except Exception:
                     pass
-        return None
