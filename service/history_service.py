@@ -85,4 +85,8 @@ class HistoryService:
 
 
 if __name__ == '__main__':
-    HistoryService().run()
+    service = HistoryService()
+    try:
+        service.run()
+    finally:
+        service.mt5_client.shutdown()

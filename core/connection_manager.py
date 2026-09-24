@@ -29,12 +29,18 @@ class MT5Connector:
         
         for host in hosts:
             print(f'>>> [TRY] Connecting to {host}:{port}...')
+            mt5 = None
             try:
                 mt5 = MetaTrader5(host=host, port=port)
                 acc = self.get_active_account()
                 if mt5.initialize(login=acc['login'], password=acc['password'], server=acc['server']):
-                    print(f'>>> [SUCCESS] Connected to {host} using account {acc["login"]}')
+                    print(f'>>> [SUCCESS] Connected to {host}')
                     return mt5
             except Exception as e:
                 print(f'>>> [FAIL] Host {host} unreachable: {e}')
+            if mt5 is not None:
+                try:
+                    mt5.shutdown()
+                except Exception:
+                    pass
         return None

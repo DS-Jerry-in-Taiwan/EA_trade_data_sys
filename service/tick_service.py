@@ -73,4 +73,8 @@ class TickService:
 
 
 if __name__ == '__main__':
-    TickService().run()
+    service = TickService()
+    try:
+        service.run()
+    finally:
+        service.mt5_client.shutdown()

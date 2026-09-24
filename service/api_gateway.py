@@ -5,6 +5,7 @@ import time
 import threading
 import yaml
 import hmac
+import atexit
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_file
 from flask_socketio import SocketIO, emit, join_room
@@ -19,6 +20,7 @@ from service.account_service import AccountService
 # The gateway process owns exactly one MT5 client. All gateway components and
 # request handlers share it instead of opening independent RPyC sessions.
 mt5_client = MT5Client()
+atexit.register(mt5_client.shutdown)
 account_svc = AccountService(mt5_client=mt5_client)
 
 app = Flask(__name__)
