@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 PROC_ROOT="${PROC_ROOT:-/proc}"
 
+read_process_exe() { IFS= read -r -d '' REPLY < "$1"; }
+read_process_cmdline() { tr '\0' ' ' < "$1"; }
+
 terminal_processes() {
     local proc cmdline exe pid
     for proc in "$PROC_ROOT"/[0-9]*; do
         [ -r "$proc/cmdline" ] || continue
         pid="${proc##*/}"
-        IFS= read -r -d '' exe < "$proc/cmdline" || [ -n "$exe" ] || continue
-        cmdline="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null)" || continue
+        exe=''
+        REPLY=''
+        read_process_exe "$proc/cmdline" 2>/dev/null || [ -n "$REPLY" ] || continue
+        exe="$REPLY"
+        cmdline="$(read_process_cmdline "$proc/cmdline" 2>/dev/null)" || continue
         exe="${exe##*\\}"
         exe="${exe##*/}"
         case "$exe" in terminal64.exe) printf '%s\t%s\n' "$pid" "$cmdline" ;; esac
@@ -89,9 +95,9 @@ log_has_new_startup_marker() {
     baseline=$((baseline - (baseline % 2)))
     # Only inspect bytes appended after launch and never echo account logs.
     if command -v iconv >/dev/null 2>&1; then
-        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | iconv -f UTF-16LE -t UTF-8 2>/dev/null | grep -Fiq 'Startup successfully initialized from start config'
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | iconv -f UTF-16LE -t UTF-8 2>/dev/null | grep -Eiq '(^|[[:space:]])Startup[[:space:]]+successfully[[:space:]]+initialized[[:space:]]+from[[:space:]]+start[[:space:]]+config([[:space:]]|$)'
     else
-        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000' | grep -Fiq 'Startup successfully initialized from start config'
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000' | grep -Eiq '(^|[[:space:]])Startup[[:space:]]+successfully[[:space:]]+initialized[[:space:]]+from[[:space:]]+start[[:space:]]+config([[:space:]]|$)'
     fi
 }
 
