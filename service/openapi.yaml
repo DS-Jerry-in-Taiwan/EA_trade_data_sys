@@ -1,0 +1,146 @@
+openapi: 3.0.3
+info:
+  title: MT5 Data API
+  version: 3.1.0
+  description: Read-only market-data and account-query API backed by MT5.
+servers:
+  - url: http://localhost:8090
+paths:
+  /api/v1/health:
+    get:
+      summary: Report service and MT5 connectivity health
+      responses:
+        '200':
+          description: Current health state
+  /api/v1/ticks/{symbol}:
+    get:
+      summary: Return the latest tick for a logical symbol
+      parameters:
+        - $ref: '#/components/parameters/Symbol'
+      responses:
+        '200':
+          description: Latest tick
+        '404':
+          description: Tick is not available
+  /api/v1/rates/{symbol}:
+    get:
+      summary: Return cached OHLCV rates
+      parameters:
+        - $ref: '#/components/parameters/Symbol'
+      responses:
+        '200':
+          description: Cached rates
+        '404':
+          description: Cached rates are not available
+  /api/v1/rates/{symbol}/query:
+    get:
+      summary: Query OHLCV rates directly from MT5
+      parameters:
+        - $ref: '#/components/parameters/Symbol'
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            enum: [M5, M15, H1, D1]
+        - name: start_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: end_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: MT5 rates
+        '400':
+          description: Invalid query
+        '503':
+          description: MT5 is unavailable
+  /api/v1/account:
+    get:
+      summary: Return read-only account information
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Account information
+        '401':
+          description: API key is missing or invalid
+  /api/v1/positions:
+    get:
+      summary: Return open positions
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Open positions
+        '401':
+          description: API key is missing or invalid
+  /api/v1/history/deals:
+    get:
+      summary: Return historical deals
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Historical deals
+        '401':
+          description: API key is missing or invalid
+  /api/v1/history/orders:
+    get:
+      summary: Return historical orders
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Historical orders
+        '401':
+          description: API key is missing or invalid
+  /api/v1/symbols:
+    get:
+      summary: Return configured logical symbols and MT5 metadata
+      responses:
+        '200':
+          description: Available symbols
+  /api/v1/openapi.yaml:
+    get:
+      summary: Return this OpenAPI specification
+      responses:
+        '200':
+          description: OpenAPI YAML
+          content:
+            text/yaml:
+              schema:
+                type: string
+  /metrics:
+    get:
+      summary: Return Prometheus metrics
+      responses:
+        '200':
+          description: Prometheus exposition format
+  /api/v1/metrics:
+    get:
+      summary: Return Prometheus metrics under the API prefix
+      responses:
+        '200':
+          description: Prometheus exposition format
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    Symbol:
+      name: symbol
+      in: path
+      required: true
+      description: Configured logical symbol name
+      schema:
+        type: string
+        enum: [XAUUSDm, EURUSDm, GBPUSDm, BTC]

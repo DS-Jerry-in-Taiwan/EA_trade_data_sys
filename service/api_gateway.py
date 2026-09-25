@@ -503,7 +503,9 @@ def list_symbols():
 @app.route('/api/v1/openapi.yaml')
 def openapi_spec():
     """Serve OpenAPI v3 specification file for API discovery."""
-    spec_path = '/app/docs/api/v3_data_api.yaml'
+    # Runtime assets must live under the tracked /app/service tree.  The docs/
+    # directory is intentionally gitignored and is absent from clean deploys.
+    spec_path = '/app/service/openapi.yaml'
     if not os.path.exists(spec_path):
         return jsonify({'error': 'Specification file not found'}), 404
     return send_file(spec_path, mimetype='text/yaml')
