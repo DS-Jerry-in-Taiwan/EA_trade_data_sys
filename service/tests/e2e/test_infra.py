@@ -17,11 +17,10 @@ class TestInfrastructure:
         import sys
         assert sys.version_info >= (3, 12), f"Python {sys.version} is too old"
 
-    def test_working_directory(self):
-        """We must be inside /app/service/tests/e2e or a sub-path"""
-        allowed = {"app", "service", "tests"}
-        cwd = os.getcwd().replace("\\", "/").split("/")
-        assert allowed.issubset(set(cwd)), f"Unexpected CWD: {os.getcwd()}"
+    def test_application_mount(self):
+        """The repository must be mounted at the runtime's /app contract."""
+        test_root = "/app/service/tests/e2e"
+        assert os.path.isdir(test_root), f"Application mount missing: {test_root}"
 
     def test_required_folders(self, docker_exec):
         """Check that critical data/log/config folders exist"""
