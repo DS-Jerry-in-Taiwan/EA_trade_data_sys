@@ -1,7 +1,7 @@
 # MT5 Trade Data Downloader (Linux/Docker)
 
 **版本**: v3.0 (2026-09-28)
-**描述**: 單一 repository、單一 application image 的 MT5 資料服務。部署仍使用 `mt5-server` 與 `python-runner` 兩個容器；`python-runner` 內由 supervisor 管理三個職責分離的 process。
+**描述**: 單一 repository、單一 application image 的 MT5 資料服務。部署使用 `mt5-server` 與 `trade-data-service` 兩個容器；後者由 supervisor 管理三個職責分離的 process。
 
 ---
 
@@ -19,7 +19,7 @@
 └───────────────────────────┼─────────────────────────┘
                             │ RPyC
 ┌───────────────────────────┼─────────────────────────┐
-│ python-runner (one image/container, supervised)      │
+│ trade-data-service (one container, supervised)       │
 │  ┌───────────────────┐    │  tick NDJSON             │
 │  │ Tick Service      │◄───┘──▶ Unix socket ─────┐    │
 │  │ sole tick poller  │                         │    │
@@ -46,7 +46,7 @@
 |:-----|:-----|:-----|
 | MT5 Terminal | Wine/Python | 數據源，透過 MetaTrader5 Python API |
 | RPyC Proxy (pymt5linux) | Python | 容器網路內的 MT5 橋接（8001 不對 host 公開） |
-| MT5Client | Python | 各 process 自有、thread-safe 的統一連線管理 (`service/core/mt5_client.py`) |
+| MT5Client | Python | 各 process 自有、thread-safe 的統一連線管理 (`service/infrastructure/mt5/client.py`) |
 | TickService | Python | 唯一週期性 tick poller，透過 `/run/trade-data/ticks.sock` 發佈 versioned NDJSON |
 | HistoryService | Python | 獨立背景 worker；增量抓取、合併、去重並原子發佈 CSV 與 ready marker |
 | AccountService | Python | 帳戶資訊、持倉、委託、成交歷史查詢 |
@@ -59,7 +59,7 @@
 ### 資料與連線生命週期
 
 1. `mt5-server` 等待 Wine terminal ready，才啟動容器內的 RPyC bridge。
-2. `python-runner` 啟動時從 bind-mounted `mt5docker/requirements.txt` 安裝依賴；依賴不是 baked 進 image。
+2. `trade-data-service` 啟動時從 bind-mounted `mt5docker/requirements.txt` 安裝依賴；依賴不是 baked 進 image。
 3. PID 1 supervisor 啟動 Tick Service、History Worker、API Gateway 三個 process。各 process 經 `MT5Client` 自行建立及重試 RPyC 連線。
 4. Tick Service 建立 Unix socket 並持續輪詢 MT5。Gateway 的 consumer 連線後先收到 snapshot，再接收 live tick；斷線時以 bounded backoff 重連。外部 client 只連 Gateway：REST 讀取最新 snapshot，Socket.IO client `subscribe` 後由 Gateway push，WebSocket 本身不會輪詢。
 5. History Worker 寫入暫存檔並原子替換 persisted CSV；Gateway 只透過 repository 讀取已完成資料，不會在歷史查詢 request 中同步呼叫 MT5。
@@ -162,13 +162,13 @@ Phase 1 已新增 PostgreSQL ETL：
 
 ```bash
 # 安裝 ETL 依賴（container 內）
-docker exec python-runner pip install -r /app/service/etl/requirements-etl.txt --break-system-packages
+docker exec trade-data-service pip install -r /app/service/etl/requirements-etl.txt --break-system-packages
 
 # 建立 schema
 docker exec -i bcas-postgres psql -U postgres -d trade_analytics < service/etl/schema.sql
 
 # 執行 ETL
-docker exec python-runner python3 /app/service/etl/trade_etl.py
+docker exec trade-data-service python3 /app/service/etl/trade_etl.py
 ```
 
 資料表：
@@ -203,7 +203,7 @@ docker exec python-runner python3 /app/service/etl/trade_etl.py
 ## 執行策略驗證
 
 ```bash
-docker exec python-runner wine python /app/download.py
+docker exec trade-data-service wine python /app/download.py
 ```
 
 ---
@@ -213,9 +213,11 @@ docker exec python-runner wine python /app/download.py
 | 路徑 | 說明 |
 |:-----|:------|
 | `mt5docker/` | 容器設定與啟動腳本 |
-| `service/` | 三 process application（tick/history/api_gateway）與 Gateway 內部服務 |
+| `service/` | 模組化 application（Gateway、Realtime、History、Trade Query） |
 | `service/etl/` | 交易分析 ETL 與 PostgreSQL schema |
-| `service/core/` | 共用核心（MT5Client）— namespace package |
+| `service/infrastructure/` | MT5、IPC、status 與 observability adapters |
+| `service/runtime/` | 三 process supervisor 與容器生命週期 |
+| `service/entrypoints/` | Gateway、Tick Worker、History Worker composition roots |
 | `service/config/` | YAML 設定檔 |
 | `service/data/` | 運行時資料輸出（ticks/history） |
 | `docs/` | API 規格、架構文件、開發日誌 |

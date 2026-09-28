@@ -29,12 +29,12 @@ services:
       start_period: 150s
     restart: always
 
-  python-runner:
+  trade-data-service:
     build:
       context: .
       dockerfile: Dockerfile
     image: jerry/mt5-custom:v1
-    container_name: python-runner
+    container_name: trade-data-service
     environment:
       READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
     volumes:

@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 
-SUPERVISOR = Path(__file__).parents[3] / "mt5docker" / "process_supervisor.py"
-SERVICE_NAMES = ("tick_service.py", "history_service.py", "api_gateway.py")
+SUPERVISOR = Path(__file__).parents[2] / "runtime" / "supervisor.py"
+SERVICE_NAMES = ("tick_worker.py", "history_worker.py", "api_gateway.py")
 
 
 def _load_supervisor_module():
@@ -31,8 +31,10 @@ def _wait_for(path: Path, timeout: float = 5) -> str:
 
 
 def _make_services(root: Path, source: str) -> None:
-    service_dir = root / "service"
-    service_dir.mkdir()
+    service_dir = root / "service" / "entrypoints"
+    service_dir.mkdir(parents=True)
+    (root / "service" / "__init__.py").touch()
+    (service_dir / "__init__.py").touch()
     for name in SERVICE_NAMES:
         (service_dir / name).write_text(source)
 
@@ -92,12 +94,12 @@ while True: time.sleep(.05)
     )
     supervisor = _start(tmp_path)
     for name in SERVICE_NAMES:
-        _wait_for(tmp_path / "service" / name.replace(".py", ".pid"))
+        _wait_for(tmp_path / "service" / "entrypoints" / name.replace(".py", ".pid"))
 
     supervisor.send_signal(signal.SIGTERM)
     assert supervisor.wait(timeout=5) == 128 + signal.SIGTERM
     for name in SERVICE_NAMES:
-        assert _wait_for(tmp_path / "service" / name.replace(".py", ".stopped")) == str(signal.SIGTERM)
+        assert _wait_for(tmp_path / "service" / "entrypoints" / name.replace(".py", ".stopped")) == str(signal.SIGTERM)
 
 
 def test_child_exit_stops_siblings_and_fails_supervisor(tmp_path: Path) -> None:
@@ -111,7 +113,7 @@ def stop(signum, frame):
     Path(__file__).with_suffix('.stopped').write_text(str(signum))
     raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
-if name == 'tick_service.py':
+if name == 'tick_worker.py':
     time.sleep(.3)
     raise SystemExit(7)
 while True: time.sleep(.05)
@@ -120,9 +122,9 @@ while True: time.sleep(.05)
     supervisor = _start(tmp_path)
 
     assert supervisor.wait(timeout=5) == 7
-    assert "tick-service exited unexpectedly with status 7" in supervisor.stderr.read()
-    for name in ("history_service.py", "api_gateway.py"):
-        assert _wait_for(tmp_path / "service" / name.replace(".py", ".stopped")) == str(signal.SIGTERM)
+    assert "tick-worker exited unexpectedly with status 7" in supervisor.stderr.read()
+    for name in ("history_worker.py", "api_gateway.py"):
+        assert _wait_for(tmp_path / "service" / "entrypoints" / name.replace(".py", ".stopped")) == str(signal.SIGTERM)
 
 
 def test_shutdown_is_bounded_and_escalates_to_kill(tmp_path: Path) -> None:
@@ -137,7 +139,7 @@ while True: time.sleep(.05)
     )
     supervisor = _start(tmp_path, timeout="0.1")
     for name in SERVICE_NAMES:
-        _wait_for(tmp_path / "service" / name.replace(".py", ".pid"))
+        _wait_for(tmp_path / "service" / "entrypoints" / name.replace(".py", ".pid"))
 
     started = time.monotonic()
     supervisor.send_signal(signal.SIGTERM)

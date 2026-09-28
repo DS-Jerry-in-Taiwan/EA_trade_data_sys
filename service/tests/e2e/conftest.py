@@ -1,7 +1,7 @@
 """
 Shared test fixtures for E2E tests.
 
-All fixtures detect whether they run inside the python-runner container
+All fixtures detect whether they run inside the trade-data-service container
 (no docker CLI available) or from the host, adapting subprocess calls accordingly.
 """
 
@@ -50,7 +50,7 @@ def settings() -> dict:
 
 @pytest.fixture
 def docker_exec():
-    """Run a bash command inside the python-runner container.
+    """Run a bash command inside the trade-data-service container.
 
     Returns a function: docker_exec(cmd) -> subprocess.CompletedProcess
     """
@@ -62,7 +62,7 @@ def docker_exec():
             )
         else:
             return subprocess.run(
-                ["docker", "exec", "python-runner", "bash", "-c", cmd],
+                ["docker", "exec", "trade-data-service", "bash", "-c", cmd],
                 capture_output=True, text=True, timeout=15
             )
     return _exec
