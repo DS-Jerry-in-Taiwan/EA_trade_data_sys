@@ -61,6 +61,7 @@ Each process owns its own `MT5Client` lifecycle and reconnect behavior. On `SIGT
 curl http://localhost:8090/api/v1/health
 curl http://localhost:8090/api/v1/symbols
 docker exec trade-data-service python3 -m pytest /app/service/tests/e2e -q
+docker exec trade-data-service python3 -m pytest /app/service/tests --ignore=/app/service/tests/e2e -q
 ```
 
 Expected health semantics:
