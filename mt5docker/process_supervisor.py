@@ -32,23 +32,22 @@ SERVICE_SCRIPTS = (
 )
 
 
-def rotate_log(path: Path, max_bytes: int) -> bool:
-    """Atomically preserve an oversized current log as one restart backup."""
+def rotate_log(path: Path) -> bool:
+    """Preserve a non-empty previous-session log as one restart backup."""
     try:
-        oversized = path.stat().st_size >= max_bytes
+        has_content = path.stat().st_size > 0
     except FileNotFoundError:
         return False
-    if not oversized:
+    if not has_content:
         return False
     path.replace(path.with_name(f"{path.name}.1"))
     return True
 
 
 class Supervisor:
-    def __init__(self, app_root: Path, shutdown_timeout: float, log_max_bytes: int) -> None:
+    def __init__(self, app_root: Path, shutdown_timeout: float) -> None:
         self.app_root = app_root
         self.shutdown_timeout = shutdown_timeout
-        self.log_max_bytes = log_max_bytes
         self.children: list[Child] = []
         self.stop_signal: int | None = None
 
@@ -66,7 +65,7 @@ class Supervisor:
         try:
             for name, script, log_name in SERVICE_SCRIPTS:
                 log_path = log_dir / log_name
-                if rotate_log(log_path, self.log_max_bytes):
+                if rotate_log(log_path):
                     print(f">>> Rotated {log_path} to {log_path.name}.1", flush=True)
                 log = log_path.open("ab", buffering=0)
                 try:
@@ -146,16 +145,7 @@ def main() -> int:
         print("SUPERVISOR_SHUTDOWN_TIMEOUT must be non-negative", file=sys.stderr)
         return 2
 
-    try:
-        log_max_bytes = int(os.environ.get("SUPERVISOR_LOG_MAX_BYTES", str(50 * 1024 * 1024)))
-    except ValueError:
-        print("SUPERVISOR_LOG_MAX_BYTES must be an integer", file=sys.stderr)
-        return 2
-    if log_max_bytes <= 0:
-        print("SUPERVISOR_LOG_MAX_BYTES must be positive", file=sys.stderr)
-        return 2
-
-    supervisor = Supervisor(app_root, shutdown_timeout, log_max_bytes)
+    supervisor = Supervisor(app_root, shutdown_timeout)
     signal.signal(signal.SIGTERM, supervisor.request_stop)
     signal.signal(signal.SIGINT, supervisor.request_stop)
     return supervisor.run()

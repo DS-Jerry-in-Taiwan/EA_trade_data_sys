@@ -49,21 +49,31 @@ def _start(root: Path, timeout: str = "1") -> subprocess.Popen[str]:
     )
 
 
-def test_oversized_log_is_preserved_as_backup_before_new_current(tmp_path: Path) -> None:
+def test_nonempty_log_is_preserved_as_backup_before_new_current(tmp_path: Path) -> None:
     supervisor_module = _load_supervisor_module()
     current = tmp_path / "api_gateway.log"
     backup = tmp_path / "api_gateway.log.1"
     current.write_bytes(b"current-log")
     backup.write_bytes(b"older-backup")
 
-    assert supervisor_module.rotate_log(current, max_bytes=4) is True
+    assert supervisor_module.rotate_log(current) is True
     assert not current.exists()
     assert backup.read_bytes() == b"current-log"
 
-    # Opening the normal current path after rotation starts a bounded new log.
+    # Opening the normal current path after rotation starts a new session log.
     with current.open("ab", buffering=0) as log:
         log.write(b"new-log")
     assert current.read_bytes() == b"new-log"
+
+
+def test_empty_current_log_is_not_rotated(tmp_path: Path) -> None:
+    supervisor_module = _load_supervisor_module()
+    current = tmp_path / "tick_service.log"
+    current.touch()
+
+    assert supervisor_module.rotate_log(current) is False
+    assert current.exists()
+    assert not (tmp_path / "tick_service.log.1").exists()
 
 
 def test_signal_is_forwarded_and_all_three_children_stop(tmp_path: Path) -> None:
