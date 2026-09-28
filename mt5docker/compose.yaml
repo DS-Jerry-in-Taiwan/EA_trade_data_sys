@@ -55,5 +55,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      # The runner deliberately installs bind-mounted Linux requirements before
+      # starting the supervisor; allow that bootstrap to finish on a clean image.
+      start_period: 150s
     restart: always
