@@ -1,8 +1,21 @@
 from datetime import datetime, timezone
+from importlib.util import find_spec
+import sys
+from types import ModuleType
 
 import pytest
 
 from service.etl.deal_mapper import decode_deal_payload
+
+if find_spec("psycopg2") is None:
+    psycopg2_stub = ModuleType("psycopg2")
+    psycopg2_stub.__path__ = []
+    extras_stub = ModuleType("psycopg2.extras")
+    extras_stub.execute_values = None
+    psycopg2_stub.extras = extras_stub
+    sys.modules["psycopg2"] = psycopg2_stub
+    sys.modules["psycopg2.extras"] = extras_stub
+
 from service.etl.trade_etl import DEAL_UPSERT_SQL, upsert_deals
 from service.trade_query.errors import DealMappingError
 from service.trade_query.models import DealRecord
