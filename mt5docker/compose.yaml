@@ -1,5 +1,8 @@
 services:
   mt5-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: jerry/mt5-custom:v1
     container_name: mt5-server
     environment:
@@ -27,6 +30,9 @@ services:
     restart: always
 
   python-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: jerry/mt5-custom:v1
     container_name: python-runner
     environment:

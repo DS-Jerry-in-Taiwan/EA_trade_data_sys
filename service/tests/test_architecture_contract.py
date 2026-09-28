@@ -30,6 +30,21 @@ def test_runner_execs_supervisor_after_installing_bind_mounted_requirements():
     assert "tail -f /dev/null" not in runner
 
 
+def test_image_installs_pinned_pymt5linux_into_wine_python():
+    dockerfile = (REPO_ROOT / "mt5docker" / "Dockerfile").read_text(encoding="utf-8")
+    requirements = (REPO_ROOT / "mt5docker" / "wine-requirements.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert "COPY wine-requirements.txt /tmp/wine-requirements.txt" in dockerfile
+    assert "wine C:/Python/python.exe -m pip install --no-cache-dir -r" in dockerfile
+    assert 'import MetaTrader5, pymt5linux, rpyc' in dockerfile
+    assert "pymt5linux==1.0" in requirements
+    assert "MetaTrader5==5.0.6231" in requirements
+    assert "rpyc==6.0.2" in requirements
+    assert "numpy==2.5.3" in requirements
+
+
 def test_supervisor_owns_exactly_three_application_processes():
     source = (REPO_ROOT / "mt5docker" / "process_supervisor.py").read_text(encoding="utf-8")
     module = ast.parse(source)

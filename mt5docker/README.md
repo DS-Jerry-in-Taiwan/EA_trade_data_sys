@@ -25,6 +25,17 @@ The lifecycle is ordered as follows:
 
 The repository checkout is bind-mounted at `/app`; the running code and requirements therefore come from the deployment worktree selected by Compose.
 
+`pymt5linux` has two distinct installations. The Linux client is installed
+from `requirements.txt` when `python-runner` starts. The RPyC server must run
+inside Wine, so `Dockerfile` installs the pinned packages in
+`wine-requirements.txt` (including `pymt5linux` and `MetaTrader5`) into
+`C:/Python/python.exe` at image-build time. Rebuild the shared image after
+changing those versions:
+
+```bash
+docker compose build mt5-server python-runner
+```
+
 ## Application process boundaries
 
 ```text
