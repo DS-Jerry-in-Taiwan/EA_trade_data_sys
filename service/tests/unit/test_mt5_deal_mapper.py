@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from service.infrastructure.mt5.mappers import map_mt5_deal
 from service.trade_query.errors import DealMappingError
+from service.trade_query.mt5_deal_mapper import map_mt5_deal
 
 
 class StrictDeal:

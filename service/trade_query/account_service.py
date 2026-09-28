@@ -2,7 +2,7 @@ import yaml
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from service.infrastructure.mt5.client import MT5Client
-from service.infrastructure.mt5.mappers import map_mt5_deal
+from service.trade_query.mt5_deal_mapper import map_mt5_deal
 from service.trade_query.models import DealRecord, DealSummary
 from service.trade_query.presenters import present_deal_summary_v1, present_deal_v1
 
