@@ -3,7 +3,7 @@
 This directory defines the two-container runtime for the trade-data application:
 
 - `mt5-server` runs the Wine MT5 terminal, VNC and the `pymt5linux` RPyC bridge.
-- `python-runner` runs one application image/container with three supervised OS processes: `tick_service.py`, `history_service.py` and `api_gateway.py`.
+- `trade-data-service` runs one application image/container with three supervised OS processes: `service.entrypoints.tick_worker`, `service.entrypoints.history_worker` and `service.entrypoints.api_gateway`.
 
 Port `8090` on API Gateway is the only external trade-data API. RPyC port `8001` is reachable only through the Compose network and must not be published on the host. VNC is an operational interface, not a trade-data API.
 
@@ -18,22 +18,22 @@ The lifecycle is ordered as follows:
 
 1. `mt5-server` starts Wine with the Windows-readable terminal config path, skips LiveUpdate and waits until exactly one terminal is ready.
 2. The RPyC bridge starts only after terminal readiness. Its healthcheck fails if the terminal exits or enters LiveUpdate.
-3. Compose starts `python-runner` after `mt5-server` is healthy.
-4. `start_runner.sh` installs `/app/mt5docker/requirements.txt` from the bind-mounted checkout, then `exec`s `process_supervisor.py`. These packages are installed at runner startup; they are not baked into the image.
+3. Compose starts `trade-data-service` after `mt5-server` is healthy.
+4. `start_runner.sh` installs `/app/mt5docker/requirements.txt` from the bind-mounted checkout, then `exec`s `service.runtime.supervisor`. These packages are installed at service startup; they are not baked into the image.
 5. The supervisor starts Tick Service, History Worker and API Gateway. If any child exits unexpectedly, it terminates the others and exits non-zero so the container restart policy can act.
-6. `python-runner` becomes healthy only when Gateway reports HTTP 200 and `ready: true`.
+6. `trade-data-service` becomes healthy only when Gateway reports HTTP 200 and `ready: true`.
 
 The repository checkout is bind-mounted at `/app`; the running code and requirements therefore come from the deployment worktree selected by Compose.
 
 `pymt5linux` has two distinct installations. The Linux client is installed
-from `requirements.txt` when `python-runner` starts. The RPyC server must run
+from `requirements.txt` when `trade-data-service` starts. The RPyC server must run
 inside Wine, so `Dockerfile` installs the pinned packages in
 `wine-requirements.txt` (including `pymt5linux` and `MetaTrader5`) into
 `C:/Python/python.exe` at image-build time. Rebuild the shared image after
 changing those versions:
 
 ```bash
-docker compose build mt5-server python-runner
+docker compose build mt5-server trade-data-service
 ```
 
 ## Application process boundaries
@@ -60,7 +60,7 @@ Each process owns its own `MT5Client` lifecycle and reconnect behavior. On `SIGT
 ```bash
 curl http://localhost:8090/api/v1/health
 curl http://localhost:8090/api/v1/symbols
-docker exec python-runner python3 -m pytest /app/service/tests/e2e -q
+docker exec trade-data-service python3 -m pytest /app/service/tests/e2e -q
 ```
 
 Expected health semantics:

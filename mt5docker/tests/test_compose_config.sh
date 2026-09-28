@@ -63,16 +63,16 @@ echo 'compose MT5_CONFIG_FILE interpolation test passed'
 
 printf '%s' "$config_json" | python3 -c '
 import json, sys
-service = json.load(sys.stdin)["services"]["python-runner"]
+service = json.load(sys.stdin)["services"]["trade-data-service"]
 healthcheck = service.get("healthcheck", {})
 test = healthcheck.get("test", [])
 rendered = " ".join(str(part) for part in test)
 if "/api/v1/health" not in rendered or "ready" not in rendered:
-    raise SystemExit("FAIL: python-runner healthcheck must verify Gateway readiness")
+    raise SystemExit("FAIL: trade-data-service healthcheck must verify Gateway readiness")
 if healthcheck.get("retries", 0) < 1:
-    raise SystemExit("FAIL: python-runner healthcheck retries are missing")
+    raise SystemExit("FAIL: trade-data-service healthcheck retries are missing")
 '
-echo 'compose python-runner critical-path healthcheck test passed'
+echo 'compose trade-data-service critical-path healthcheck test passed'
 
 default_rendered="$(
     env -u MT5_DATA_DIR -u MT5_CONFIG_FILE READONLY_API_KEY=compose-test-only \

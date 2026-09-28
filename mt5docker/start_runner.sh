@@ -7,4 +7,5 @@ python3 -m pip install --break-system-packages -r /app/mt5docker/requirements.tx
 echo '>>> Phase 2A: Starting services...'
 
 mkdir -p /app/service/logs
-exec python3 -u /app/mt5docker/process_supervisor.py
+cd /app
+exec python3 -u -m service.runtime.supervisor

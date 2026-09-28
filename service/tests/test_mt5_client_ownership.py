@@ -53,7 +53,7 @@ def test_service_uses_injected_process_client(service_class, service_configs):
 
 
 def test_gateway_has_one_mt5_client_construction_at_composition_root():
-    source = (REPO_ROOT / 'service' / 'api_gateway.py').read_text(encoding='utf-8')
+    source = (REPO_ROOT / 'service' / 'entrypoints' / 'api_gateway.py').read_text(encoding='utf-8')
     tree = ast.parse(source)
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
@@ -70,10 +70,10 @@ def test_gateway_has_one_mt5_client_construction_at_composition_root():
 
 
 def test_query_route_does_not_construct_an_mt5_client():
-    source = (REPO_ROOT / 'service' / 'api_gateway.py').read_text(encoding='utf-8')
+    source = (REPO_ROOT / 'service' / 'gateway' / 'routes' / 'market_data.py').read_text(encoding='utf-8')
     tree = ast.parse(source)
     query_handler = next(
-        node for node in tree.body
+        node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == 'query_rates_by_range'
     )
 
@@ -86,10 +86,10 @@ def test_query_route_does_not_construct_an_mt5_client():
 
 
 def test_gateway_history_routes_have_no_persistence_or_mt5_calls():
-    source = (REPO_ROOT / 'service' / 'api_gateway.py').read_text(encoding='utf-8')
+    source = (REPO_ROOT / 'service' / 'gateway' / 'routes' / 'market_data.py').read_text(encoding='utf-8')
     tree = ast.parse(source)
     handlers = [
-        node for node in tree.body
+        node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef)
         and node.name in {'get_rates', 'query_rates_by_range'}
     ]

@@ -44,7 +44,8 @@ def test_tick_rest_returns_503_for_stale_snapshot(monkeypatch):
 
 def test_websocket_subscription_immediately_receives_fresh_snapshot(monkeypatch):
     event = _event()
-    monkeypatch.setattr(gateway, "_fresh_tick", lambda symbol: event)
+    monkeypatch.setattr(gateway.tick_consumer, "get", lambda symbol: event)
+    monkeypatch.setattr(gateway.tick_consumer, "is_fresh", lambda tick, max_age: True)
     client = gateway.socketio.test_client(gateway.app)
     client.get_received()
     client.emit("subscribe", {"symbol": "XAUUSDm"})
@@ -55,7 +56,7 @@ def test_websocket_subscription_immediately_receives_fresh_snapshot(monkeypatch)
 
 
 def test_websocket_unsubscribe_leaves_symbol_room(monkeypatch):
-    monkeypatch.setattr(gateway, "_fresh_tick", lambda symbol: None)
+    monkeypatch.setattr(gateway.tick_consumer, "get", lambda symbol: None)
     client = gateway.socketio.test_client(gateway.app)
     client.get_received()
     client.emit("subscribe", {"symbol": "XAUUSDm"})
@@ -72,10 +73,9 @@ def test_websocket_unsubscribe_leaves_symbol_room(monkeypatch):
 
 
 def test_gateway_has_no_tick_fetcher_or_mt5_tick_polling():
-    source = (Path(gateway.__file__)).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    assert "TickFetcher" not in source
-    assert not any(
-        isinstance(node, ast.Attribute) and node.attr == "symbol_info_tick"
-        for node in ast.walk(tree)
-    )
+    for path in (Path(gateway.__file__).parent / "gateway").rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        assert "TickFetcher" not in source
+        assert not any(isinstance(node, ast.Attribute) and node.attr == "symbol_info_tick"
+                       for node in ast.walk(tree))

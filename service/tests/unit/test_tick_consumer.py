@@ -4,8 +4,9 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from service.core.tick_consumer import TickConsumer
-from service.core.tick_ipc import PROTOCOL_VERSION, TickPublisher
+from service.infrastructure.ipc.tick_protocol import PROTOCOL_VERSION
+from service.realtime.consumer import TickConsumer
+from service.realtime.publisher import TickPublisher
 
 
 def _event(symbol="XAUUSDm", received_at=None, bid=2300.0):
