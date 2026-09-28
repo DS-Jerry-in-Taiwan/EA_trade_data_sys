@@ -14,8 +14,9 @@ connection_manager.MT5Connector = object
 connection_manager.close_mt5_connection = lambda mt5: None
 sys.modules.setdefault("core.connection_manager", connection_manager)
 
-from service.core.tick_ipc import PROTOCOL_VERSION, TickPublisher, _ClientChannel
-from service.tick_service import TickService
+from service.infrastructure.ipc.tick_protocol import PROTOCOL_VERSION, _ClientChannel
+from service.realtime.publisher import TickPublisher
+from service.realtime.worker import TickService
 
 
 class FakeMT5Client:
@@ -214,7 +215,7 @@ def test_status_publication_failure_does_not_stop_tick_service(tmp_path, monkeyp
         config_path=_config(tmp_path), mt5_client=FakeMT5Client(connected=False)
     )
     monkeypatch.setattr(
-        'service.tick_service.atomic_write_status',
+        'service.realtime.worker.atomic_write_status',
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError('read only')),
     )
     assert service._publish_status('unhealthy') is None
