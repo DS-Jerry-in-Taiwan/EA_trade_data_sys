@@ -1,7 +1,7 @@
 # MT5 Trade Data Downloader (Linux/Docker)
 
-**版本**: v2.1 (2026-06-13)
-**描述**: Docker 雙容器架構的 MT5 量化交易數據服務，提供 REST API + WebSocket 即時報價、歷史 K 線、只讀交易查詢與 PostgreSQL/Grafana 交易分析管道。
+**版本**: v3.0 (2026-09-28)
+**描述**: 單一 repository、單一 application image 的 MT5 資料服務。部署仍使用 `mt5-server` 與 `python-runner` 兩個容器；`python-runner` 內由 supervisor 管理三個職責分離的 process。
 
 ---
 
@@ -19,23 +19,18 @@
 └───────────────────────────┼─────────────────────────┘
                             │ RPyC
 ┌───────────────────────────┼─────────────────────────┐
-│                 python-runner                        │
-│  ┌────────────────────┐   │                         │
-│  │   MT5Client        │◄──┘                         │
-│  │   (thread-safe)    │                             │
-│  └──┬──────┬──────┬───┘                             │
-│     │      │      │                                 │
-│  ┌──▼──┐┌──▼──┐┌──▼──────────┐  ┌────────────────┐ │
-│  │Tick ││Hist ││Account      │  │ ChartService   │ │
-│  │Service│Service│Service      │  │ (K線圖生成)    │ │
-│  └──┬──┘└──┬──┘└──────┬───────┘  └────────────────┘ │
-│     │      │          │                              │
-│     └──────┴──────────┘                              │
-│               │                                      │
-│        ┌──────▼──────┐                               │
-│        │ API Gateway │  REST :8090 + WebSocket       │
-│        │ (Flask-SIO) │  /api/v1/*                    │
-│        └─────────────┘                               │
+│ python-runner (one image/container, supervised)      │
+│  ┌───────────────────┐    │  tick NDJSON             │
+│  │ Tick Service      │◄───┘──▶ Unix socket ─────┐    │
+│  │ sole tick poller  │                         │    │
+│  └───────────────────┘                         ▼    │
+│  ┌───────────────────┐    atomic CSV       ┌────────┐│
+│  │ History Worker    │───────────────┐     │Gateway ││
+│  │ background writer │               ├────▶│ :8090  ││
+│  └───────────────────┘               │read └────────┘│
+│                         persisted history             │
+│  Supervisor: starts all 3, forwards shutdown, fails   │
+│  the container lifecycle when any child exits.        │
 └──────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────┐
@@ -50,16 +45,27 @@
 | 元件 | 語言 | 角色 |
 |:-----|:-----|:-----|
 | MT5 Terminal | Wine/Python | 數據源，透過 MetaTrader5 Python API |
-| RPyC Proxy (pymt5linux) | Python | 跨容器 RPC 橋接 (Port 8001) |
-| MT5Client | Python | thread-safe 統一連線管理 (service/core/mt5_client.py) |
-| TickService | Python | 60s 輪詢即時報價 (bid/ask) 寫入 JSON |
-| HistoryService | Python | 60s 增量抓取 K 線，copy_rates_from_pos(0,100)，CSV 去重合併 |
+| RPyC Proxy (pymt5linux) | Python | 容器網路內的 MT5 橋接（8001 不對 host 公開） |
+| MT5Client | Python | 各 process 自有、thread-safe 的統一連線管理 (`service/core/mt5_client.py`) |
+| TickService | Python | 唯一週期性 tick poller，透過 `/run/trade-data/ticks.sock` 發佈 versioned NDJSON |
+| HistoryService | Python | 獨立背景 worker；增量抓取、合併、去重並原子發佈 CSV 與 ready marker |
 | AccountService | Python | 帳戶資訊、持倉、委託、成交歷史查詢 |
 | ChartService | Python | K 線圖生成 (matplotlib → base64 PNG) |
 | API Gateway | Python (Flask) | REST API + WebSocket (Flask-SocketIO) Port 8090 |
 | Trade ETL | Python | 只讀交易資料 + OHLC CSV 匯入 PostgreSQL (`service/etl/trade_etl.py`) |
 | PostgreSQL | SQL | `trade_analytics` 交易分析資料庫 |
 | Grafana | Dashboard | 交易績效與 K 線報表 |
+
+### 資料與連線生命週期
+
+1. `mt5-server` 等待 Wine terminal ready，才啟動容器內的 RPyC bridge。
+2. `python-runner` 啟動時從 bind-mounted `mt5docker/requirements.txt` 安裝依賴；依賴不是 baked 進 image。
+3. PID 1 supervisor 啟動 Tick Service、History Worker、API Gateway 三個 process。各 process 經 `MT5Client` 自行建立及重試 RPyC 連線。
+4. Tick Service 建立 Unix socket 並持續輪詢 MT5。Gateway 的 consumer 連線後先收到 snapshot，再接收 live tick；斷線時以 bounded backoff 重連。外部 client 只連 Gateway：REST 讀取最新 snapshot，Socket.IO client `subscribe` 後由 Gateway push，WebSocket 本身不會輪詢。
+5. History Worker 寫入暫存檔並原子替換 persisted CSV；Gateway 只透過 repository 讀取已完成資料，不會在歷史查詢 request 中同步呼叫 MT5。
+6. 收到 `SIGTERM`/`SIGINT` 時 supervisor 要求三個 child graceful shutdown，逾時才強制終止；任何 child 意外退出會停止其餘 child 並讓容器非零退出。
+
+`/api/v1/health` 的 `ready` 只由即時資料 critical path 決定：IPC 已連線、Tick Service status 新鮮健康，且所有設定 symbol 都有 fresh tick。History Worker 異常會回報 `status: degraded`，但不阻塞即時資料 readiness；即時路徑未 ready 則 HTTP 503。health handler 不會觸發 MT5/RPyC request。
 
 ---
 
@@ -70,10 +76,10 @@
 | GET | `/api/v1/health` | 健康檢查 |
 | GET | `/api/v1/ticks/<symbol>` | 即時報價 (Bid/Ask) |
 | GET | `/api/v1/rates/<symbol>?timeframe=M5&days=7&limit=100` | K 線歷史（CSV 快取，支援分頁） |
-| GET | `/api/v1/rates/<symbol>/query?start_time=...&end_time=...&timeframe=M5` | 直接查詢 MT5 指定時間範圍（回測用） |
+| GET | `/api/v1/rates/<symbol>/query?start_time=...&end_time=...&timeframe=M5` | 查詢已持久化歷史資料的時間範圍（不直連 MT5） |
 | GET | `/api/v1/symbols` | 列出所有追蹤商品（含 MT5 描述與位數） |
 | GET | `/api/v1/openapi.yaml` | OpenAPI v3 規格文件 |
-| WS | `/ws` | 連線後可 subscribe/unsubscribe 即時 tick 推送 |
+| Socket.IO | `/socket.io` | 連線後以 `subscribe`/`unsubscribe` 管理即時 tick 推送 |
 
 ### 只讀交易查詢 API
 
@@ -108,7 +114,7 @@ curl http://<YOUR_HOST_IP>:8090/api/v1/ticks/XAUUSDm
 # K 線歷史（CSV 快取）
 curl "http://<YOUR_HOST_IP>:8090/api/v1/rates/XAUUSDm?timeframe=M5&limit=100"
 
-# 直接查詢 MT5（回測用）
+# 查詢已持久化的歷史範圍（回測用）
 curl "http://<YOUR_HOST_IP>:8090/api/v1/rates/XAUUSDm/query?timeframe=M5&start_time=2025-01-01&end_time=2025-01-07"
 
 # 商品列表
@@ -191,7 +197,7 @@ docker exec python-runner python3 /app/service/etl/trade_etl.py
 ## 遠端監看 (VNC)
 
 - **網址**: `http://localhost:6081/vnc.html`
-- **密碼**: `jerry1234` (VNC 驗證時請輸入 `jerry123`)
+- **密碼**: 使用部署環境提供的 `VNC_PWD`，不要寫入 repository
 - **注意**: 登入後請確保已勾選 "Allow DLL imports"
 
 ## 執行策略驗證
@@ -207,7 +213,7 @@ docker exec python-runner wine python /app/download.py
 | 路徑 | 說明 |
 |:-----|:------|
 | `mt5docker/` | 容器設定與啟動腳本 |
-| `service/` | Python 微服務（tick/history/account/chart/api_gateway） |
+| `service/` | 三 process application（tick/history/api_gateway）與 Gateway 內部服務 |
 | `service/etl/` | 交易分析 ETL 與 PostgreSQL schema |
 | `service/core/` | 共用核心（MT5Client）— namespace package |
 | `service/config/` | YAML 設定檔 |
@@ -221,7 +227,7 @@ docker exec python-runner wine python /app/download.py
 ## 關鍵配置 (Broker Info)
 
 - **追蹤商品**: `XAUUSDm`, `EURUSDm`, `GBPUSDm`, `BTC`
-- **服務埠號**: `8001` (RPyC Bridge)
+- **內部服務埠號**: `8001`（RPyC Bridge，僅 Docker network）
 - **API Port**: `8090`（請使用實際主機 IP 訪問）
 - **Broker**: Exness（SymbolResolver 自動解析）
 - **Readonly API Key**: 由 `READONLY_API_KEY` 環境變數注入，不提交 Git

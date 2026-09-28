@@ -30,18 +30,30 @@ class TestHealthEndpoint:
 
     def test_health_status(self, api):
         resp = api("/health")
-        assert resp.status_code in (200, 502), f"Unexpected status {resp.status_code}"
+        assert resp.status_code in (200, 503), f"Unexpected status {resp.status_code}"
         data = resp.json()
-        assert "status" in data, "Health response missing 'status'"
+        assert data["status"] in {"healthy", "degraded", "unhealthy", "not-ready"}
+        assert data["ready"] is (resp.status_code == 200)
+        for field in (
+            "gateway", "tick_service", "history_service", "tick_ipc_connected",
+            "symbols_tracked", "fresh_symbols", "timestamp",
+        ):
+            assert field in data, f"Health response missing '{field}'"
 
     def test_health_tick_service(self, api):
         """Health response should indicate tick_service status"""
         resp = api("/health")
-        if resp.status_code != 200:
-            pytest.skip("Health endpoint not available")
         data = resp.json()
-        assert "tick_service" in data, "Health response missing 'tick_service'"
-        assert data["tick_service"] == "running"
+        assert isinstance(data["tick_service"], dict)
+        assert "state" in data["tick_service"]
+        assert "fresh" in data["tick_service"]
+
+    def test_ready_requires_complete_fresh_symbol_set(self, api):
+        resp = api("/health")
+        data = resp.json()
+        if data["ready"]:
+            assert data["tick_ipc_connected"] is True
+            assert set(data["fresh_symbols"]) == set(data["symbols_tracked"])
 
 
 class TestSymbolsEndpoint:
@@ -74,7 +86,7 @@ class TestTicksEndpoint:
     @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_ticks_status(self, api, symbol):
         resp = api(f"/ticks/{symbol}")
-        assert resp.status_code in (200, 404, 502), f"Unexpected status {resp.status_code} for {symbol}"
+        assert resp.status_code in (200, 404, 503), f"Unexpected status {resp.status_code} for {symbol}"
 
     @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_ticks_data_shape(self, api, symbol):
@@ -85,8 +97,11 @@ class TestTicksEndpoint:
         if not data:
             pytest.skip(f"No tick data for {symbol}")
         record = data[0] if isinstance(data, list) else data
-        for field in ("time", "bid", "ask"):
+        for field in ("version", "type", "symbol", "time", "received_at", "bid", "ask"):
             assert field in record, f"Tick record missing '{field}' for {symbol}"
+        assert record["version"] == 1
+        assert record["type"] == "tick"
+        assert record["symbol"] == symbol
 
 
 class TestRatesEndpoint:
@@ -287,7 +302,7 @@ class TestOpenApiSpec:
 
 
 class TestRatesQueryEndpoint:
-    """C9: /rates/{symbol}/query — Direct MT5 historical data query"""
+    """C9: /rates/{symbol}/query — persisted historical data query."""
 
     def test_query_missing_params(self, api):
         """Missing start_time/end_time should return 400"""
@@ -302,9 +317,11 @@ class TestRatesQueryEndpoint:
     def test_query_success(self, api):
         """Valid query should return 200 with data structure"""
         resp = api("/rates/XAUUSDm/query?timeframe=M5&start_time=2025-01-01&end_time=2025-01-07")
-        if resp.status_code == 503:
-            pytest.skip("MT5 not connected")
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        assert resp.status_code in (200, 404), f"Expected 200/404, got {resp.status_code}"
+        if resp.status_code == 404:
+            data = resp.json()
+            assert "available_range" in data
+            return
         data = resp.json()
         assert "symbol" in data
         assert "timeframe" in data
@@ -313,9 +330,9 @@ class TestRatesQueryEndpoint:
         assert isinstance(data["count"], int)
 
     def test_query_source_field(self, api):
-        """Response should contain source: 'mt5'"""
+        """Successful response identifies persisted storage, never direct MT5."""
         resp = api("/rates/XAUUSDm/query?timeframe=M5&start_time=2025-01-01&end_time=2025-01-07")
         if resp.status_code != 200:
-            pytest.skip("MT5 query not available")
+            pytest.skip("No persisted data in requested range")
         data = resp.json()
-        assert data.get("source") == "mt5", f"Expected source='mt5', got '{data.get('source')}'"
+        assert data.get("source") == "history_storage"

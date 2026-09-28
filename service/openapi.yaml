@@ -1,17 +1,33 @@
 openapi: 3.0.3
 info:
   title: MT5 Data API
-  version: 3.1.0
-  description: Read-only market-data and account-query API backed by MT5.
+  version: 4.0.0
+  description: |
+    Sole external interface for real-time Tick delivery, persisted historical
+    rates and read-only account queries. Tick data reaches Gateway from Tick
+    Service over a container-local Unix socket. Both rates endpoints read
+    atomically published history storage; neither performs synchronous MT5
+    history calls. RPyC port 8001 is internal and is not part of this API.
 servers:
   - url: http://localhost:8090
 paths:
   /api/v1/health:
     get:
       summary: Report service and MT5 connectivity health
+      description: Does not make an MT5/RPyC call. Readiness follows the real-time Tick critical path; History Worker failures are reported as degraded without making `ready` false.
       responses:
         '200':
-          description: Current health state
+          description: Real-time path is ready (overall status may be healthy or degraded)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Real-time path is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
   /api/v1/ticks/{symbol}:
     get:
       summary: Return the latest tick for a logical symbol
@@ -20,11 +36,18 @@ paths:
       responses:
         '200':
           description: Latest tick
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tick'
         '404':
           description: Tick is not available
+        '503':
+          description: Last Tick is stale
   /api/v1/rates/{symbol}:
     get:
-      summary: Return cached OHLCV rates
+      summary: Return atomically published OHLCV rates
+      description: Reads persisted history storage and never synchronously calls MT5.
       parameters:
         - $ref: '#/components/parameters/Symbol'
       responses:
@@ -34,7 +57,8 @@ paths:
           description: Cached rates are not available
   /api/v1/rates/{symbol}/query:
     get:
-      summary: Query OHLCV rates directly from MT5
+      summary: Query a time range from persisted OHLCV rates
+      description: Reads the completed history cache and reports its available range when the requested range has no data. It never synchronously calls MT5.
       parameters:
         - $ref: '#/components/parameters/Symbol'
         - name: timeframe
@@ -56,11 +80,13 @@ paths:
             format: date
       responses:
         '200':
-          description: MT5 rates
+          description: Persisted history rates (`source` is `history_storage`)
         '400':
           description: Invalid query
+        '404':
+          description: No persisted data in the requested range
         '503':
-          description: MT5 is unavailable
+          description: History publication is not ready
   /api/v1/account:
     get:
       summary: Return read-only account information
@@ -144,3 +170,104 @@ components:
       schema:
         type: string
         enum: [XAUUSDm, EURUSDm, GBPUSDm, BTC]
+  schemas:
+    Tick:
+      type: object
+      required: [version, type, symbol, bid, ask, last, volume, received_at, time]
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        type:
+          type: string
+          enum: [tick]
+        symbol:
+          $ref: '#/components/parameters/Symbol/schema'
+        bid:
+          type: number
+        ask:
+          type: number
+        last:
+          type: number
+        volume:
+          type: number
+        source_time:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+        time:
+          type: string
+          format: date-time
+    ComponentStatus:
+      type: object
+      required: [state, fresh]
+      properties:
+        component:
+          type: string
+        state:
+          type: string
+          enum: [healthy, syncing, degraded, unhealthy, starting, stopped, unknown]
+        updated_at:
+          type: string
+          format: date-time
+        age_seconds:
+          type: number
+        fresh:
+          type: boolean
+    Health:
+      type: object
+      required: [status, ready, gateway, tick_service, history_service, tick_ipc_connected, symbols_tracked, fresh_symbols, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy, not-ready]
+        ready:
+          type: boolean
+        gateway:
+          type: object
+          required: [state, ready]
+          properties:
+            state:
+              type: string
+            ready:
+              type: boolean
+        tick_service:
+          $ref: '#/components/schemas/ComponentStatus'
+        history_service:
+          $ref: '#/components/schemas/ComponentStatus'
+        tick_ipc_connected:
+          type: boolean
+        symbols_tracked:
+          type: array
+          items:
+            type: string
+        fresh_symbols:
+          type: array
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+x-socketio:
+  path: /socket.io
+  events:
+    connect:
+      serverEmits: connected
+    subscribe:
+      clientPayload:
+        type: object
+        required: [symbol]
+        properties:
+          symbol:
+            type: string
+            enum: [XAUUSDm, EURUSDm, GBPUSDm, BTC]
+      serverEmits: [subscribed, tick]
+    unsubscribe:
+      clientPayload:
+        type: object
+        required: [symbol]
+        properties:
+          symbol:
+            type: string

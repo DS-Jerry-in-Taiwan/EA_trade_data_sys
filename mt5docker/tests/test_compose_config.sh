@@ -52,8 +52,27 @@ if len(matches) != 1 or matches[0]["source"] != "/tmp/mt5-config-compose-fixture
     raise SystemExit("FAIL: config mount is not exact and read-only")
 if service["environment"].get("MT5_CONFIG_LINUX") != "/run/mt5/mt5cfg.ini":
     raise SystemExit("FAIL: server does not consume the mounted runtime config")
+published_ports = {
+    int(port["target"]): port.get("published")
+    for port in service.get("ports", [])
+}
+if 8001 in published_ports:
+    raise SystemExit("FAIL: RPyC port 8001 must remain private to the Docker network")
 '
 echo 'compose MT5_CONFIG_FILE interpolation test passed'
+
+printf '%s' "$config_json" | python3 -c '
+import json, sys
+service = json.load(sys.stdin)["services"]["python-runner"]
+healthcheck = service.get("healthcheck", {})
+test = healthcheck.get("test", [])
+rendered = " ".join(str(part) for part in test)
+if "/api/v1/health" not in rendered or "ready" not in rendered:
+    raise SystemExit("FAIL: python-runner healthcheck must verify Gateway readiness")
+if healthcheck.get("retries", 0) < 1:
+    raise SystemExit("FAIL: python-runner healthcheck retries are missing")
+'
+echo 'compose python-runner critical-path healthcheck test passed'
 
 default_rendered="$(
     env -u MT5_DATA_DIR -u MT5_CONFIG_FILE READONLY_API_KEY=compose-test-only \

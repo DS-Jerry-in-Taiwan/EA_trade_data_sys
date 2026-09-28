@@ -2,6 +2,7 @@ import os
 import tempfile
 import time
 import sys
+import signal
 import yaml
 import pandas as pd
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 sys.path.insert(0, '/app')
 from service.core.mt5_client import MT5Client
+from service.core.component_status import DEFAULT_STATUS_DIR, atomic_write_status
 
 class HistoryService:
     SUPPORTED_TIMEFRAMES = {
@@ -33,6 +35,11 @@ class HistoryService:
         self.symbols = cfg.get('symbols', [])
         self.interval = cfg.get('update_interval_seconds', 60)
         self.data_path = cfg.get('data_path', '/app/service/data/history')
+        self.status_path = os.environ.get(
+            'HISTORY_STATUS_PATH', cfg.get(
+                'status_path', os.path.join(DEFAULT_STATUS_DIR, 'history-status.json')
+            )
+        )
         configured_minimums = cfg.get('minimum_bars', {})
         self.minimum_bars = {
             timeframe: int(configured_minimums.get(timeframe, minimum))
@@ -67,6 +74,7 @@ class HistoryService:
         # and recover after that timed-out operation eventually completes.
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._inflight_future = None
+        self._closed = False
         self.sync_status = {}
         os.makedirs(self.data_path, exist_ok=True)
 
@@ -97,6 +105,18 @@ class HistoryService:
     def get_sync_status(self):
         return {f'{symbol}:{timeframe}': dict(status)
                 for (symbol, timeframe), status in self.sync_status.items()}
+
+    def _publish_status(self, state, **details):
+        try:
+            return atomic_write_status(
+                self.status_path, 'history_service', state,
+                sync=self.get_sync_status(), **details,
+            )
+        except OSError as exc:
+            # A full/read-only runtime directory degrades observability, not
+            # the independent history persistence loop itself.
+            print(f'[HistoryService] Status publication failed: {exc}')
+            return None
 
     def _fetch_pages(self, broker_symbol, timeframe_attr, target_count):
         """Fetch newest-to-oldest MT5 pages until enough rows or source exhaustion."""
@@ -240,6 +260,7 @@ class HistoryService:
                 os.unlink(temp_path)
 
     def fetch_incremental(self, now=None):
+        self._publish_status('syncing')
         was_connected = self.mt5_client.mt5 is not None
         if not self.mt5_client.ensure_connected():
             print(f'[{datetime.now()}] MT5 connection failed')
@@ -251,6 +272,7 @@ class HistoryService:
                             sym_conf['name'], normalized, 'error',
                             detail='MT5 connection failed',
                         )
+            self._publish_status('degraded', detail='MT5 connection failed')
             return
 
         # Lazy init resolver (第一次成功連線後執行一次)
@@ -348,20 +370,43 @@ class HistoryService:
                     )
                     print(f'[{datetime.now()}] Error fetching {symbol} {tf_str}: {e}')
 
+        states = [item['state'] for item in self.sync_status.values()]
+        state = 'healthy' if states and all(item == 'ready' for item in states) else 'degraded'
+        self._publish_status(state)
+
     def run(self):
         print(f'[HistoryService] Started.')
+        self._publish_status('starting')
         while True:
             try:
                 self.fetch_incremental()
             except Exception as e:
                 print(f'[{datetime.now()}] HistoryService error: {e}')
                 self.mt5_client.reset()
+                self._publish_status('unhealthy', detail=str(e))
             time.sleep(self.interval)
+
+    def close(self):
+        """Release resources owned by the History Worker process."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        finally:
+            self.mt5_client.shutdown()
+
+
+def _handle_shutdown_signal(signum, _frame):
+    """Unwind the worker so its process-owned resources reach ``finally``."""
+    raise SystemExit(128 + signum)
 
 
 if __name__ == '__main__':
     service = HistoryService()
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
     try:
         service.run()
     finally:
-        service.mt5_client.shutdown()
+        service.close()
