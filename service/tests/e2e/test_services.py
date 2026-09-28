@@ -12,37 +12,45 @@ from datetime import datetime, timezone
 
 SERVICES = ["tick_service", "history_service", "api_gateway"]
 LOGS = {s: f"/app/service/logs/{s}.log" for s in SERVICES}
+PROCESS_MODULES = {
+    "tick_service": "service.entrypoints.tick_worker",
+    "history_service": "service.entrypoints.history_worker",
+    "api_gateway": "service.entrypoints.api_gateway",
+}
 
 
-def _service_pid(docker_exec, name):
-    """Get PID of a service process by parsing ps auxww output in Python."""
-    r = docker_exec("ps auxww")
+def _service_pid(docker_exec, module):
+    """Get PID of the process containing the exact ``-m <module>`` pair."""
+    r = docker_exec("ps -eo pid=,args=")
     stdout = r.stdout
     if not stdout:
         return ""
-    for line in stdout.strip().split("\n"):
-        if name in line and "grep" not in line:
-            parts = line.split()
-            if len(parts) >= 2:
-                return parts[1]
+    for line in stdout.splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        argv = parts[1:]
+        if any(argv[index:index + 2] == ["-m", module]
+               for index in range(len(argv) - 1)):
+            return parts[0]
     return ""
 
 
 def test_tick_service_running(docker_exec):
     """tick_service background process must have a PID"""
-    pid = _service_pid(docker_exec, "tick_service")
+    pid = _service_pid(docker_exec, PROCESS_MODULES["tick_service"])
     assert pid, "tick_service is not running (no PID found)"
 
 
 def test_history_service_running(docker_exec):
     """history_service background process must have a PID"""
-    pid = _service_pid(docker_exec, "history_service")
+    pid = _service_pid(docker_exec, PROCESS_MODULES["history_service"])
     assert pid, "history_service is not running (no PID found)"
 
 
 def test_api_gateway_running(docker_exec):
     """api_gateway background process must have a PID"""
-    pid = _service_pid(docker_exec, "api_gateway")
+    pid = _service_pid(docker_exec, PROCESS_MODULES["api_gateway"])
     assert pid, "api_gateway is not running (no PID found)"
 
 

@@ -10,6 +10,20 @@ import socket
 import pytest
 
 
+def _module_process_pid(docker_exec, module):
+    """Return the PID whose argv contains the exact ``-m <module>`` pair."""
+    result = docker_exec("ps -eo pid=,args=")
+    for line in result.stdout.splitlines():
+        fields = line.strip().split()
+        if not fields:
+            continue
+        argv = fields[1:]
+        if any(argv[index:index + 2] == ["-m", module]
+               for index in range(len(argv) - 1)):
+            return fields[0]
+    return ""
+
+
 class TestInfrastructure:
 
     def test_container_python_version(self):
@@ -45,14 +59,14 @@ class TestInfrastructure:
             assert r.stdout.strip() == "OK", f"File {f} is missing"
 
     def test_process_tick_service(self, docker_exec):
-        """tick_service must be among running processes"""
-        r = docker_exec("ps auxww | grep tick_service | grep -v grep")
-        assert r.stdout.strip(), "tick_service not found in ps auxww"
+        """The Realtime worker module must be among running processes."""
+        assert _module_process_pid(docker_exec, "service.entrypoints.tick_worker"), \
+            "service.entrypoints.tick_worker not found in process argv"
 
     def test_process_history_service(self, docker_exec):
-        """history_service must be among running processes"""
-        r = docker_exec("ps auxww | grep history_service | grep -v grep")
-        assert r.stdout.strip(), "history_service not found in ps auxww"
+        """The History worker module must be among running processes."""
+        assert _module_process_pid(docker_exec, "service.entrypoints.history_worker"), \
+            "service.entrypoints.history_worker not found in process argv"
 
 
 class TestMT5Client:
