@@ -1,7 +1,10 @@
 import yaml
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from service.infrastructure.mt5.client import MT5Client
+from service.infrastructure.mt5.mappers import map_mt5_deal
+from service.trade_query.models import DealRecord, DealSummary
+from service.trade_query.presenters import present_deal_summary_v1, present_deal_v1
 
 
 MT5_NOT_CONNECTED = {'error': 'MT5 not connected'}
@@ -139,34 +142,25 @@ class AccountService:
         deals = self.mt5_client.call(lambda m: m.history_deals_get(from_dt, to_dt))
         if not deals:
             if include_summary:
-                return {'data': [], 'summary': self._summarize_deals([])}
+                return {
+                    'data': [],
+                    'summary': present_deal_summary_v1(self._summarize_deals([])),
+                }
             return []
-        deal_types = ['BUY', 'SELL', 'BALANCE', 'CREDIT', 'CHARGE', 'CORRECTION', 'BONUS', 'COMMISSION', 'COMMISSION_DAILY', 'COMMISSION_MONTHLY', 'COMMISSION_AGENT_DAILY', 'COMMISSION_AGENT_MONTHLY', 'INTEREST', 'BUY_CANCELED', 'SELL_CANCELED', 'DIVIDEND', 'DIVIDEND_FRANKED', 'TAX']
-        entry_types = ['IN', 'OUT', 'INOUT', 'OUT_BY']
-        sorted_deals = sorted(deals, key=lambda x: getattr(x, 'time', 0), reverse=True)
+        mapped_deals = [map_mt5_deal(deal) for deal in deals]
+        sorted_deals = sorted(
+            mapped_deals, key=lambda deal: deal.occurred_at, reverse=True
+        )
         if limit is not None:
             sorted_deals = sorted_deals[:limit]
-        result = []
-        for d in sorted_deals:
-            deal_type = getattr(d, 'type', None)
-            entry = getattr(d, 'entry', None)
-            result.append({
-                'deal': getattr(d, 'deal', getattr(d, 'ticket', None)),
-                'order': getattr(d, 'order', None),
-                'position_id': getattr(d, 'position_id', None),
-                'symbol': getattr(d, 'symbol', ''),
-                'type': deal_types[deal_type] if isinstance(deal_type, int) and deal_type < len(deal_types) else deal_type,
-                'entry': entry_types[entry] if isinstance(entry, int) and entry < len(entry_types) else entry,
-                'volume': getattr(d, 'volume', None),
-                'price': getattr(d, 'price', None),
-                'profit': _round_number(getattr(d, 'profit', 0), 2),
-                'commission': _round_number(getattr(d, 'commission', 0), 2),
-                'swap': _round_number(getattr(d, 'swap', 0), 2),
-                'time': _to_utc_iso(getattr(d, 'time', None)),
-                'comment': getattr(d, 'comment', '')
-            })
+        result = [present_deal_v1(deal) for deal in sorted_deals]
         if include_summary:
-            return {'data': result, 'summary': self._summarize_deals(result)}
+            return {
+                'data': result,
+                'summary': present_deal_summary_v1(
+                    self._summarize_deals(sorted_deals)
+                ),
+            }
         return result
 
     def get_history_orders(self, from_dt: datetime, to_dt: datetime):
@@ -198,13 +192,13 @@ class AccountService:
             })
         return result
 
-    def _summarize_deals(self, deals: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return {
-            'profit': _round_number(sum(d.get('profit') or 0 for d in deals), 2),
-            'commission': _round_number(sum(d.get('commission') or 0 for d in deals), 2),
-            'swap': _round_number(sum(d.get('swap') or 0 for d in deals), 2),
-            'count': len(deals),
-        }
+    def _summarize_deals(self, deals: List[DealRecord]) -> DealSummary:
+        return DealSummary(
+            profit=sum(deal.profit for deal in deals),
+            commission=sum(deal.commission for deal in deals),
+            swap=sum(deal.swap for deal in deals),
+            count=len(deals),
+        )
 
 
 def main():
