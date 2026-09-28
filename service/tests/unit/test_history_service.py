@@ -1,5 +1,3 @@
-import sys
-import types
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,17 +7,7 @@ import numpy as np
 import pytest
 import yaml
 
-
-class _PlaceholderMT5Client:
-    pass
-
-
-# The minimal safe copy intentionally does not contain the production MT5 client.
-mt5_client_module = types.ModuleType('service.core.mt5_client')
-mt5_client_module.MT5Client = _PlaceholderMT5Client
-sys.modules.setdefault('service.core.mt5_client', mt5_client_module)
-
-from service.history_service import HistoryService
+from service.history.worker import HistoryService
 
 
 def _bar(timestamp, close=100.0):
@@ -245,7 +233,7 @@ def test_atomic_write_replaces_target_from_same_directory(tmp_path, monkeypatch)
         seen['destination'] = Path(destination)
         real_replace(source, destination)
 
-    monkeypatch.setattr('service.history_service.os.replace', recording_replace)
+    monkeypatch.setattr('service.history.worker.os.replace', recording_replace)
     frame = pd.DataFrame([_bar('2026-09-08T10:00:00Z')])
 
     HistoryService._atomic_write_csv(frame, str(target))
@@ -263,7 +251,7 @@ def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeyp
     def failing_replace(source, destination):
         raise OSError('replace failed')
 
-    monkeypatch.setattr('service.history_service.os.replace', failing_replace)
+    monkeypatch.setattr('service.history.worker.os.replace', failing_replace)
     frame = pd.DataFrame([_bar('2026-09-08T10:00:00Z')])
 
     with pytest.raises(OSError, match='replace failed'):
@@ -545,7 +533,9 @@ def test_repeated_refresh_does_not_queue_calls_behind_timed_out_request(tmp_path
 
         def call(self, operation):
             self.calls += 1
-            time.sleep(0.05)
+            # Keep the first call in flight well beyond status-file fsync
+            # variance so this test verifies queueing, not host I/O speed.
+            time.sleep(0.5)
             return operation(self.mt5)
 
     config_path = tmp_path / 'settings.yaml'
@@ -572,7 +562,7 @@ def test_status_publication_failure_does_not_stop_history_worker(tmp_path, monke
     _write_config(config_path, tmp_path / 'history')
     service = HistoryService(config_path=str(config_path), mt5_client=FakeMT5Client([]))
     monkeypatch.setattr(
-        'service.history_service.atomic_write_status',
+        'service.history.worker.atomic_write_status',
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError('read only')),
     )
     assert service._publish_status('degraded') is None
