@@ -13,6 +13,7 @@ except ModuleNotFoundError:
 
 from service.trade_query.account_service import AccountService
 from service.trade_query.errors import DealMappingError
+from service.infrastructure.observability.metrics import mt5_deal_mapping_errors_total
 
 
 class FakeMT5Client:
@@ -114,6 +115,7 @@ def test_deal_mapping_error_is_returned_as_502(monkeypatch):
     app = flask.Flask(__name__)
     app.register_blueprint(create_blueprint(FailingService(), lambda: config))
 
+    before = mt5_deal_mapping_errors_total._value.get()
     response = app.test_client().get(
         "/api/v1/history/deals?days=7", headers={"X-API-Key": "secret"}
     )
@@ -124,3 +126,37 @@ def test_deal_mapping_error_is_returned_as_502(monkeypatch):
         "code": "mt5_deal_mapping_error",
     }
     assert "source details" not in response.get_data(as_text=True)
+    assert mt5_deal_mapping_errors_total._value.get() == before + 1
+
+
+def test_deal_mapping_metric_does_not_increment_for_success(monkeypatch):
+    flask = pytest.importorskip("flask")
+    from service.gateway.routes.trade_query import create_blueprint
+
+    class SuccessfulService:
+        def get_deals(self, **_kwargs):
+            return []
+
+    monkeypatch.setenv("TEST_READONLY_API_KEY", "secret")
+    config = {
+        "api_gateway": {"readonly_api_key_env": "TEST_READONLY_API_KEY"},
+        "trade_query": {"default_days": 7, "max_days": 90},
+    }
+    app = flask.Flask(__name__)
+    app.register_blueprint(create_blueprint(SuccessfulService(), lambda: config))
+    before = mt5_deal_mapping_errors_total._value.get()
+    client = app.test_client()
+
+    unauthorized = client.get("/api/v1/history/deals?days=7")
+    invalid_range = client.get(
+        "/api/v1/history/deals?days=91", headers={"X-API-Key": "secret"}
+    )
+    response = client.get(
+        "/api/v1/history/deals?days=7", headers={"X-API-Key": "secret"}
+    )
+
+    assert unauthorized.status_code == 401
+    assert invalid_range.status_code == 400
+    assert response.status_code == 200
+    assert response.get_json() == []
+    assert mt5_deal_mapping_errors_total._value.get() == before

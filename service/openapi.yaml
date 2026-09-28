@@ -110,13 +110,73 @@ paths:
   /api/v1/history/deals:
     get:
       summary: Return historical deals
+      description: Returns a plain list by default. When `summary=true`, returns an envelope containing the same deal list and aggregate totals. An empty list (and zero-valued summary) is a valid successful response when the selected range has no deals.
       security:
         - ApiKeyAuth: []
+      parameters:
+        - name: days
+          in: query
+          description: Number of trailing days to query when `from` and `to` are omitted.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+        - name: from
+          in: query
+          description: Inclusive range start. Must be supplied together with `to`.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          description: Inclusive range end. Must be supplied together with `from`.
+          schema:
+            type: string
+            format: date
+        - name: summary
+          in: query
+          description: Return the summary envelope when true.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Historical deals
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/TradeDealV1'
+                  - type: object
+                    required: [data, summary]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TradeDealV1'
+                      summary:
+                        $ref: '#/components/schemas/DealSummary'
+        '400':
+          description: Invalid or excessive date range
         '401':
           description: API key is missing or invalid
+        '502':
+          description: An MT5 deal could not be mapped to the public deal contract
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, code]
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum: [mt5_deal_mapping_error]
+        '503':
+          description: MT5 is not connected
   /api/v1/history/orders:
     get:
       summary: Return historical orders
@@ -171,6 +231,79 @@ components:
         type: string
         enum: [XAUUSDm, EURUSDm, GBPUSDm, BTC]
   schemas:
+    TradeDealV1:
+      type: object
+      description: A historical MT5 deal. `deal` is a deprecated alias; `ticket` and `deal_id` identify the deal and always have the same value. `order` and `order_id` identify the originating order and always have the same value.
+      required: [deal, ticket, deal_id, order, order_id, position_id, symbol, type, entry, volume, price, profit, commission, swap, time, comment]
+      properties:
+        deal:
+          type: integer
+          format: int64
+          minimum: 1
+          deprecated: true
+          description: Deprecated alias of `ticket` and `deal_id`.
+        ticket:
+          type: integer
+          format: int64
+          minimum: 1
+          description: MT5 deal ticket; identical to `deal_id`.
+        deal_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Canonical deal identifier; identical to `ticket`.
+        order:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Compatibility alias of `order_id`.
+        order_id:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Canonical identifier of the originating MT5 order; identical to `order`.
+        position_id:
+          type: integer
+          format: int64
+          minimum: 0
+        symbol:
+          type: string
+          minLength: 1
+        type:
+          type: string
+        entry:
+          type: string
+        volume:
+          type: number
+          minimum: 0
+        price:
+          type: number
+          minimum: 0
+        profit:
+          type: number
+        commission:
+          type: number
+        swap:
+          type: number
+        time:
+          type: string
+          format: date-time
+        comment:
+          type: string
+    DealSummary:
+      type: object
+      description: Aggregate totals for the returned historical deals.
+      required: [profit, commission, swap, count]
+      properties:
+        profit:
+          type: number
+        commission:
+          type: number
+        swap:
+          type: number
+        count:
+          type: integer
+          minimum: 0
     Tick:
       type: object
       required: [version, type, symbol, bid, ask, last, volume, received_at, time]
