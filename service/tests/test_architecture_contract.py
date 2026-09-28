@@ -60,7 +60,7 @@ def test_supervisor_owns_exactly_three_application_processes():
 
 
 def test_gateway_consumes_tick_ipc_and_has_no_legacy_tick_fetcher():
-    source = (REPO_ROOT / "service" / "api_gateway.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "service" / "entrypoints" / "api_gateway.py").read_text(encoding="utf-8")
 
     assert "TickConsumer" in source
     assert "TickFetcher" not in source
@@ -68,10 +68,10 @@ def test_gateway_consumes_tick_ipc_and_has_no_legacy_tick_fetcher():
 
 
 def test_socketio_unsubscribe_leaves_the_symbol_room():
-    source = (REPO_ROOT / "service" / "api_gateway.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "service" / "gateway" / "websocket.py").read_text(encoding="utf-8")
     module = ast.parse(source)
     handler = next(
-        node for node in module.body
+        node for node in ast.walk(module)
         if isinstance(node, ast.FunctionDef) and node.name == "handle_unsubscribe"
     )
     calls = [
@@ -85,14 +85,14 @@ def test_socketio_unsubscribe_leaves_the_symbol_room():
 
 
 def test_history_query_contract_identifies_persisted_storage():
-    source = (REPO_ROOT / "service" / "api_gateway.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "service" / "gateway" / "routes" / "market_data.py").read_text(encoding="utf-8")
     module = ast.parse(source)
     handler = next(
-        node for node in module.body
+        node for node in ast.walk(module)
         if isinstance(node, ast.FunctionDef) and node.name == "query_rates_by_range"
     )
     handler_source = ast.get_source_segment(source, handler)
 
-    assert "history_query_svc.get_rates" in handler_source
-    assert "'source': 'history_storage'" in handler_source
+    assert "history_query_service.get_rates" in handler_source
+    assert '"source": "history_storage"' in handler_source
     assert "copy_rates" not in handler_source

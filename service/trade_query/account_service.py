@@ -78,6 +78,29 @@ class AccountService:
             })
         return result
 
+    def get_symbols(self, logical_symbols):
+        """Return public symbol metadata while keeping MT5 access behind this service."""
+        names = list(logical_symbols)
+        if not self.mt5_client.ensure_connected():
+            return {'symbols': names, 'source': 'config'}
+        if not getattr(self.mt5_client, '_resolver', None):
+            self.mt5_client.init_resolver(names)
+        result = []
+        for name in names:
+            broker_name = self.mt5_client.resolve(name)
+            info = self.mt5_client.call(lambda module: module.symbol_info(broker_name))
+            if info:
+                result.append({
+                    'name': name,
+                    'digits': getattr(info, 'digits', None),
+                    'spread': getattr(info, 'spread', None),
+                    'description': getattr(info, 'description', ''),
+                    'trade_mode': getattr(info, 'trade_mode', None),
+                })
+            else:
+                result.append({'name': name, 'digits': None, 'spread': None})
+        return {'symbols': result, 'count': len(result), 'source': 'mt5'}
+
     def get_orders(self):
         if not self.mt5_client.ensure_connected():
             return MT5_NOT_CONNECTED

@@ -33,13 +33,15 @@ def _configure_health(monkeypatch, tmp_path, history_state="healthy"):
     history_path = tmp_path / "history.json"
     atomic_write_status(str(tick_path), "tick_service", "healthy")
     atomic_write_status(str(history_path), "history_service", history_state)
-    monkeypatch.setitem(gateway._tick_config, "symbols", ["XAUUSDm"])
-    monkeypatch.setitem(gateway._tick_config, "status_path", str(tick_path))
-    monkeypatch.setitem(gateway._tick_config, "status_max_age_seconds", 30)
-    monkeypatch.setitem(gateway._history_health_config, "status_path", str(history_path))
-    monkeypatch.setitem(gateway._history_health_config, "status_max_age_seconds", 30)
+    context = gateway.app.extensions["gateway_context"]
+    monkeypatch.setattr(context, "tick_symbols", ["XAUUSDm"])
+    monkeypatch.setattr(context, "tick_status_path", str(tick_path))
+    monkeypatch.setattr(context, "tick_status_max_age", 30)
+    monkeypatch.setattr(context, "history_status_path", str(history_path))
+    monkeypatch.setattr(context, "history_status_max_age", 30)
     monkeypatch.setattr(type(gateway.tick_consumer), "connected", property(lambda _self: True))
-    monkeypatch.setattr(gateway, "_fresh_tick", lambda symbol: {"symbol": symbol})
+    monkeypatch.setattr(gateway.tick_consumer, "get", lambda symbol: {"symbol": symbol})
+    monkeypatch.setattr(gateway.tick_consumer, "is_fresh", lambda tick, max_age: True)
 
 
 def test_health_is_ready_when_tick_critical_path_is_fresh(monkeypatch, tmp_path):
