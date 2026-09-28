@@ -17,7 +17,6 @@ class _PlaceholderMT5Client:
 # The minimal safe copy intentionally does not contain the production MT5 client.
 mt5_client_module = types.ModuleType('service.core.mt5_client')
 mt5_client_module.MT5Client = _PlaceholderMT5Client
-sys.modules.setdefault('service.core', types.ModuleType('service.core'))
 sys.modules.setdefault('service.core.mt5_client', mt5_client_module)
 
 from service.history_service import HistoryService
@@ -76,6 +75,7 @@ def _write_config(path, data_path, timeframes=None, **history_overrides):
             {'name': 'BTC', 'timeframes': timeframes or ['M5', 'M15', 'H1', 'D1']}
         ],
         'data_path': str(data_path),
+        'status_path': str(path.parent / 'history-status.json'),
     }
     history.update(history_overrides)
     path.write_text(yaml.safe_dump({'history_service': history}), encoding='utf-8')
@@ -565,3 +565,15 @@ def test_repeated_refresh_does_not_queue_calls_behind_timed_out_request(tmp_path
     assert client.calls == 1
     assert service.get_sync_status()['BTC:M5']['state'] == 'error'
     assert 'still running' in service.get_sync_status()['BTC:M5']['detail']
+
+
+def test_status_publication_failure_does_not_stop_history_worker(tmp_path, monkeypatch):
+    config_path = tmp_path / 'settings.yaml'
+    _write_config(config_path, tmp_path / 'history')
+    service = HistoryService(config_path=str(config_path), mt5_client=FakeMT5Client([]))
+    monkeypatch.setattr(
+        'service.history_service.atomic_write_status',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError('read only')),
+    )
+    assert service._publish_status('degraded') is None
+    service._executor.shutdown(wait=False)

@@ -1,16 +1,12 @@
 import os
-import json
 import sys
-import time
-import threading
 import yaml
 import hmac
 import atexit
-import math
-import pandas as pd
+import signal
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_file
-from flask_socketio import SocketIO, emit, join_room
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
 import time as time_module
 import metrics
@@ -18,6 +14,11 @@ import metrics
 sys.path.insert(0, '/app')
 from service.core.mt5_client import MT5Client
 from service.account_service import AccountService
+from service.history_repository import HistoryRepository
+from service.history_query_service import HistoryQueryService
+from service.core.tick_consumer import TickConsumer
+from service.core.tick_ipc import DEFAULT_SOCKET_PATH
+from service.core.component_status import DEFAULT_STATUS_DIR, read_status
 
 # The gateway process owns exactly one MT5 client. All gateway components and
 # request handlers share it instead of opening independent RPyC sessions.
@@ -29,72 +30,72 @@ app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
-latest_ticks = {}
-tick_lock = threading.Lock()
-history_path = '/app/service/data/history'
 cfg_path = '/app/service/config/settings.yaml'
-
-SUPPORTED_RATES_TIMEFRAMES = frozenset({'M5', 'M15', 'H1', 'D1'})
-MAX_RATES_LIMIT = 5000
-MAX_RATES_DAYS = 36500
-RATES_COLUMNS = ('time', 'open', 'high', 'low', 'close', 'tick_volume')
-RATES_SOURCE_COLUMN = 'source_symbol'
-RATES_TIMEFRAME_SECONDS = {'M5': 300, 'M15': 900, 'H1': 3600, 'D1': 86400}
+history_query_svc = HistoryQueryService(HistoryRepository())
 
 
-def _utc_now():
-    return pd.Timestamp.now(tz='UTC')
+def _public_tick(event):
+    """Keep the existing API `time` field while exposing the IPC timestamps."""
+    result = dict(event)
+    result['time'] = event.get('source_time') or event.get('received_at')
+    return result
 
 
-class TickFetcher(threading.Thread):
-    def __init__(self, mt5_client):
-        super().__init__(daemon=True)
+def _on_tick(event):
+    metrics.mt5_tick_bid.labels(symbol=event['symbol']).set(event['bid'])
+    metrics.mt5_tick_ask.labels(symbol=event['symbol']).set(event['ask'])
+    try:
+        source_time = datetime.fromisoformat(
+            (event.get('source_time') or event['received_at']).replace('Z', '+00:00')
+        )
+        metrics.mt5_last_tick_timestamp.labels(symbol=event['symbol']).set(source_time.timestamp())
+    except (KeyError, TypeError, ValueError):
+        pass
+    metrics.mt5_connected.set(1)
+    socketio.emit('tick', _public_tick(event), room=event['symbol'])
+
+
+def _tick_settings():
+    try:
         with open(cfg_path) as f:
-            cfg = yaml.safe_load(f).get('tick_service', {})
-        self.symbols = cfg.get('symbols', ['XAUUSDm'])
-        self.interval = cfg.get('update_interval_seconds', 60)
-        self.mt5_client = mt5_client
-        self._resolver_initialized = False
+            cfg = (yaml.safe_load(f) or {}).get('tick_service', {})
+    except (OSError, yaml.YAMLError):
+        cfg = {}
+    interval = float(cfg.get('update_interval_seconds', 60))
+    symbols = cfg.get('symbols', [])
+    return {
+        'socket_path': os.getenv('TICK_SOCKET_PATH', cfg.get('socket_path', DEFAULT_SOCKET_PATH)),
+        'max_age_seconds': float(cfg.get('max_age_seconds', max(interval * 2, 5))),
+        'status_path': os.getenv('TICK_STATUS_PATH', cfg.get(
+            'status_path', os.path.join(DEFAULT_STATUS_DIR, 'tick-status.json'))),
+        'status_max_age_seconds': float(cfg.get('status_max_age_seconds', max(interval * 2, 5))),
+        'symbols': list(symbols),
+    }
 
-    def run(self):
-        print('[TickFetcher] Background thread started')
-        while True:
-            try:
-                if self.mt5_client.ensure_connected():
-                    # Lazy init resolver
-                    if not self._resolver_initialized:
-                        self.mt5_client.init_resolver(self.symbols)
-                        self._resolver_initialized = True
 
-                    for symbol in self.symbols:
-                        broker_symbol = self.mt5_client.resolve(symbol)
-                        tick = self.mt5_client.call(lambda m: m.symbol_info_tick(broker_symbol))
-                        if tick:
-                            data = {
-                                'symbol': symbol,  # 保持 logical name
-                                'bid': tick.bid,
-                                'ask': tick.ask,
-                                'last': tick.last,
-                                'volume': tick.volume,
-                                'time': datetime.now(timezone.utc).isoformat()
-                            }
-                            with tick_lock:
-                                latest_ticks[symbol] = data
-                            # 更新 Prometheus metrics（使用 broker 實際名稱）
-                            metrics.mt5_tick_bid.labels(symbol=broker_symbol).set(tick.bid)
-                            metrics.mt5_tick_ask.labels(symbol=broker_symbol).set(tick.ask)
-                            if hasattr(tick, 'time') and tick.time:
-                                metrics.mt5_last_tick_timestamp.labels(symbol=broker_symbol).set(tick.time)
-                            else:
-                                metrics.mt5_last_tick_timestamp.labels(symbol=broker_symbol).set(time_module.time())
-                            metrics.mt5_connected.set(1)
-                            socketio.emit('tick', data, room=symbol)
-                            print(f'[TickFetcher] {symbol}: Bid={tick.bid}, Ask={tick.ask}')
-            except Exception as e:
-                print(f'[TickFetcher] Error: {e}')
-                metrics.mt5_connected.set(0)
-                self.mt5_client.reset()
-            time.sleep(self.interval)
+def _history_health_settings():
+    try:
+        with open(cfg_path) as f:
+            cfg = (yaml.safe_load(f) or {}).get('history_service', {})
+    except (OSError, yaml.YAMLError):
+        cfg = {}
+    interval = float(cfg.get('update_interval_seconds', 60))
+    return {
+        'status_path': os.getenv('HISTORY_STATUS_PATH', cfg.get(
+            'status_path', os.path.join(DEFAULT_STATUS_DIR, 'history-status.json'))),
+        'status_max_age_seconds': float(cfg.get('status_max_age_seconds', max(interval * 3, 30))),
+    }
+
+
+_tick_config = _tick_settings()
+_history_health_config = _history_health_settings()
+tick_consumer = TickConsumer(_tick_config['socket_path'], on_tick=_on_tick)
+atexit.register(tick_consumer.stop)
+
+
+def _fresh_tick(symbol):
+    tick = tick_consumer.get(symbol)
+    return tick if tick_consumer.is_fresh(tick, _tick_config['max_age_seconds']) else None
 
 
 # ─── Request Hooks for Metrics ───
@@ -233,219 +234,138 @@ def get_history_orders():
 
 @app.route('/api/v1/ticks/<symbol>')
 def get_tick(symbol):
-    # 移除 .upper() - services 存的是 logical name（原樣從 settings.yaml）
-    with tick_lock:
-        tick = latest_ticks.get(symbol)
+    tick = tick_consumer.get(symbol)
+    if tick and tick_consumer.is_fresh(tick, _tick_config['max_age_seconds']):
+        return jsonify(_public_tick(tick))
     if tick:
-        return jsonify(tick)
+        return jsonify({
+            'error': 'Tick data is stale',
+            'symbol': symbol,
+            'last_received_at': tick.get('received_at'),
+        }), 503
     return jsonify({'error': 'Symbol not found', 'symbol': symbol}), 404
 
 
 @app.route('/api/v1/rates/<symbol>')
 def get_rates(symbol):
-    # Symbol names retain their configured spelling; only timeframe is normalized.
-    timeframe = request.args.get('timeframe', 'M5').strip().upper()
-    if timeframe not in SUPPORTED_RATES_TIMEFRAMES:
-        return jsonify({
-            'error': 'Invalid timeframe',
-            'supported_timeframes': sorted(SUPPORTED_RATES_TIMEFRAMES),
-        }), 400
-
-    limit_arg = request.args.get('limit')
-    limit = None
-    if limit_arg is not None:
-        try:
-            if not limit_arg.strip() or any(
-                    char not in '0123456789' for char in limit_arg.strip()):
-                raise ValueError
-            limit = int(limit_arg)
-        except (AttributeError, TypeError, ValueError):
-            return jsonify({'error': f'limit must be an integer between 1 and {MAX_RATES_LIMIT}'}), 400
-        if not 1 <= limit <= MAX_RATES_LIMIT:
-            return jsonify({'error': f'limit must be an integer between 1 and {MAX_RATES_LIMIT}'}), 400
-
-    days_arg = request.args.get('days', '0')
-    try:
-        if not days_arg.strip() or any(char not in '0123456789' for char in days_arg.strip()):
-            raise ValueError
-        days = int(days_arg)
-    except (AttributeError, TypeError, ValueError):
-        return jsonify({'error': f'days must be an integer between 0 and {MAX_RATES_DAYS}'}), 400
-    if not 0 <= days <= MAX_RATES_DAYS:
-        return jsonify({'error': f'days must be an integer between 0 and {MAX_RATES_DAYS}'}), 400
-
-    filepath = os.path.join(history_path, f'{symbol}_{timeframe}.csv')
-    if not os.path.exists(filepath):
-        return jsonify({'error': 'Data not found', 'symbol': symbol, 'timeframe': timeframe}), 404
-
-    ready_path = f'{filepath}.ready'
-    try:
-        with open(ready_path, encoding='utf-8') as ready_file:
-            published_source = ready_file.read().strip()
-    except OSError:
-        return jsonify({'error': 'Market data not ready'}), 503
-    if not published_source:
-        return jsonify({'error': 'Market data not ready'}), 503
-
-    try:
-        df = pd.read_csv(filepath)
-    except Exception:
-        # Do not expose the internal cache path or parser details.
-        return jsonify({'error': 'Unable to read market data'}), 500
-
-    missing_columns = [
-        column for column in (*RATES_COLUMNS, RATES_SOURCE_COLUMN)
-        if column not in df.columns
-    ]
-    if missing_columns:
-        return jsonify({
-            'error': 'Invalid market data',
-            'detail': f'Missing required columns: {", ".join(missing_columns)}',
-        }), 422
-
-    source_values = df[RATES_SOURCE_COLUMN]
-    source_symbols = set(source_values.dropna().astype(str))
-    if (
-        source_values.isna().any()
-        or any(not value.strip() for value in source_symbols)
-        or len(source_symbols) != 1
-        or source_symbols != {published_source}
-    ):
-        return jsonify({
-            'error': 'Invalid market data',
-            'detail': 'CSV source identity is missing or ambiguous',
-        }), 422
-
-    validated = df.loc[:, RATES_COLUMNS].copy()
-    numeric_times = pd.to_numeric(validated['time'], errors='coerce')
-    parsed_times = pd.to_datetime(validated['time'], utc=True, errors='coerce')
-    numeric_mask = numeric_times.notna()
-    if numeric_mask.any():
-        parsed_times.loc[numeric_mask] = pd.to_datetime(
-            numeric_times.loc[numeric_mask], unit='s', utc=True, errors='coerce'
-        )
-    validated['time'] = parsed_times
-    numeric_columns = RATES_COLUMNS[1:]
-    for column in numeric_columns:
-        validated[column] = pd.to_numeric(validated[column], errors='coerce')
-
-    invalid_time = validated['time'].isna().any()
-    invalid_numbers = validated.loc[:, numeric_columns].isna().any().any()
-    non_finite_numbers = any(
-        not value.map(lambda item: math.isfinite(float(item))).all()
-        for _, value in validated.loc[:, numeric_columns].items()
+    result = history_query_svc.get_rates(
+        symbol,
+        timeframe=request.args.get('timeframe', 'M5'),
+        limit=request.args.get('limit'),
+        days=request.args.get('days', '0'),
     )
-    invalid_volume = (validated['tick_volume'] < 0).any()
-    invalid_ohlc = (
-        (validated['high'] < validated[['open', 'close', 'low']].max(axis=1))
-        | (validated['low'] > validated[['open', 'close', 'high']].min(axis=1))
-    ).any()
-    if invalid_time or invalid_numbers or non_finite_numbers or invalid_volume or invalid_ohlc:
-        return jsonify({
-            'error': 'Invalid market data',
-            'detail': 'CSV contains invalid time or OHLCV values',
-        }), 422
-
-    if validated['time'].duplicated().any() or not validated['time'].is_monotonic_increasing:
-        return jsonify({
-            'error': 'Invalid market data',
-            'detail': 'CSV timestamps must be ordered and unique',
-        }), 422
-    timeframe_seconds = RATES_TIMEFRAME_SECONDS[timeframe]
-    # Do not depend on pandas' internal datetime resolution (ns/us varies by version).
-    epoch_seconds = validated['time'].map(lambda value: int(value.timestamp()))
-    misaligned = (epoch_seconds % timeframe_seconds != 0).any()
-    cadence = validated['time'].diff().dropna().dt.total_seconds()
-    invalid_cadence = (cadence % timeframe_seconds != 0).any()
-    now = _utc_now()
-    future_or_forming = (
-        validated['time'] + pd.Timedelta(seconds=timeframe_seconds) > now
-    ).any()
-    if misaligned or invalid_cadence or future_or_forming:
-        return jsonify({
-            'error': 'Invalid market data',
-            'detail': 'CSV contains future, forming, misaligned, or invalid-cadence bars',
-        }), 422
-
-    if days > 0:
-        cutoff = now - pd.Timedelta(days=days)
-        validated = validated[validated['time'] >= cutoff]
-    if limit is not None:
-        validated = validated.tail(limit)
-    records = json.loads(validated.to_json(orient='records', date_format='iso'))
-    return jsonify(records)
+    if 'error_response' in result:
+        return jsonify(result['error_response']), result['status']
+    return jsonify(result['data'])
 
 
 @app.route('/api/v1/rates/<symbol>/query')
 def query_rates_by_range(symbol):
-    """直接查詢 MT5 server 指定時間範圍的歷史 K 線資料。"""
-    timeframe = request.args.get('timeframe', 'M5')
+    """Query the completed history cache without synchronous MT5 access."""
     start_time_str = request.args.get('start_time')
     end_time_str = request.args.get('end_time')
-
     if not start_time_str or not end_time_str:
         return jsonify({'error': 'start_time and end_time are required'}), 400
-
-    import pandas as pd
-    try:
-        start_dt = pd.to_datetime(start_time_str).to_pydatetime()
-        end_dt = pd.to_datetime(end_time_str).to_pydatetime()
-    except Exception:
-        return jsonify({'error': 'Invalid date format. Use ISO 8601 (e.g., 2023-01-01 or 2023-01-01T00:00:00Z)'}), 400
-
-    if not mt5_client.ensure_connected():
-        return jsonify({'error': 'MT5 not connected'}), 503
-
-    # Resolve symbol
-    mt5_client.init_resolver([symbol])
-    broker_symbol = mt5_client.resolve(symbol)
-
-    mt5 = mt5_client.mt5
-    tf = getattr(mt5, f'TIMEFRAME_{timeframe}', None)
-    if tf is None:
-        return jsonify({'error': f'Unknown timeframe: {timeframe}'}), 400
-
-    try:
-        rates = mt5_client.call(lambda m: m.copy_rates_range(broker_symbol, tf, start_dt, end_dt))
-    except Exception as e:
-        return jsonify({'error': f'MT5 query failed: {str(e)}'}), 500
-
-    if rates is None or len(rates) == 0:
-        return jsonify({'error': 'No data found', 'symbol': symbol, 'timeframe': timeframe}), 404
-
-    df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
-
+    result = history_query_svc.get_rates(
+        symbol,
+        timeframe=request.args.get('timeframe', 'M5'),
+        days='0',
+        start_time=start_time_str,
+        end_time=end_time_str,
+    )
+    if 'error_response' in result:
+        return jsonify(result['error_response']), result['status']
+    if not result['data']:
+        return jsonify({
+            'error': 'No data found', 'symbol': symbol,
+            'timeframe': result['timeframe'],
+            'available_range': result['available_range'],
+        }), 404
     return jsonify({
         'symbol': symbol,
-        'timeframe': timeframe,
+        'timeframe': result['timeframe'],
         'start_time': start_time_str,
         'end_time': end_time_str,
-        'data': json.loads(df.to_json(orient='records')),
-        'count': len(df),
-        'source': 'mt5'
+        'data': result['data'],
+        'count': len(result['data']),
+        'source': 'history_storage',
     })
 
 
 @app.route('/api/v1/health')
 def health():
-    # 更新帳戶 metrics
-    try:
-        balance_info = account_svc.get_balance()
-        if balance_info and 'balance' in balance_info:
-            metrics.mt5_account_balance.set(balance_info['balance'])
-            metrics.mt5_account_equity.set(balance_info['equity'])
-    except Exception:
-        pass
-
-    with tick_lock:
-        tick_count = len(latest_ticks)
-    return jsonify({
-        'status': 'ok',
-        'tick_service': 'running' if tick_count > 0 else 'no_data',
-        'symbols_tracked': list(latest_ticks.keys()),
+    """Report process state without making any MT5/RPyC calls."""
+    expected_symbols = _tick_config['symbols']
+    fresh_symbols = [symbol for symbol in expected_symbols if _fresh_tick(symbol)]
+    tick_status = read_status(
+        _tick_config['status_path'], _tick_config['status_max_age_seconds']
+    )
+    history_status = read_status(
+        _history_health_config['status_path'],
+        _history_health_config['status_max_age_seconds'],
+    )
+    tick_ready = bool(
+        tick_consumer.connected
+        and tick_status.get('fresh')
+        and tick_status.get('state') == 'healthy'
+        and expected_symbols
+        and set(fresh_symbols) == set(expected_symbols)
+    )
+    history_ok = bool(
+        history_status.get('fresh')
+        and history_status.get('state') in ('healthy', 'syncing')
+    )
+    if tick_ready:
+        overall = 'healthy' if history_ok else 'degraded'
+    elif tick_status.get('fresh') and tick_status.get('state') == 'unhealthy':
+        overall = 'unhealthy'
+    else:
+        overall = 'not-ready'
+    payload = {
+        'status': overall,
+        'ready': tick_ready,
+        'gateway': {'state': 'healthy', 'ready': tick_ready},
+        'tick_service': tick_status,
+        'history_service': history_status,
+        'tick_ipc_connected': tick_consumer.connected,
+        'symbols_tracked': expected_symbols,
+        'fresh_symbols': fresh_symbols,
         'timestamp': datetime.now(timezone.utc).isoformat()
-    })
+    }
+    _update_component_metrics(payload)
+    return jsonify(payload), (200 if tick_ready else 503)
+
+
+def _update_component_metrics(health_payload=None):
+    if health_payload is None:
+        expected = _tick_config['symbols']
+        fresh = [symbol for symbol in expected if _fresh_tick(symbol)]
+        tick = read_status(_tick_config['status_path'], _tick_config['status_max_age_seconds'])
+        history = read_status(
+            _history_health_config['status_path'],
+            _history_health_config['status_max_age_seconds'],
+        )
+        ready = bool(tick_consumer.connected and tick.get('fresh')
+                     and tick.get('state') == 'healthy' and expected
+                     and set(fresh) == set(expected))
+    else:
+        tick = health_payload['tick_service']
+        history = health_payload['history_service']
+        fresh = health_payload['fresh_symbols']
+        ready = health_payload['ready']
+    for component, value in (('tick_service', tick), ('history_service', history)):
+        current = value.get('state', 'unknown')
+        for state in ('healthy', 'syncing', 'degraded', 'unhealthy', 'starting', 'stopped', 'unknown'):
+            metrics.component_state.labels(component=component, state=state).set(
+                1 if state == current else 0
+            )
+        if 'age_seconds' in value:
+            metrics.component_status_age_seconds.labels(component=component).set(
+                value['age_seconds']
+            )
+    metrics.gateway_ready.set(1 if ready else 0)
+    metrics.tick_ipc_connected.set(1 if tick_consumer.connected else 0)
+    metrics.fresh_tick_symbols.set(len(fresh))
 
 
 @app.route('/metrics')
@@ -454,13 +374,8 @@ def prometheus_metrics():
     """Prometheus metrics export endpoint."""
     # 更新 uptime metric
     metrics.service_uptime_seconds.set(time_module.time() - _start_time)
-    # 更新連接狀態
-    try:
-        with tick_lock:
-            has_ticks = len(latest_ticks) > 0
-        metrics.mt5_connected.set(1 if has_ticks else 0)
-    except Exception:
-        metrics.mt5_connected.set(0)
+    _update_component_metrics()
+    metrics.mt5_connected.set(1 if tick_consumer.connected else 0)
     return metrics.generate_latest(), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 
@@ -525,10 +440,9 @@ def handle_subscribe(data):
     if symbol:
         join_room(symbol)
         emit('subscribed', {'symbol': symbol})
-        with tick_lock:
-            tick = latest_ticks.get(symbol)
+        tick = _fresh_tick(symbol)
         if tick:
-            emit('tick', tick)
+            emit('tick', _public_tick(tick))
         print(f'[WS] Client subscribed to {symbol}')
 
 
@@ -536,6 +450,7 @@ def handle_subscribe(data):
 def handle_unsubscribe(data):
     symbol = data.get('symbol', '')  # 移除 .upper()
     if symbol:
+        leave_room(symbol)
         print(f'[WS] Client unsubscribed from {symbol}')
 
 
@@ -543,12 +458,28 @@ _start_time = time_module.time()
 
 # ─── Main ───
 
+def _handle_shutdown_signal(signum, _frame):
+    """Unwind the server so process-owned resources reach ``finally``."""
+    raise SystemExit(128 + signum)
+
+
+def run_gateway():
+    tick_consumer.start()
+    try:
+        port = int(os.getenv('API_GATEWAY_PORT', 8090))
+        host = os.getenv('API_GATEWAY_HOST', '0.0.0.0')
+
+        print(f'[APIGateway] Starting on {host}:{port}')
+        socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
+    finally:
+        # Stop IPC first so no callbacks can race with MT5 teardown.
+        try:
+            tick_consumer.stop()
+        finally:
+            mt5_client.shutdown()
+
+
 if __name__ == '__main__':
-    fetcher = TickFetcher(mt5_client)
-    fetcher.start()
-
-    port = int(os.getenv('API_GATEWAY_PORT', 8090))
-    host = os.getenv('API_GATEWAY_HOST', '0.0.0.0')
-
-    print(f'[APIGateway] Starting on {host}:{port}')
-    socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+    run_gateway()

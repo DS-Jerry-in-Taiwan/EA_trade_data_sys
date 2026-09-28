@@ -26,6 +26,7 @@ def gateway_module():
     socketio_module.SocketIO = SocketIO
     socketio_module.emit = lambda *_args, **_kwargs: None
     socketio_module.join_room = lambda *_args, **_kwargs: None
+    socketio_module.leave_room = lambda *_args, **_kwargs: None
     cors_module = types.ModuleType('flask_cors')
     cors_module.CORS = lambda app, *_args, **_kwargs: app
 
@@ -46,6 +47,8 @@ def gateway_module():
         'api_requests_total', 'api_request_duration_seconds', 'mt5_tick_bid',
         'mt5_tick_ask', 'mt5_last_tick_timestamp', 'mt5_connected',
         'mt5_account_balance', 'mt5_account_equity', 'service_uptime_seconds',
+        'component_state', 'gateway_ready', 'tick_ipc_connected',
+        'fresh_tick_symbols', 'component_status_age_seconds',
     ):
         setattr(metrics, name, Metric())
     metrics.generate_latest = lambda: b''
@@ -66,11 +69,33 @@ def gateway_module():
 
     account_module.AccountService = AccountService
 
+    tick_consumer_module = types.ModuleType('service.core.tick_consumer')
+
+    class TickConsumer:
+        def __init__(self, *_args, **_kwargs):
+            self.symbols = []
+            self.connected = False
+
+        def stop(self):
+            return None
+
+        def get(self, _symbol):
+            return None
+
+        def is_fresh(self, *_args):
+            return False
+
+    tick_consumer_module.TickConsumer = TickConsumer
+    tick_ipc_module = types.ModuleType('service.core.tick_ipc')
+    tick_ipc_module.DEFAULT_SOCKET_PATH = '/tmp/test-ticks.sock'
+
     saved_modules = {
         name: sys.modules.get(name)
         for name in (
             'metrics', 'flask_socketio', 'flask_cors', 'service.core.mt5_client',
             'service.account_service',
+                'service.core.tick_consumer',
+                'service.core.tick_ipc',
         )
     }
     sys.modules['metrics'] = metrics
@@ -78,6 +103,8 @@ def gateway_module():
     sys.modules['flask_cors'] = cors_module
     sys.modules['service.core.mt5_client'] = mt5_client_module
     sys.modules['service.account_service'] = account_module
+    sys.modules['service.core.tick_consumer'] = tick_consumer_module
+    sys.modules['service.core.tick_ipc'] = tick_ipc_module
     try:
         gateway_path = Path(__file__).parents[2] / 'api_gateway.py'
         spec = importlib.util.spec_from_file_location('rates_contract_gateway', gateway_path)
@@ -94,7 +121,7 @@ def gateway_module():
 
 @pytest.fixture
 def client(gateway_module, tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_module, 'history_path', str(tmp_path))
+    monkeypatch.setattr(gateway_module.history_query_svc.repository, 'data_path', str(tmp_path))
     gateway_module.app.config.update(TESTING=True)
     return gateway_module.app.test_client(), tmp_path
 
@@ -256,7 +283,7 @@ def test_rejects_invalid_days(client, days):
 def test_days_filters_before_optional_limit(client, gateway_module, monkeypatch):
     http, data_dir = client
     monkeypatch.setattr(
-        gateway_module, '_utc_now', lambda: pd.Timestamp('2026-09-08T12:00:00Z')
+        gateway_module.history_query_svc, '_now', lambda: pd.Timestamp('2026-09-08T12:00:00Z')
     )
     write_rates(data_dir, [
         valid_row('2026-09-05T12:00:00Z'),
@@ -273,7 +300,7 @@ def test_days_filters_before_optional_limit(client, gateway_module, monkeypatch)
 def test_numeric_epoch_seconds_are_parsed_as_seconds(client, gateway_module, monkeypatch):
     http, data_dir = client
     monkeypatch.setattr(
-        gateway_module, '_utc_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
+        gateway_module.history_query_svc, '_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
     )
     epoch_seconds = int(pd.Timestamp('2026-09-08T12:00:00Z').timestamp())
     write_rates(data_dir, [valid_row(epoch_seconds)], timeframe='H1')
@@ -287,7 +314,7 @@ def test_numeric_epoch_seconds_are_parsed_as_seconds(client, gateway_module, mon
 def test_mixed_iso_and_epoch_seconds_are_both_preserved(client, gateway_module, monkeypatch):
     http, data_dir = client
     monkeypatch.setattr(
-        gateway_module, '_utc_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
+        gateway_module.history_query_svc, '_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
     )
     epoch_seconds = int(pd.Timestamp('2026-09-08T12:05:00Z').timestamp())
     write_rates(
@@ -311,7 +338,7 @@ def test_mixed_iso_and_epoch_seconds_are_both_preserved(client, gateway_module, 
 def test_rejects_forming_and_future_bars(client, gateway_module, monkeypatch, timestamp):
     http, data_dir = client
     monkeypatch.setattr(
-        gateway_module, '_utc_now', lambda: pd.Timestamp('2026-09-08T12:30:00Z')
+        gateway_module.history_query_svc, '_now', lambda: pd.Timestamp('2026-09-08T12:30:00Z')
     )
     write_rates(data_dir, [valid_row(timestamp)], timeframe='H1')
 
@@ -323,7 +350,7 @@ def test_rejects_forming_and_future_bars(client, gateway_module, monkeypatch, ti
 def test_rejects_misaligned_bar(client, gateway_module, monkeypatch):
     http, data_dir = client
     monkeypatch.setattr(
-        gateway_module, '_utc_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
+        gateway_module.history_query_svc, '_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
     )
     write_rates(data_dir, [valid_row('2026-09-08T11:03:00Z')])
 
@@ -335,7 +362,7 @@ def test_rejects_misaligned_bar(client, gateway_module, monkeypatch):
 def test_rejects_non_integer_cadence(client, gateway_module, monkeypatch):
     http, data_dir = client
     monkeypatch.setattr(
-        gateway_module, '_utc_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
+        gateway_module.history_query_svc, '_now', lambda: pd.Timestamp('2026-09-08T13:00:00Z')
     )
     write_rates(data_dir, [
         valid_row('2026-09-08T11:00:00Z'),
@@ -401,3 +428,53 @@ def test_csv_read_error_is_generic_500(client, monkeypatch):
     assert response.status_code == 500
     assert response.get_json() == {'error': 'Unable to read market data'}
     assert str(data_dir) not in response.get_data(as_text=True)
+
+
+def test_range_query_reads_persisted_history(client, gateway_module, monkeypatch):
+    http, data_dir = client
+    monkeypatch.setattr(
+        gateway_module.history_query_svc, '_now',
+        lambda: pd.Timestamp('2026-09-08T13:00:00Z'),
+    )
+    write_rates(data_dir, [
+        valid_row('2026-09-08T10:00:00Z'),
+        valid_row('2026-09-08T10:05:00Z'),
+        valid_row('2026-09-08T10:10:00Z'),
+    ])
+
+    response = http.get(
+        '/api/v1/rates/XAUUSDm/query',
+        query_string={
+            'timeframe': 'M5',
+            'start_time': '2026-09-08T10:05:00Z',
+            'end_time': '2026-09-08T10:10:00Z',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['source'] == 'history_storage'
+    assert payload['count'] == 2
+
+
+def test_range_query_does_not_backfill_when_range_is_unavailable(client):
+    http, data_dir = client
+    write_rates(data_dir, [valid_row('2026-09-08T10:00:00Z')])
+
+    response = http.get(
+        '/api/v1/rates/XAUUSDm/query',
+        query_string={
+            'timeframe': 'M5',
+            'start_time': '2026-09-09T10:00:00Z',
+            'end_time': '2026-09-09T11:00:00Z',
+        },
+    )
+
+    assert response.status_code == 404
+    payload = response.get_json()
+    assert payload['error'] == 'No data found'
+    assert payload['available_range'] == {
+        'start_time': '2026-09-08T10:00:00Z',
+        'end_time': '2026-09-08T10:00:00Z',
+        'count': 1,
+    }

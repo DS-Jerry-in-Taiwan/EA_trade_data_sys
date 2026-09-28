@@ -18,7 +18,6 @@ services:
     ports:
       - 5901:5901
       - 6081:6081
-      - 8001:8001
     healthcheck:
       test: ["CMD", "/mt5docker/healthcheck.sh"]
       interval: 10s
@@ -41,4 +40,14 @@ services:
     depends_on:
       mt5-server:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json,urllib.request; r=urllib.request.urlopen('http://localhost:8090/api/v1/health', timeout=3); assert r.status == 200 and json.load(r).get('ready') is True"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: always

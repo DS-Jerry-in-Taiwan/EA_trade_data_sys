@@ -83,3 +83,23 @@ def test_query_route_does_not_construct_an_mt5_client():
         and node.func.id == 'MT5Client'
         for node in ast.walk(query_handler)
     )
+
+
+def test_gateway_history_routes_have_no_persistence_or_mt5_calls():
+    source = (REPO_ROOT / 'service' / 'api_gateway.py').read_text(encoding='utf-8')
+    tree = ast.parse(source)
+    handlers = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {'get_rates', 'query_rates_by_range'}
+    ]
+    forbidden = {'read_csv', 'copy_rates_range', 'open', 'exists', 'join'}
+
+    for handler in handlers:
+        calls = {
+            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, (ast.Attribute, ast.Name))
+        }
+        assert calls.isdisjoint(forbidden)
