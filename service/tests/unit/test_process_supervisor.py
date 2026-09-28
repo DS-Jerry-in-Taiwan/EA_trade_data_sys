@@ -1,4 +1,5 @@
 import os
+import importlib.util
 import signal
 import subprocess
 import sys
@@ -10,6 +11,14 @@ import pytest
 
 SUPERVISOR = Path(__file__).parents[3] / "mt5docker" / "process_supervisor.py"
 SERVICE_NAMES = ("tick_service.py", "history_service.py", "api_gateway.py")
+
+
+def _load_supervisor_module():
+    spec = importlib.util.spec_from_file_location("process_supervisor", SUPERVISOR)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _wait_for(path: Path, timeout: float = 5) -> str:
@@ -38,6 +47,23 @@ def _start(root: Path, timeout: str = "1") -> subprocess.Popen[str]:
         text=True,
         env=env,
     )
+
+
+def test_oversized_log_is_preserved_as_backup_before_new_current(tmp_path: Path) -> None:
+    supervisor_module = _load_supervisor_module()
+    current = tmp_path / "api_gateway.log"
+    backup = tmp_path / "api_gateway.log.1"
+    current.write_bytes(b"current-log")
+    backup.write_bytes(b"older-backup")
+
+    assert supervisor_module.rotate_log(current, max_bytes=4) is True
+    assert not current.exists()
+    assert backup.read_bytes() == b"current-log"
+
+    # Opening the normal current path after rotation starts a bounded new log.
+    with current.open("ab", buffering=0) as log:
+        log.write(b"new-log")
+    assert current.read_bytes() == b"new-log"
 
 
 def test_signal_is_forwarded_and_all_three_children_stop(tmp_path: Path) -> None:
