@@ -1,0 +1,1 @@
+"""Latest-tick snapshot boundary."""

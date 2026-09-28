@@ -1,0 +1,1 @@
+"""Component status contract boundary."""

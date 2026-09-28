@@ -1,0 +1,1 @@
+"""Persisted history repository boundary."""

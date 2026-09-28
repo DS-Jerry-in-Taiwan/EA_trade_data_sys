@@ -1,0 +1,1 @@
+"""Realtime IPC publisher boundary."""
