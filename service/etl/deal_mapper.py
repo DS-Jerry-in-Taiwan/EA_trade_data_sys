@@ -99,6 +99,13 @@ def decode_deal_payload(payload: Mapping[str, Any]) -> DealRecord:
     if not isinstance(payload, Mapping):
         raise DealMappingError("deal payload must be a mapping")
 
+    deal_type = _aliased(
+        payload,
+        "deal_type",
+        ("deal_type", "type"),
+        lambda field, value: _string(field, value, non_empty=True),
+    )
+
     return DealRecord(
         deal_id=_aliased(
             payload,
@@ -114,13 +121,12 @@ def decode_deal_payload(payload: Mapping[str, Any]) -> DealRecord:
             default=0,
         ),
         position_id=_integer("position_id", payload.get("position_id", 0)),
-        symbol=_string("symbol", payload.get("symbol"), non_empty=True),
-        deal_type=_aliased(
-            payload,
-            "deal_type",
-            ("deal_type", "type"),
-            lambda field, value: _string(field, value, non_empty=True),
+        symbol=_string(
+            "symbol",
+            payload.get("symbol"),
+            non_empty=deal_type in {"BUY", "SELL"},
         ),
+        deal_type=deal_type,
         entry_type=_aliased(
             payload,
             "entry_type",

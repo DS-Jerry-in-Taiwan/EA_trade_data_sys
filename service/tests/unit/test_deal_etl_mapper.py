@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 from importlib.util import find_spec
+from pathlib import Path
 import sys
 from types import ModuleType
 
 import pytest
+import yaml
 
 from service.etl.deal_mapper import decode_deal_payload
 
@@ -86,6 +88,44 @@ def test_rejects_payload_without_any_deal_id():
 
     with pytest.raises(DealMappingError, match="required deal field 'deal_id'"):
         decode_deal_payload(payload)
+
+
+@pytest.mark.parametrize("deal_type", ["BALANCE", "CREDIT"])
+def test_decodes_non_trade_deal_with_empty_symbol(deal_type):
+    deal = decode_deal_payload(canonical_deal(deal_type=deal_type, symbol=""))
+
+    assert deal.deal_type == deal_type
+    assert deal.symbol == ""
+
+
+@pytest.mark.parametrize("deal_type", ["BUY", "SELL"])
+def test_rejects_trade_deal_with_empty_symbol(deal_type):
+    with pytest.raises(DealMappingError, match="symbol.*non-empty"):
+        decode_deal_payload(canonical_deal(deal_type=deal_type, symbol=""))
+
+
+@pytest.mark.parametrize("deal_type", ["BUY", "BALANCE"])
+@pytest.mark.parametrize("symbol", [None, 123])
+def test_rejects_non_string_symbol_for_all_deal_types(deal_type, symbol):
+    with pytest.raises(DealMappingError, match="symbol.*string"):
+        decode_deal_payload(canonical_deal(deal_type=deal_type, symbol=symbol))
+
+
+def test_openapi_documents_conditional_symbol_contract():
+    openapi_path = Path(__file__).parents[2] / "openapi.yaml"
+    spec = yaml.safe_load(openapi_path.read_text(encoding="utf-8"))
+    symbol_schema = spec["components"]["schemas"]["TradeDealV1"]["properties"]["symbol"]
+
+    assert symbol_schema["type"] == "string"
+    assert "minLength" not in symbol_schema
+    description = " ".join(
+        [
+            spec["components"]["schemas"]["TradeDealV1"]["description"],
+            symbol_schema["description"],
+        ]
+    )
+    assert "BUY" in description and "SELL" in description
+    assert "empty string" in description
 
 
 def test_upsert_uses_canonical_fields_and_deal_id_conflict_contract(monkeypatch):
