@@ -102,12 +102,18 @@ def _occurred_at(value: Any) -> datetime:
 def map_mt5_deal(raw: object) -> DealRecord:
     """Map one MT5 deal without probing aliases or leaking source data."""
 
+    deal_type_code = _required(raw, "type")
+    deal_type = _enum("type", deal_type_code, _DEAL_TYPES)
+    symbol = _string(
+        "symbol", _required(raw, "symbol"), non_empty=deal_type_code in (0, 1)
+    )
+
     return DealRecord(
         deal_id=_integer("ticket", _required(raw, "ticket"), positive=True),
         order_id=_integer("order", _required(raw, "order")),
         position_id=_integer("position_id", _required(raw, "position_id")),
-        symbol=_string("symbol", _required(raw, "symbol"), non_empty=True),
-        deal_type=_enum("type", _required(raw, "type"), _DEAL_TYPES),
+        symbol=symbol,
+        deal_type=deal_type,
         entry_type=_enum("entry", _required(raw, "entry"), _ENTRY_TYPES),
         volume=_number("volume", _required(raw, "volume"), non_negative=True),
         price=_number("price", _required(raw, "price"), non_negative=True),

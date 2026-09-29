@@ -94,6 +94,24 @@ def test_maps_mt5_type_and_entry_enums(type_code, entry_code, deal_type, entry_t
     assert deal.entry_type == entry_type
 
 
+@pytest.mark.parametrize("type_code", (0, 1))
+def test_trade_deal_requires_non_empty_symbol(type_code):
+    with pytest.raises(DealMappingError, match="symbol.*non-empty"):
+        map_mt5_deal(StrictDeal(type=type_code, symbol=""))
+
+
+def test_non_trade_deal_allows_empty_string_symbol():
+    deal = map_mt5_deal(StrictDeal(type=2, symbol=""))
+
+    assert deal.deal_type == "BALANCE"
+    assert deal.symbol == ""
+
+
+def test_non_trade_deal_still_requires_symbol_to_be_string():
+    with pytest.raises(DealMappingError, match="symbol.*string"):
+        map_mt5_deal(StrictDeal(type=2, symbol=None))
+
+
 def test_maps_unix_timestamp_to_utc():
     deal = map_mt5_deal(StrictDeal(time=0))
 
