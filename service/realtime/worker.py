@@ -1,14 +1,12 @@
 """Exclusive owner of periodic MT5 Tick acquisition."""
 
-import os
 import threading
 from datetime import datetime, timezone
 
-import yaml
-
+from service.config import Settings, load_settings
 from service.infrastructure.ipc.tick_protocol import DEFAULT_SOCKET_PATH, PROTOCOL_VERSION
 from service.infrastructure.mt5.client import MT5Client
-from service.infrastructure.status.component_status import DEFAULT_STATUS_DIR, atomic_write_status
+from service.infrastructure.status.component_status import atomic_write_status
 from service.realtime.publisher import TickPublisher
 from service.realtime.snapshot_store import TickSnapshotStore
 
@@ -17,17 +15,16 @@ class TickService:
     """Poll MT5, normalize Tick events, and publish them to local consumers."""
 
     def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None,
-                 publisher=None, snapshot_store=None, stop_event=None):
-        with open(config_path, encoding="utf-8") as handle:
-            cfg = (yaml.safe_load(handle) or {}).get('tick_service', {})
-        self.symbols = cfg.get('symbols', ['XAUUSDm'])
-        self.interval = cfg.get('update_interval_seconds', 60)
-        self.output_dir = cfg.get('output_dir', '/app/service/data/ticks')
-        self.socket_path = os.environ.get('TICK_SOCKET_PATH', cfg.get('socket_path', DEFAULT_SOCKET_PATH))
-        self.max_retry_seconds = cfg.get('max_retry_seconds', 30)
-        self.status_path = os.environ.get(
-            'TICK_STATUS_PATH', cfg.get('status_path', os.path.join(DEFAULT_STATUS_DIR, 'tick-status.json'))
-        )
+                 publisher=None, snapshot_store=None, stop_event=None,
+                 settings: Settings | None = None):
+        settings = settings or load_settings(config_path)
+        cfg = settings.tick_service
+        self.symbols = list(cfg.symbols)
+        self.interval = cfg.update_interval_seconds
+        self.output_dir = cfg.output_dir
+        self.socket_path = cfg.socket_path or DEFAULT_SOCKET_PATH
+        self.max_retry_seconds = cfg.max_retry_seconds
+        self.status_path = cfg.status_path
         self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
         self.publisher = publisher if publisher is not None else TickPublisher(self.socket_path)
         self.snapshot_store = (

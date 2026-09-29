@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 import math
 from typing import Any, Callable, TypeVar
 
-from service.trade_query.errors import DealMappingError
-from service.trade_query.models import DealRecord
+from service.domain.trades.errors import DealMappingError
+from service.domain.trades.models import DealRecord
 
 
 T = TypeVar("T")

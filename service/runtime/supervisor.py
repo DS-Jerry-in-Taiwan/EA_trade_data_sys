@@ -11,6 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+try:
+    from service.config import load_runtime_settings
+except ModuleNotFoundError as exc:
+    # ``python service/runtime/supervisor.py`` is retained for direct
+    # diagnostic execution; its initial sys.path contains service/runtime,
+    # rather than the repository root used by the package import.
+    if exc.name not in {"service", "service.config"}:
+        raise
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from service.config import load_runtime_settings
+
 
 @dataclass
 class Child:
@@ -122,17 +133,13 @@ class Supervisor:
 
 
 def main() -> int:
-    app_root = Path(os.environ.get("TRADE_DATA_APP_ROOT", "/app"))
     try:
-        shutdown_timeout = float(os.environ.get("SUPERVISOR_SHUTDOWN_TIMEOUT", "10"))
-    except ValueError:
-        print("SUPERVISOR_SHUTDOWN_TIMEOUT must be numeric", file=sys.stderr)
-        return 2
-    if shutdown_timeout < 0:
-        print("SUPERVISOR_SHUTDOWN_TIMEOUT must be non-negative", file=sys.stderr)
+        settings = load_runtime_settings()
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
-    supervisor = Supervisor(app_root, shutdown_timeout)
+    supervisor = Supervisor(Path(settings.app_root), settings.shutdown_timeout)
     signal.signal(signal.SIGTERM, supervisor.request_stop)
     signal.signal(signal.SIGINT, supervisor.request_stop)
     return supervisor.run()

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import math
 
-from service.trade_query.errors import DealMappingError
+from service.domain.trades.errors import DealMappingError
 
 
 def _require_id(name: str, value: int, *, positive: bool = False) -> None:
@@ -87,3 +87,4 @@ class DealSummary:
 
 
 __all__ = ["DealRecord", "DealSummary"]
+

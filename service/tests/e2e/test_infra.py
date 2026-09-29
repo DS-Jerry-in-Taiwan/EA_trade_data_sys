@@ -76,7 +76,7 @@ class TestMT5Client:
         """MT5Client initialises with no connection"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c._mt5 is None, "_mt5 should be None on init"
         assert c._connector is None, "_connector should be None on init"
@@ -86,7 +86,7 @@ class TestMT5Client:
         """ensure_connected returns True when connected to MT5 server"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         result = c.ensure_connected()
         assert result is True, f"ensure_connected should return True, got {result}"
@@ -96,7 +96,7 @@ class TestMT5Client:
         """call() correctly executes a lambda against the mt5 object"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected to test call()"
         # Call a simple read-only method
@@ -109,7 +109,7 @@ class TestMT5Client:
         """init_resolver should succeed after connection"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected"
         c.init_resolver(["XAUUSDm", "BTCUSDm"])
@@ -120,7 +120,7 @@ class TestMT5Client:
         """resolve() should return exact match when symbol exists in broker"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected"
         all_symbols = c._mt5.symbols_get()
@@ -133,7 +133,7 @@ class TestMT5Client:
         """resolve() should fallback to fuzzy match when exact match fails"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected"
         all_symbols = c._mt5.symbols_get()

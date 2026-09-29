@@ -12,9 +12,9 @@ connection_manager.MT5Connector = object
 connection_manager.close_mt5_connection = lambda mt5: None
 sys.modules.setdefault('core.connection_manager', connection_manager)
 
-from service.account_service import AccountService
-from service.history_service import HistoryService
-from service.tick_service import TickService
+from service.trade_query.account_service import AccountService
+from service.history.worker import HistoryService
+from service.realtime.worker import TickService
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

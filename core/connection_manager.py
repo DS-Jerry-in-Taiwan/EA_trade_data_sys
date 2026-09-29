@@ -1,8 +1,8 @@
 import os
-import yaml
 import json
 import socket
 from pymt5linux import MetaTrader5
+from service.config import load_settings
 
 
 _CLOSED_MARKER = '_trade_data_connection_closed'
@@ -81,33 +81,23 @@ class MT5Connector:
         settings_path = settings_path or os.getenv('MT5_SETTINGS_PATH', '/app/service/config/settings.yaml')
         accounts_path = accounts_path or os.getenv('MT5_ACCOUNTS_PATH', '/app/service/config/accounts.json')
         
-        if not os.path.exists(settings_path):
-            raise FileNotFoundError(f"Settings file not found: {settings_path}")
         if not os.path.exists(accounts_path):
             raise FileNotFoundError(f"Accounts file not found: {accounts_path}")
         
-        with open(settings_path, 'r') as f:
-            self.settings = yaml.safe_load(f)
+        self.settings = load_settings(settings_path)
         with open(accounts_path, 'r') as f:
             self.accounts = json.load(f)
 
-        connection = self.settings.get('connection', {})
-        self.timeout = connection.get('timeout', 10)
-        try:
-            self.timeout = float(self.timeout)
-        except (TypeError, ValueError) as exc:
-            raise ValueError('connection.timeout must be a positive number') from exc
-        if self.timeout <= 0:
-            raise ValueError('connection.timeout must be a positive number')
+        self.connection = self.settings.connection
+        self.timeout = self.connection.timeout
             
     def get_active_account(self):
         active = self.accounts['active_provider']
         return self.accounts['providers'][active]
 
     def connect(self):
-        connection = self.settings['connection']
-        host = connection['default_host']
-        port = connection['port']
+        host = self.connection.default_host
+        port = self.connection.port
 
         try:
             socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)

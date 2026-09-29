@@ -5,8 +5,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, jsonify, request
 
 from service.gateway.auth import require_readonly_api_key
-from service.metrics import mt5_deal_mapping_errors_total
-from service.trade_query.errors import DealMappingError
+from service.domain.trades.errors import DealMappingError
 
 
 def _parse_date(value):
@@ -17,9 +16,14 @@ def _parse_date(value):
 
 
 def parse_trade_query_range(config_loader):
-    cfg = config_loader().get("trade_query", {})
-    default_days = int(cfg.get("default_days", 7))
-    max_days = int(cfg.get("max_days", 90))
+    config = config_loader()
+    if hasattr(config, "trade_query"):
+        default_days = config.trade_query.default_days
+        max_days = config.trade_query.max_days
+    else:
+        cfg = config.get("trade_query", {})
+        default_days = int(cfg.get("default_days", 7))
+        max_days = int(cfg.get("max_days", 90))
     from_arg, to_arg = request.args.get("from"), request.args.get("to")
     if from_arg or to_arg:
         from_dt, to_dt = _parse_date(from_arg), _parse_date(to_arg)
@@ -50,7 +54,7 @@ def _response(result):
     return jsonify(result)
 
 
-def create_blueprint(account_service, config_loader):
+def create_blueprint(account_service, config_loader, mapping_error_counter=None):
     bp = Blueprint("trade_query", __name__)
 
     @bp.get("/api/v1/account")
@@ -76,7 +80,8 @@ def create_blueprint(account_service, config_loader):
                 include_summary=request.args.get("summary", "").lower() == "true",
             )
         except DealMappingError:
-            mt5_deal_mapping_errors_total.inc()
+            if mapping_error_counter is not None:
+                mapping_error_counter.inc()
             return jsonify({
                 "error": "upstream deal contract invalid",
                 "code": "mt5_deal_mapping_error",

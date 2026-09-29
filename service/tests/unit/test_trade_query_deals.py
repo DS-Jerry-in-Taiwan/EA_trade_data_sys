@@ -12,7 +12,7 @@ except ModuleNotFoundError:
     sys.modules["pymt5linux"] = pymt5linux_stub
 
 from service.trade_query.account_service import AccountService
-from service.trade_query.errors import DealMappingError
+from service.domain.trades.errors import DealMappingError
 from service.infrastructure.observability.metrics import mt5_deal_mapping_errors_total
 
 
@@ -113,7 +113,9 @@ def test_deal_mapping_error_is_returned_as_502(monkeypatch):
         "trade_query": {"default_days": 7, "max_days": 90},
     }
     app = flask.Flask(__name__)
-    app.register_blueprint(create_blueprint(FailingService(), lambda: config))
+    app.register_blueprint(create_blueprint(
+        FailingService(), lambda: config, mt5_deal_mapping_errors_total
+    ))
 
     before = mt5_deal_mapping_errors_total._value.get()
     response = app.test_client().get(

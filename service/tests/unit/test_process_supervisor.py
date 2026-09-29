@@ -78,6 +78,31 @@ def test_empty_current_log_is_not_rotated(tmp_path: Path) -> None:
     assert not (tmp_path / "tick_service.log.1").exists()
 
 
+@pytest.mark.parametrize(
+    ("variable", "value", "message"),
+    (
+        (
+            "SUPERVISOR_SHUTDOWN_TIMEOUT",
+            "invalid",
+            "SUPERVISOR_SHUTDOWN_TIMEOUT must be numeric",
+        ),
+        (
+            "SUPERVISOR_SHUTDOWN_TIMEOUT",
+            "-1",
+            "SUPERVISOR_SHUTDOWN_TIMEOUT must be non-negative",
+        ),
+    ),
+)
+def test_runtime_settings_validation_preserves_supervisor_exit_contract(
+    monkeypatch, capsys, variable, value, message
+):
+    supervisor_module = _load_supervisor_module()
+    monkeypatch.setenv(variable, value)
+
+    assert supervisor_module.main() == 2
+    assert message in capsys.readouterr().err
+
+
 def test_signal_is_forwarded_and_all_three_children_stop(tmp_path: Path) -> None:
     _make_services(
         tmp_path,

@@ -5,9 +5,7 @@ import inspect
 
 import pytest
 
-from service.trade_query.errors import DealMappingError
-from service.trade_query import errors, models
-from service.trade_query.models import DealRecord, DealSummary
+from service.domain.trades import DealMappingError, DealRecord, DealSummary
 
 
 def make_deal(**overrides):
@@ -150,6 +148,8 @@ def test_deal_summary_rejects_invalid_values(field, value):
 
 def test_domain_models_do_not_load_mt5_runtime_modules():
     imported_modules = set()
+    from service.domain.trades import errors, models
+
     for module in (models, errors):
         tree = ast.parse(inspect.getsource(module))
         for node in ast.walk(tree):

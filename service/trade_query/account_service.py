@@ -1,9 +1,9 @@
-import yaml
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+from service.config import Settings, load_settings
 from service.infrastructure.mt5.client import MT5Client
 from service.trade_query.mt5_deal_mapper import map_mt5_deal
-from service.trade_query.models import DealRecord, DealSummary
+from service.domain.trades.models import DealRecord, DealSummary
 from service.trade_query.presenters import present_deal_summary_v1, present_deal_v1
 
 
@@ -26,9 +26,10 @@ def _round_number(value, digits=2):
 
 
 class AccountService:
-    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None):
-        with open(config_path) as f:
-            self.cfg = yaml.safe_load(f)
+    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None,
+                 settings: Settings | None = None):
+        self.settings = settings or load_settings(config_path)
+        self.cfg = self.settings.as_dict()
         self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
 
     def get_balance(self):

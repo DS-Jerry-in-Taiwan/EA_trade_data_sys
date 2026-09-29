@@ -28,7 +28,7 @@ import psycopg2.extras
 import requests
 
 from service.etl.deal_mapper import decode_deal_payloads
-from service.trade_query.models import DealRecord
+from service.domain.trades.models import DealRecord
 
 # ---------------------------------------------------------------------------
 # Configuration

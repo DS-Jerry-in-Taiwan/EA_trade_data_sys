@@ -49,11 +49,12 @@ def gateway_module():
         'mt5_account_balance', 'mt5_account_equity', 'service_uptime_seconds',
         'component_state', 'gateway_ready', 'tick_ipc_connected',
         'fresh_tick_symbols', 'component_status_age_seconds',
+        'mt5_deal_mapping_errors_total',
     ):
         setattr(metrics, name, Metric())
     metrics.generate_latest = lambda: b''
 
-    mt5_client_module = types.ModuleType('service.core.mt5_client')
+    mt5_client_module = types.ModuleType('service.infrastructure.mt5.client')
 
     class MT5Client:
         def shutdown(self):
@@ -61,15 +62,15 @@ def gateway_module():
 
     mt5_client_module.MT5Client = MT5Client
 
-    account_module = types.ModuleType('service.account_service')
+    account_module = types.ModuleType('service.trade_query.account_service')
 
     class AccountService:
-        def __init__(self, mt5_client=None):
+        def __init__(self, mt5_client=None, **_kwargs):
             self.mt5_client = mt5_client
 
     account_module.AccountService = AccountService
 
-    tick_consumer_module = types.ModuleType('service.core.tick_consumer')
+    tick_consumer_module = types.ModuleType('service.realtime.consumer')
 
     class TickConsumer:
         def __init__(self, *_args, **_kwargs):
@@ -86,27 +87,26 @@ def gateway_module():
             return False
 
     tick_consumer_module.TickConsumer = TickConsumer
-    tick_ipc_module = types.ModuleType('service.core.tick_ipc')
+    tick_ipc_module = types.ModuleType('service.infrastructure.ipc.tick_protocol')
     tick_ipc_module.DEFAULT_SOCKET_PATH = '/tmp/test-ticks.sock'
 
     saved_modules = {
         name: sys.modules.get(name)
         for name in (
-            'metrics', 'flask_socketio', 'flask_cors', 'service.core.mt5_client',
-            'service.account_service',
-                'service.core.tick_consumer',
-                'service.core.tick_ipc',
+            'flask_socketio', 'flask_cors', 'service.infrastructure.observability.metrics',
+            'service.infrastructure.mt5.client', 'service.trade_query.account_service',
+            'service.realtime.consumer', 'service.infrastructure.ipc.tick_protocol',
         )
     }
-    sys.modules['metrics'] = metrics
     sys.modules['flask_socketio'] = socketio_module
     sys.modules['flask_cors'] = cors_module
-    sys.modules['service.core.mt5_client'] = mt5_client_module
-    sys.modules['service.account_service'] = account_module
-    sys.modules['service.core.tick_consumer'] = tick_consumer_module
-    sys.modules['service.core.tick_ipc'] = tick_ipc_module
+    sys.modules['service.infrastructure.observability.metrics'] = metrics
+    sys.modules['service.infrastructure.mt5.client'] = mt5_client_module
+    sys.modules['service.trade_query.account_service'] = account_module
+    sys.modules['service.realtime.consumer'] = tick_consumer_module
+    sys.modules['service.infrastructure.ipc.tick_protocol'] = tick_ipc_module
     try:
-        gateway_path = Path(__file__).parents[2] / 'api_gateway.py'
+        gateway_path = Path(__file__).parents[2] / 'entrypoints' / 'api_gateway.py'
         spec = importlib.util.spec_from_file_location('rates_contract_gateway', gateway_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

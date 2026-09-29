@@ -1,4 +1,4 @@
-"""Domain errors raised while constructing trade query read models."""
+"""Domain errors raised while constructing canonical trade models."""
 
 
 class DealMappingError(ValueError):
@@ -6,3 +6,4 @@ class DealMappingError(ValueError):
 
 
 __all__ = ["DealMappingError"]
+

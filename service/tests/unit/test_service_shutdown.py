@@ -3,8 +3,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from service import api_gateway
-from service.history_service import HistoryService
+from service.entrypoints import api_gateway
+from service.history.worker import HistoryService
 
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
@@ -48,7 +48,7 @@ def test_gateway_closes_mt5_even_if_ipc_stop_fails(monkeypatch):
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
 def test_history_shutdown_signal_unwinds(signum):
-    from service import history_service
+    from service.history import worker as history_service
 
     with pytest.raises(SystemExit) as exc:
         history_service._handle_shutdown_signal(signum, None)

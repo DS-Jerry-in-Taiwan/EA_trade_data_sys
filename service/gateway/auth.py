@@ -7,8 +7,12 @@ from flask import jsonify, request
 
 
 def require_readonly_api_key(config_loader):
-    cfg = config_loader().get("api_gateway", {})
-    env_name = cfg.get("readonly_api_key_env", "READONLY_API_KEY")
+    config = config_loader()
+    if hasattr(config, "api_gateway"):
+        env_name = config.api_gateway.readonly_api_key_env
+    else:
+        cfg = config.get("api_gateway", {})
+        env_name = cfg.get("readonly_api_key_env", "READONLY_API_KEY")
     expected_key = os.getenv(env_name)
     if not expected_key:
         return jsonify({"error": "readonly api key not configured"}), 503

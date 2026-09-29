@@ -19,8 +19,8 @@ if find_spec("psycopg2") is None:
     sys.modules["psycopg2.extras"] = extras_stub
 
 from service.etl.trade_etl import DEAL_UPSERT_SQL, upsert_deals
-from service.trade_query.errors import DealMappingError
-from service.trade_query.models import DealRecord
+from service.domain.trades.errors import DealMappingError
+from service.domain.trades.models import DealRecord
 
 
 def canonical_deal(**overrides):
