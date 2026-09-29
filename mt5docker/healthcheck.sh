@@ -9,3 +9,9 @@ read -r rpyc_pid < /run/mt5-server/rpyc.pid
 case "$rpyc_pid" in (*[!0-9]*|'') exit 1 ;; esac
 kill -0 "$rpyc_pid" 2>/dev/null || exit 1
 rpyc_is_listening || exit 1
+# The remote desktop is an operational control surface. Do not report healthy
+# when MT5 is reachable but users cannot restore windows or paste credentials.
+pgrep -x openbox >/dev/null || exit 1
+pgrep -x pcmanfm >/dev/null || exit 1
+pgrep -x tint2 >/dev/null || exit 1
+[ "$(pgrep -x autocutsel | wc -l)" -ge 2 ] || exit 1
