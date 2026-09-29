@@ -12,7 +12,7 @@ except ModuleNotFoundError:
     sys.modules["pymt5linux"] = pymt5linux_stub
 
 from service.trade_query.account_service import AccountService
-from service.trade_query.errors import DealMappingError
+from service.domain.trades.errors import DealMappingError
 from service.infrastructure.observability.metrics import mt5_deal_mapping_errors_total
 
 

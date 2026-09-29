@@ -20,7 +20,7 @@ PACKAGES = {
 }
 
 PRODUCTION_PACKAGES = PACKAGES | {"config", "domain", "etl"}
-LEGACY_FLAT_IMPORTS = {
+REMOVED_LEGACY_IMPORTS = {
     "service.metrics",
     "service.api_gateway",
     "service.account_service",
@@ -29,9 +29,6 @@ LEGACY_FLAT_IMPORTS = {
     "service.history_query_service",
     "service.tick_service",
     "service.chart_service",
-}
-TEST_LEGACY_IMPORT_ALLOWLIST = {
-    "tests/test_history_trade_query_migration.py",
 }
 
 # A package may always import itself. Entrypoints are composition roots, while
@@ -148,7 +145,7 @@ def test_production_packages_do_not_import_legacy_flat_module_shims():
                 elif isinstance(node, ast.ImportFrom) and node.level == 0:
                     imported = [node.module] if node.module else []
                 for name in imported:
-                    if name in LEGACY_FLAT_IMPORTS or name.startswith("service.core"):
+                    if name in REMOVED_LEGACY_IMPORTS or name.startswith("service.core"):
                         violations.append(
                             f"{path.relative_to(SERVICE_ROOT)}:{node.lineno}: "
                             f"production code imports legacy module {name}"
@@ -156,7 +153,7 @@ def test_production_packages_do_not_import_legacy_flat_module_shims():
     assert not violations, "\n".join(violations)
 
 
-def test_backend_tests_only_import_legacy_shims_in_explicit_compatibility_tests():
+def test_backend_tests_do_not_import_removed_legacy_shims():
     violations = []
     tests_root = SERVICE_ROOT / "tests"
     for path in sorted(tests_root.rglob("*.py")):
@@ -169,11 +166,10 @@ def test_backend_tests_only_import_legacy_shims_in_explicit_compatibility_tests(
             elif isinstance(node, ast.ImportFrom) and node.level == 0:
                 imported = [node.module] if node.module else []
             for name in imported:
-                if name in LEGACY_FLAT_IMPORTS or name.startswith("service.core"):
-                    if relative not in TEST_LEGACY_IMPORT_ALLOWLIST:
-                        violations.append(
-                            f"{relative}:{node.lineno}: unexplained legacy import {name}"
-                        )
+                if name in REMOVED_LEGACY_IMPORTS or name.startswith("service.core"):
+                    violations.append(
+                        f"{relative}:{node.lineno}: removed legacy import {name}"
+                    )
     assert not violations, "\n".join(violations)
 
 
@@ -194,7 +190,7 @@ def test_gateway_does_not_own_an_mt5_tick_poller():
                     f"{path.name}:{node.lineno}: directly polls symbol_info_tick"
                 )
             if isinstance(node, ast.ImportFrom) and node.module and (
-                node.module in {"service.infrastructure.mt5", "service.core.mt5_client"}
+                node.module == "service.infrastructure.mt5"
                 or node.module.startswith("service.infrastructure.mt5.")
                 or node.module in {"MetaTrader5", "pymt5linux"}
                 or (node.module == "service.infrastructure" and any(
@@ -205,8 +201,7 @@ def test_gateway_does_not_own_an_mt5_tick_poller():
                     f"{path.name}:{node.lineno}: directly imports MT5 infrastructure"
                 )
             if isinstance(node, ast.Import) and any(
-                alias.name == "service.core.mt5_client"
-                or alias.name.startswith("service.infrastructure.mt5")
+                alias.name.startswith("service.infrastructure.mt5")
                 or alias.name in {"MetaTrader5", "pymt5linux"}
                 for alias in node.names
             ):

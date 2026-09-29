@@ -8,4 +8,5 @@ echo '>>> Phase 2A: Starting services...'
 
 mkdir -p /app/service/logs
 cd /app
+# The canonical supervisor owns the three service.entrypoints processes.
 exec python3 -u -m service.runtime.supervisor

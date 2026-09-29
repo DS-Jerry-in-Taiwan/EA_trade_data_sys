@@ -8,10 +8,11 @@ from service.realtime.snapshot_store import TickSnapshotStore
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_legacy_tick_service_is_only_a_compatibility_alias():
-    legacy_source = (SERVICE_ROOT / "tick_service.py").read_text(encoding="utf-8")
-    assert "from service.realtime.worker import TickService" in legacy_source
-    assert "symbol_info_tick" not in legacy_source
+def test_tick_entrypoint_delegates_to_realtime_worker():
+    entrypoint_source = (
+        SERVICE_ROOT / "entrypoints" / "tick_worker.py"
+    ).read_text(encoding="utf-8")
+    assert "from service.realtime.worker import TickService" in entrypoint_source
 
 
 def test_realtime_worker_is_only_symbol_info_tick_owner():

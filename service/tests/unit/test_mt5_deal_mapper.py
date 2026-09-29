@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from service.trade_query.errors import DealMappingError
+from service.domain.trades.errors import DealMappingError
 from service.trade_query.mt5_deal_mapper import map_mt5_deal
 
 

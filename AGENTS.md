@@ -2,9 +2,9 @@
 
 ## What this repo is
 - MT5 data bridge: `mt5docker/compose.yaml` runs `mt5-server` (Wine MT5 + `pymt5linux` on port 8001) and `python-runner` (Flask API on port 8090).
-- The real REST entrypoint is `service/api_gateway.py`; background workers are launched by `mt5docker/start_runner.sh` as `tick_service.py`, `history_service.py`, and `api_gateway.py`.
-- All MT5 calls should go through `service/core/mt5_client.py` (`ensure_connected()`, `call()`, resolver support) rather than constructing ad-hoc connections.
-- Low-level connection settings come from `service/config/settings.yaml`: host `mt5-server`, fallbacks `172.21.0.2-4`, RPyC port `8001`, API port `8090`.
+- The real REST entrypoint is `service.entrypoints.api_gateway`; `service.runtime.supervisor` launches `service.entrypoints.tick_worker`, `service.entrypoints.history_worker`, and `service.entrypoints.api_gateway` from `mt5docker/start_runner.sh`.
+- All MT5 calls should go through `service/infrastructure/mt5/client.py` (`ensure_connected()`, `call()`, resolver support) rather than constructing ad-hoc connections.
+- Typed settings are loaded by `service.config.load_settings` from `service/config/settings.yaml`; the deployed MT5 host is `mt5-server`, RPyC port `8001`, and API port `8090`.
 
 ## Commands that are easy to guess wrong
 - Start the stack from the compose directory: `cd mt5docker && docker compose up -d`.
