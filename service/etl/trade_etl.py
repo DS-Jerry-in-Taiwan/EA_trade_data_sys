@@ -27,6 +27,9 @@ import psycopg2
 import psycopg2.extras
 import requests
 
+from service.etl.deal_mapper import decode_deal_payloads
+from service.trade_query.models import DealRecord
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -78,15 +81,7 @@ def fetch_api(endpoint: str, params: dict | None = None) -> dict | list:
 # ---------------------------------------------------------------------------
 
 
-def upsert_deals(cursor, deals: list, login: int):
-    """Insert or update trade_deals rows.
-
-    API field -> DB column mapping:
-        deal       -> deal_id
-        order      -> order_id
-        time       -> deal_time
-    """
-    sql = """
+DEAL_UPSERT_SQL = """
         INSERT INTO trade_deals
             (login, deal_id, symbol, type, entry, volume, price,
              profit, swap, commission, comment, position_id, order_id, deal_time)
@@ -105,26 +100,30 @@ def upsert_deals(cursor, deals: list, login: int):
             order_id    = EXCLUDED.order_id,
             deal_time   = EXCLUDED.deal_time
     """
+
+
+def upsert_deals(cursor, deals: list[DealRecord], login: int):
+    """Insert or update canonical deal records by canonical deal ID."""
     rows = []
     for d in deals:
         rows.append((
             login,
-            int(d["deal"]),
-            d.get("symbol", ""),
-            d.get("type", ""),
-            d.get("entry", ""),
-            float(d.get("volume", 0)),
-            float(d.get("price", 0)),
-            float(d.get("profit", 0)),
-            float(d.get("swap", 0)),
-            float(d.get("commission", 0)),
-            d.get("comment", "") or "",
-            int(d.get("position_id", 0)),
-            int(d.get("order", 0)),
-            _parse_timestamp(d.get("time", "")),
+            d.deal_id,
+            d.symbol,
+            d.deal_type,
+            d.entry_type,
+            d.volume,
+            d.price,
+            d.profit,
+            d.swap,
+            d.commission,
+            d.comment,
+            d.position_id,
+            d.order_id,
+            d.occurred_at,
         ))
     if rows:
-        psycopg2.extras.execute_values(cursor, sql, rows, template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)")
+        psycopg2.extras.execute_values(cursor, DEAL_UPSERT_SQL, rows, template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)")
         print(f"  [OK] upserted {len(rows)} deals")
 
 
@@ -311,9 +310,9 @@ def main():
             deals_resp = fetch_api("history/deals", {"days": "90", "summary": "true"})
             login = int(account_info.get("login", 0)) if account_info else 0
             if isinstance(deals_resp, dict) and "data" in deals_resp:
-                upsert_deals(cursor, deals_resp["data"], login)
+                upsert_deals(cursor, decode_deal_payloads(deals_resp["data"]), login)
             elif isinstance(deals_resp, list):
-                upsert_deals(cursor, deals_resp, login)
+                upsert_deals(cursor, decode_deal_payloads(deals_resp), login)
             else:
                 print("  [SKIP] unexpected deals response format")
         except Exception as exc:

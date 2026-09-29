@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, jsonify, request
 
 from service.gateway.auth import require_readonly_api_key
+from service.metrics import mt5_deal_mapping_errors_total
+from service.trade_query.errors import DealMappingError
 
 
 def _parse_date(value):
@@ -68,10 +70,18 @@ def create_blueprint(account_service, config_loader):
         from_dt, to_dt, parse_error = parse_trade_query_range(config_loader)
         if parse_error:
             return jsonify(parse_error), 400
-        return _response(account_service.get_deals(
-            from_dt=from_dt, to_dt=to_dt, limit=None,
-            include_summary=request.args.get("summary", "").lower() == "true",
-        ))
+        try:
+            result = account_service.get_deals(
+                from_dt=from_dt, to_dt=to_dt, limit=None,
+                include_summary=request.args.get("summary", "").lower() == "true",
+            )
+        except DealMappingError:
+            mt5_deal_mapping_errors_total.inc()
+            return jsonify({
+                "error": "upstream deal contract invalid",
+                "code": "mt5_deal_mapping_error",
+            }), 502
+        return _response(result)
 
     @bp.get("/api/v1/history/orders")
     def get_history_orders():

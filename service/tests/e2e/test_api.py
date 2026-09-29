@@ -174,6 +174,15 @@ class TestAccountEndpoint:
 class TestTradeQueryEndpoints:
     """Protected readonly trade query endpoints."""
 
+    @staticmethod
+    def _assert_deal_contract(payload):
+        deals = payload["data"] if isinstance(payload, dict) else payload
+        assert isinstance(deals, list)
+        for deal in deals:
+            assert deal["deal"] == deal["ticket"] == deal["deal_id"]
+            assert deal["order"] == deal["order_id"]
+        return deals
+
     def test_account_without_key(self, api):
         resp = api("/account")
         assert resp.status_code in (401, 503), f"Unexpected status {resp.status_code}"
@@ -218,6 +227,7 @@ class TestTradeQueryEndpoints:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
         data = resp.json()
         assert isinstance(data, list) or (isinstance(data, dict) and "data" in data)
+        self._assert_deal_contract(data)
 
     def test_history_deals_summary_with_key(self, api, readonly_headers):
         if not readonly_headers:
@@ -229,6 +239,8 @@ class TestTradeQueryEndpoints:
         data = resp.json()
         assert "data" in data
         assert "summary" in data
+        deals = self._assert_deal_contract(data)
+        assert data["summary"]["count"] == len(deals)
 
     def test_history_deals_range_too_large(self, api, readonly_headers):
         if not readonly_headers:

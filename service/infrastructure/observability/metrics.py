@@ -24,3 +24,7 @@ component_status_age_seconds = Gauge(
 
 api_requests_total = Counter('api_requests_total', 'Total HTTP requests', ['method', 'endpoint', 'status'])
 api_request_duration_seconds = Histogram('api_request_duration_seconds', 'Request duration', ['method', 'endpoint'])
+mt5_deal_mapping_errors_total = Counter(
+    'mt5_deal_mapping_errors_total',
+    'Total MT5 historical deals rejected during contract mapping',
+)
