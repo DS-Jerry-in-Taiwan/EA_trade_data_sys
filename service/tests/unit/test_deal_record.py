@@ -68,6 +68,20 @@ def test_deal_record_rejects_invalid_strings(field, value):
         make_deal(**{field: value})
 
 
+@pytest.mark.parametrize("deal_type", ("BALANCE", "CREDIT"))
+def test_deal_record_allows_empty_symbol_for_non_trade_deal(deal_type):
+    deal = make_deal(deal_type=deal_type, symbol="")
+
+    assert deal.deal_type == deal_type
+    assert deal.symbol == ""
+
+
+@pytest.mark.parametrize("deal_type", ("BUY", "SELL"))
+def test_deal_record_requires_non_empty_symbol_for_trade_deal(deal_type):
+    with pytest.raises(DealMappingError, match="symbol"):
+        make_deal(deal_type=deal_type, symbol="")
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (

@@ -54,8 +54,9 @@ class DealRecord:
         _require_id("deal_id", self.deal_id, positive=True)
         _require_id("order_id", self.order_id)
         _require_id("position_id", self.position_id)
-        for name in ("symbol", "deal_type", "entry_type"):
+        for name in ("deal_type", "entry_type"):
             _require_string(name, getattr(self, name), non_empty=True)
+        _require_string("symbol", self.symbol, non_empty=self.deal_type in {"BUY", "SELL"})
         _require_string("comment", self.comment)
         for name in ("volume", "price"):
             _require_finite(name, getattr(self, name), non_negative=True)
