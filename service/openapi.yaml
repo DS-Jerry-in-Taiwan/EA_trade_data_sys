@@ -233,7 +233,7 @@ components:
   schemas:
     TradeDealV1:
       type: object
-      description: A historical MT5 deal. `deal` is a deprecated alias; `ticket` and `deal_id` identify the deal and always have the same value. `order` and `order_id` identify the originating order and always have the same value.
+      description: A historical MT5 deal. `deal` is a deprecated alias; `ticket` and `deal_id` identify the deal and always have the same value. `order` and `order_id` identify the originating order and always have the same value. `symbol` is always a string; it must be non-empty for BUY and SELL deals, while non-trade deal types may use an empty string.
       required: [deal, ticket, deal_id, order, order_id, position_id, symbol, type, entry, volume, price, profit, commission, swap, time, comment]
       properties:
         deal:
@@ -268,7 +268,7 @@ components:
           minimum: 0
         symbol:
           type: string
-          minLength: 1
+          description: The symbol is required to be non-empty when `type` is BUY or SELL. For non-trade deal types such as BALANCE or CREDIT, an empty string is valid.
         type:
           type: string
         entry:
