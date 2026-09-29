@@ -81,14 +81,15 @@ def create_execution_app(context):
             demo = account["mutation_eligible"]
         except ExecutionError:
             connected, demo = False, False
+        ready = connected and demo
         return _success({
-            "status": "healthy" if connected else "unhealthy",
-            "ready": connected,
+            "status": "healthy" if ready else "unhealthy",
+            "ready": ready,
             "mt5_connected": connected,
             "account_mode": "DEMO" if demo else "NON_DEMO_OR_UNKNOWN",
             "mutation_enabled": bool(context.mutation_enabled),
             "mutation_ready": bool(context.mutation_enabled and demo),
-        }), 200 if connected else 503
+        }), 200 if ready else 503
 
     @app.get("/api/v1/account")
     def account():

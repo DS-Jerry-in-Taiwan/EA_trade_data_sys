@@ -117,6 +117,19 @@ def test_non_demo_fails_closed(tmp_path, monkeypatch):
     assert adapter.send_count == 0
 
 
+def test_non_demo_health_is_not_ready(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
+    adapter = FakeAdapter(demo=False)
+    app = create_execution_app(ExecutionContext(
+        adapter, IdempotencyStore(tmp_path / "db.sqlite3"), "TEST_EXECUTION_KEY", False
+    ))
+    response = app.test_client().get("/api/v1/health", headers=headers())
+    assert response.status_code == 503
+    assert response.json["data"]["ready"] is False
+    assert response.json["data"]["account_mode"] == "NON_DEMO_OR_UNKNOWN"
+    assert response.json["data"]["mutation_ready"] is False
+
+
 def test_idempotent_replay_and_conflict(api):
     client, context, adapter = api
     context.mutation_enabled = True
