@@ -50,7 +50,6 @@
 | TickService | Python | 唯一週期性 tick poller，透過 `/run/trade-data/ticks.sock` 發佈 versioned NDJSON |
 | HistoryService | Python | 獨立背景 worker；增量抓取、合併、去重並原子發佈 CSV 與 ready marker |
 | AccountService | Python | 帳戶資訊、持倉、委託、成交歷史查詢 |
-| ChartService | Python | K 線圖生成 (matplotlib → base64 PNG) |
 | API Gateway | Python (Flask) | REST API + WebSocket (Flask-SocketIO) Port 8090 |
 | Trade ETL | Python | 只讀交易資料 + OHLC CSV 匯入 PostgreSQL (`service/etl/trade_etl.py`) |
 | PostgreSQL | SQL | `trade_analytics` 交易分析資料庫 |

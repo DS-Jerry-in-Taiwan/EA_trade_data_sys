@@ -264,28 +264,6 @@ class TestTradeQueryEndpoints:
         assert resp.status_code == 400, f"Expected 400, got {resp.status_code}"
 
 
-class TestChartEndpoint:
-    """C7: /chart/<symbol>"""
-
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm"])
-    def test_chart_status(self, api, symbol):
-        resp = api(f"/chart/{symbol}")
-        assert resp.status_code in (200, 404, 503), \
-            f"Unexpected status {resp.status_code} for {symbol}"
-
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm"])
-    def test_chart_data_shape(self, api, symbol):
-        resp = api(f"/chart/{symbol}")
-        if resp.status_code != 200:
-            pytest.skip(f"Chart endpoint not available for {symbol}")
-        data = resp.json()
-        if not data:
-            pytest.skip(f"No chart data for {symbol}")
-        record = data[0] if isinstance(data, list) else data
-        for field in ("time", "open", "high", "low", "close"):
-            assert field in record, f"Chart record missing '{field}' for {symbol}"
-
-
 class TestOpenApiSpec:
     """C8: /openapi.yaml — OpenAPI specification endpoint"""
 

@@ -28,7 +28,6 @@ REMOVED_LEGACY_IMPORTS = {
     "service.history_repository",
     "service.history_query_service",
     "service.tick_service",
-    "service.chart_service",
 }
 
 # A package may always import itself. Entrypoints are composition roots, while
@@ -171,6 +170,10 @@ def test_backend_tests_do_not_import_removed_legacy_shims():
                         f"{relative}:{node.lineno}: removed legacy import {name}"
                     )
     assert not violations, "\n".join(violations)
+
+
+def test_legacy_chart_service_is_removed_when_no_gateway_caller_exists():
+    assert not (SERVICE_ROOT / "chart_service.py").exists()
 
 
 def test_gateway_does_not_own_an_mt5_tick_poller():
