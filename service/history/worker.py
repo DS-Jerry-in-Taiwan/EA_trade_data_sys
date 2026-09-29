@@ -2,14 +2,13 @@ import os
 import tempfile
 import time
 import signal
-import yaml
 import pandas as pd
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
+from service.config import Settings, load_settings
 from service.infrastructure.mt5.client import MT5Client
 from service.infrastructure.status.component_status import (
-    DEFAULT_STATUS_DIR,
     atomic_write_status,
 )
 
@@ -30,33 +29,32 @@ class HistoryService:
     DEFAULT_FETCH_PAGE_SIZE = 500
     DEFAULT_FETCH_TIMEOUT_SECONDS = 10
 
-    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None):
-        with open(config_path) as f:
-            cfg = (yaml.safe_load(f) or {}).get('history_service', {})
-        self.symbols = cfg.get('symbols', [])
-        self.interval = cfg.get('update_interval_seconds', 60)
-        self.data_path = cfg.get('data_path', '/app/service/data/history')
-        self.status_path = os.environ.get(
-            'HISTORY_STATUS_PATH', cfg.get(
-                'status_path', os.path.join(DEFAULT_STATUS_DIR, 'history-status.json')
-            )
-        )
-        configured_minimums = cfg.get('minimum_bars', {})
+    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None,
+                 settings: Settings | None = None):
+        settings = settings or load_settings(config_path)
+        cfg = settings.history_service
+        self.symbols = [symbol.as_legacy_dict() for symbol in cfg.symbols]
+        self.interval = cfg.update_interval_seconds
+        self.data_path = cfg.data_path
+        self.status_path = cfg.status_path
+        configured_minimums = cfg.minimum_bars
         self.minimum_bars = {
             timeframe: int(configured_minimums.get(timeframe, minimum))
             for timeframe, minimum in self.DEFAULT_MINIMUM_BARS.items()
         }
         self.fetch_margin_bars = int(
-            cfg.get('fetch_margin_bars', self.DEFAULT_FETCH_MARGIN_BARS)
+            cfg.fetch_margin_bars
         )
         self.retention_margin_bars = int(
-            cfg.get('retention_margin_bars', self.fetch_margin_bars)
+            cfg.retention_margin_bars
+            if cfg.retention_margin_bars is not None
+            else self.fetch_margin_bars
         )
         self.fetch_page_size = int(
-            cfg.get('fetch_page_size', self.DEFAULT_FETCH_PAGE_SIZE)
+            cfg.fetch_page_size
         )
         self.fetch_timeout_seconds = float(
-            cfg.get('fetch_timeout_seconds', self.DEFAULT_FETCH_TIMEOUT_SECONDS)
+            cfg.fetch_timeout_seconds
         )
         if self.fetch_margin_bars < 0:
             raise ValueError('fetch_margin_bars must be non-negative')

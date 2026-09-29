@@ -17,9 +17,14 @@ def _parse_date(value):
 
 
 def parse_trade_query_range(config_loader):
-    cfg = config_loader().get("trade_query", {})
-    default_days = int(cfg.get("default_days", 7))
-    max_days = int(cfg.get("max_days", 90))
+    config = config_loader()
+    if hasattr(config, "trade_query"):
+        default_days = config.trade_query.default_days
+        max_days = config.trade_query.max_days
+    else:
+        cfg = config.get("trade_query", {})
+        default_days = int(cfg.get("default_days", 7))
+        max_days = int(cfg.get("max_days", 90))
     from_arg, to_arg = request.args.get("from"), request.args.get("to")
     if from_arg or to_arg:
         from_dt, to_dt = _parse_date(from_arg), _parse_date(to_arg)

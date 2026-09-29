@@ -1,6 +1,5 @@
 """Compatibility executable for the modular Gateway entrypoint."""
 
-import os
 import signal
 
 from service.entrypoints.api_gateway import (
@@ -9,22 +8,14 @@ from service.entrypoints.api_gateway import (
     app,
     history_query_svc,
     mt5_client,
+    run_gateway as _run_gateway,
     socketio,
     tick_consumer,
 )
 
 
 def run_gateway():
-    tick_consumer.start()
-    try:
-        socketio.run(app, host=os.getenv("API_GATEWAY_HOST", "0.0.0.0"),
-                     port=int(os.getenv("API_GATEWAY_PORT", 8090)),
-                     allow_unsafe_werkzeug=True)
-    finally:
-        try:
-            tick_consumer.stop()
-        finally:
-            mt5_client.shutdown()
+    _run_gateway()
 
 
 if __name__ == "__main__":
