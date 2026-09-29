@@ -19,6 +19,18 @@ PACKAGES = {
     "entrypoints",
 }
 
+PRODUCTION_PACKAGES = PACKAGES | {"config", "domain", "etl"}
+LEGACY_FLAT_IMPORTS = {
+    "service.metrics",
+    "service.api_gateway",
+    "service.account_service",
+    "service.history_service",
+    "service.history_repository",
+    "service.history_query_service",
+    "service.tick_service",
+    "service.chart_service",
+}
+
 # A package may always import itself. Entrypoints are composition roots, while
 # runtime is deliberately limited to launching those entrypoints.
 ALLOWED_DEPENDENCIES = {
@@ -117,6 +129,26 @@ def test_modular_packages_follow_declared_dependency_direction():
                         violations.append(
                             f"{path.relative_to(SERVICE_ROOT)}:{node.lineno}: "
                             f"{owner} must not depend on {dependency}"
+                        )
+    assert not violations, "\n".join(violations)
+
+
+def test_production_packages_do_not_import_legacy_flat_module_shims():
+    violations = []
+    for owner in sorted(PRODUCTION_PACKAGES):
+        for path in _python_files(owner):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                imported = []
+                if isinstance(node, ast.Import):
+                    imported = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    imported = [node.module] if node.module else []
+                for name in imported:
+                    if name in LEGACY_FLAT_IMPORTS or name.startswith("service.core"):
+                        violations.append(
+                            f"{path.relative_to(SERVICE_ROOT)}:{node.lineno}: "
+                            f"production code imports legacy module {name}"
                         )
     assert not violations, "\n".join(violations)
 

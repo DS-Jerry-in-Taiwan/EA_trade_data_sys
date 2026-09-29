@@ -88,7 +88,9 @@ def create_app(context):
         context.account_service, context.symbol_names, context.openapi_path,
     ))
     app.register_blueprint(trade_query.create_blueprint(
-        context.account_service, context.config_loader
+        context.account_service,
+        context.config_loader,
+        context.metrics.mt5_deal_mapping_errors_total,
     ))
     app.register_blueprint(health.create_blueprint(context, update_component_metrics))
     app.register_blueprint(metrics_routes.create_blueprint(

@@ -4,6 +4,7 @@ from service.config.loader import (
     DEFAULT_CONFIG_PATH,
     load_runtime_settings,
     load_settings,
+    resolve_config_path,
 )
 from service.config.models import (
     ApiGatewaySettings,
@@ -28,4 +29,5 @@ __all__ = [
     "RuntimeSettings",
     "load_runtime_settings",
     "load_settings",
+    "resolve_config_path",
 ]

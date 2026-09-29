@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, jsonify, request
 
 from service.gateway.auth import require_readonly_api_key
-from service.metrics import mt5_deal_mapping_errors_total
 from service.domain.trades.errors import DealMappingError
 
 
@@ -55,7 +54,7 @@ def _response(result):
     return jsonify(result)
 
 
-def create_blueprint(account_service, config_loader):
+def create_blueprint(account_service, config_loader, mapping_error_counter=None):
     bp = Blueprint("trade_query", __name__)
 
     @bp.get("/api/v1/account")
@@ -81,7 +80,8 @@ def create_blueprint(account_service, config_loader):
                 include_summary=request.args.get("summary", "").lower() == "true",
             )
         except DealMappingError:
-            mt5_deal_mapping_errors_total.inc()
+            if mapping_error_counter is not None:
+                mapping_error_counter.inc()
             return jsonify({
                 "error": "upstream deal contract invalid",
                 "code": "mt5_deal_mapping_error",
