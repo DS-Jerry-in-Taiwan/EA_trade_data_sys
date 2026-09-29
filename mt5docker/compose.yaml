@@ -59,3 +59,33 @@ services:
       # starting the supervisor; allow that bootstrap to finish on a clean image.
       start_period: 150s
     restart: always
+
+  execution-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jerry/mt5-custom:v1
+    container_name: execution-service
+    environment:
+      READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
+      EXECUTION_MUTATION_ENABLED: "false"
+      EXECUTION_IDEMPOTENCY_DB: /app/runtime/execution/idempotency.sqlite3
+    volumes:
+      - ..:/app
+    ports:
+      - "0.0.0.0:8091:8091"
+    entrypoint: /app/mt5docker/start_execution.sh
+    depends_on:
+      mt5-server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json,os,urllib.request; q=urllib.request.Request('http://localhost:8091/api/v1/health',headers={'X-API-Key':os.environ['READONLY_API_KEY']}); r=urllib.request.urlopen(q,timeout=3); d=json.load(r); assert r.status==200 and d['data']['ready'] is True"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 150s
+    restart: always

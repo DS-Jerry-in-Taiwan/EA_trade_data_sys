@@ -1,0 +1,175 @@
+openapi: 3.0.3
+info:
+  title: MT5 Demo Execution API
+  version: 1.0.0
+  description: Demo-only execution boundary. Mutations are disabled unless both the runtime gate and verified MT5 Demo mode are active. A timed-out create request must be recovered with the by-client endpoint and must never be automatically resent.
+servers:
+  - url: /api/v1
+security:
+  - ApiKeyAuth: []
+paths:
+  /health:
+    get:
+      operationId: getExecutionHealth
+      responses:
+        '200': {description: Ready, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '503': {$ref: '#/components/responses/Error'}
+  /account:
+    get:
+      operationId: getExecutionAccount
+      responses:
+        '200': {description: Account facts with Demo eligibility, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /symbols/{symbol}:
+    get:
+      operationId: getSymbolSpecification
+      parameters:
+        - $ref: '#/components/parameters/Symbol'
+      responses:
+        '200': {description: Fresh symbol and risk facts, content: {application/json: {schema: {$ref: '#/components/schemas/SymbolEnvelope'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /orders:
+    get:
+      operationId: listOrders
+      responses:
+        '200': {description: Active and recent orders, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+    post:
+      operationId: createOrder
+      description: Performs one order_check and at most one order_send. Never automatically retry after timeout.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateOrder'}
+      responses:
+        '201': {description: Accepted by MT5, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200': {description: Order, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /orders/by-client/{client_order_id}:
+    get:
+      operationId: getOrderByClientId
+      description: Durable timeout-after-acceptance recovery lookup.
+      parameters:
+        - name: client_order_id
+          in: path
+          required: true
+          schema: {type: string, minLength: 1}
+      responses:
+        '200': {description: Durable idempotency record, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /orders/{id}/cancel:
+    post:
+      operationId: cancelOrder
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200': {description: Cancel result including MT5 retcode, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /positions:
+    get:
+      operationId: listPositions
+      responses:
+        '200': {description: Open positions, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+  /positions/{id}/close:
+    post:
+      operationId: closePosition
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200': {description: Close result including MT5 retcode, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /deals:
+    get:
+      operationId: listDeals
+      responses:
+        '200': {description: Recent normalized deals, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+components:
+  securitySchemes:
+    ApiKeyAuth: {type: apiKey, in: header, name: X-API-Key}
+  parameters:
+    Symbol: {name: symbol, in: path, required: true, schema: {type: string, minLength: 1}}
+    Id: {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Must equal client_order_id., schema: {type: string, minLength: 1}}
+    RequestId: {name: X-Request-ID, in: header, required: true, schema: {type: string, minLength: 1}}
+  responses:
+    Error:
+      description: Stable versioned error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  schemas:
+    SuccessEnvelope:
+      type: object
+      required: [schema_version, data]
+      properties:
+        schema_version: {type: string, enum: [1.0.0]}
+        data: {}
+    ErrorEnvelope:
+      type: object
+      required: [schema_version, error]
+      properties:
+        schema_version: {type: string, enum: [1.0.0]}
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            request_id: {type: string}
+            retcode: {type: integer, description: Original MT5 retcode when available.}
+    SymbolEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/SymbolSpecification'}
+    SymbolSpecification:
+      type: object
+      required: [symbol, digits, point, minimum_volume, maximum_volume, volume_step, tick_size, tick_value, contract_size, observed_at, stops_level, freeze_level, margin_per_lot]
+      properties:
+        symbol: {type: string, minLength: 1}
+        digits: {type: integer}
+        point: {type: number, exclusiveMinimum: true, minimum: 0}
+        minimum_volume: {type: number, exclusiveMinimum: true, minimum: 0}
+        maximum_volume: {type: number, exclusiveMinimum: true, minimum: 0}
+        volume_step: {type: number, exclusiveMinimum: true, minimum: 0}
+        tick_size: {type: number, exclusiveMinimum: true, minimum: 0}
+        tick_value: {type: number}
+        contract_size: {type: number, exclusiveMinimum: true, minimum: 0}
+        observed_at: {type: string, format: date-time}
+        stops_level: {type: integer, minimum: 0}
+        freeze_level: {type: integer, minimum: 0}
+        margin_per_lot: {type: number, exclusiveMinimum: true, minimum: 0}
+        bid: {type: number}
+        ask: {type: number}
+    CreateOrder:
+      type: object
+      required: [client_order_id, symbol, side, volume]
+      properties:
+        client_order_id: {type: string, minLength: 1}
+        symbol: {type: string, minLength: 1}
+        side: {type: string, enum: [BUY, SELL]}
+        volume: {type: number, exclusiveMinimum: true, minimum: 0}
+        price: {type: number}
+        sl: {type: number}
+        tp: {type: number}
+        stop_loss: {type: number}
+        take_profit: {type: number}
