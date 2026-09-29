@@ -76,14 +76,13 @@ sleep 2
 openbox & OPENBOX_PID="$!"; remember_child "$OPENBOX_PID"
 pcmanfm --desktop --profile MT5 & PCMANFM_PID="$!"; remember_child "$PCMANFM_PID"
 tint2 -c /root/.config/tint2/tint2rc & TINT2_PID="$!"; remember_child "$TINT2_PID"
-# Keep PRIMARY (mouse selection) and CLIPBOARD (Ctrl+C/V) synchronized so
-# noVNC's clipboard drawer and Wine applications see the same text.
-autocutsel -selection PRIMARY & PRIMARY_CLIPBOARD_PID="$!"; remember_child "$PRIMARY_CLIPBOARD_PID"
-autocutsel -selection CLIPBOARD & CLIPBOARD_PID="$!"; remember_child "$CLIPBOARD_PID"
+# x11vnc is the sole clipboard bridge. Its default selection support handles
+# both PRIMARY and CLIPBOARD updates from noVNC. A second clipboard manager can
+# replay stale CUT_BUFFER0 content over newer browser clipboard events.
 x11vnc -display :100 -forever -shared -dontdisconnect -rfbport 5901 -rfbauth /root/.vnc/passwd & remember_child "$!"
 websockify --web /usr/share/novnc 6081 localhost:5901 & remember_child "$!"
 sleep 1
-for desktop_pid in "$OPENBOX_PID" "$PCMANFM_PID" "$TINT2_PID" "$PRIMARY_CLIPBOARD_PID" "$CLIPBOARD_PID"; do
+for desktop_pid in "$OPENBOX_PID" "$PCMANFM_PID" "$TINT2_PID"; do
     kill -0 "$desktop_pid" 2>/dev/null || {
         echo '>>> Desktop shell failed to start; refusing partial noVNC service.' >&2
         exit 1
@@ -127,7 +126,7 @@ mkdir -p /run/mt5-server
 printf '%s\n' "$RPYC_PID" > /run/mt5-server/rpyc.pid
 while kill -0 "$RPYC_PID" 2>/dev/null; do
     exactly_one_normal_terminal || exit 1
-    for desktop_pid in "$OPENBOX_PID" "$PCMANFM_PID" "$TINT2_PID" "$PRIMARY_CLIPBOARD_PID" "$CLIPBOARD_PID"; do
+    for desktop_pid in "$OPENBOX_PID" "$PCMANFM_PID" "$TINT2_PID"; do
         kill -0 "$desktop_pid" 2>/dev/null || exit 1
     done
     sleep 5
