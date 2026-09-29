@@ -14,4 +14,3 @@ rpyc_is_listening || exit 1
 pgrep -x openbox >/dev/null || exit 1
 pgrep -x pcmanfm >/dev/null || exit 1
 pgrep -x tint2 >/dev/null || exit 1
-[ "$(pgrep -x autocutsel | wc -l)" -ge 2 ] || exit 1

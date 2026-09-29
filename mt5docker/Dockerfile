@@ -2,7 +2,7 @@ FROM hpdeandrade/mt5docker:latest
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
     novnc websockify net-tools x11vnc tightvncserver openbox curl \
-    tint2 pcmanfm autocutsel xclip dbus-x11 \
+    tint2 pcmanfm dbus-x11 \
     && rm -rf /var/lib/apt/lists/*
 
 # Lightweight desktop shell: window taskbar/menu plus desktop icons. Openbox
