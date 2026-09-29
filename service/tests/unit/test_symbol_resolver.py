@@ -1,12 +1,4 @@
-import importlib.util
-from pathlib import Path
-
-
-module_path = Path(__file__).parents[2] / 'core' / 'symbol_resolver.py'
-spec = importlib.util.spec_from_file_location('symbol_resolver_under_test', module_path)
-symbol_resolver_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(symbol_resolver_module)
-SymbolResolver = symbol_resolver_module.SymbolResolver
+from service.infrastructure.mt5.symbol_resolver import SymbolResolver
 
 
 class _Symbol:

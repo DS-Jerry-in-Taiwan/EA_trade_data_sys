@@ -7,17 +7,47 @@ from pathlib import Path
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_legacy_modules_are_thin_compatibility_layers():
-    limits = {
-        "core/mt5_client.py": 40,
-        "core/symbol_resolver.py": 15,
-        "core/tick_ipc.py": 30,
-        "core/component_status.py": 25,
-        "metrics.py": 10,
-    }
-    for relative_path, max_lines in limits.items():
-        source = (SERVICE_ROOT / relative_path).read_text(encoding="utf-8")
-        assert len(source.splitlines()) <= max_lines, relative_path
+def test_removed_legacy_modules_are_absent():
+    removed = (
+        "api_gateway.py",
+        "tick_service.py",
+        "history_service.py",
+        "account_service.py",
+        "history_repository.py",
+        "history_query_service.py",
+        "metrics.py",
+        "chart_service.py",
+        "trade_query/models.py",
+        "trade_query/errors.py",
+    )
+    for relative_path in removed:
+        assert not (SERVICE_ROOT / relative_path).exists(), relative_path
+    assert not list((SERVICE_ROOT / "core").glob("*.py"))
+
+
+def test_tests_do_not_reference_removed_legacy_file_paths():
+    removed_tokens = (
+        "service/api_gateway.py",
+        "service/tick_service.py",
+        "service/history_service.py",
+        "service/account_service.py",
+        "service/history_repository.py",
+        "service/history_query_service.py",
+        "service/metrics.py",
+        "service/chart_service.py",
+        "service/core/",
+        "service/trade_query/models.py",
+        "service/trade_query/errors.py",
+    )
+    violations = []
+    for path in (SERVICE_ROOT / "tests").rglob("*.py"):
+        if path.name == Path(__file__).name:
+            continue
+        source = path.read_text(encoding="utf-8")
+        for token in removed_tokens:
+            if token in source:
+                violations.append(f"{path.relative_to(SERVICE_ROOT)}: {token}")
+    assert not violations, "\n".join(violations)
 
 
 def test_real_implementations_live_under_infrastructure():
