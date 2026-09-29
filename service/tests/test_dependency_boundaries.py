@@ -30,6 +30,9 @@ LEGACY_FLAT_IMPORTS = {
     "service.tick_service",
     "service.chart_service",
 }
+TEST_LEGACY_IMPORT_ALLOWLIST = {
+    "tests/test_history_trade_query_migration.py",
+}
 
 # A package may always import itself. Entrypoints are composition roots, while
 # runtime is deliberately limited to launching those entrypoints.
@@ -149,6 +152,27 @@ def test_production_packages_do_not_import_legacy_flat_module_shims():
                         violations.append(
                             f"{path.relative_to(SERVICE_ROOT)}:{node.lineno}: "
                             f"production code imports legacy module {name}"
+                        )
+    assert not violations, "\n".join(violations)
+
+
+def test_backend_tests_only_import_legacy_shims_in_explicit_compatibility_tests():
+    violations = []
+    tests_root = SERVICE_ROOT / "tests"
+    for path in sorted(tests_root.rglob("*.py")):
+        relative = str(path.relative_to(SERVICE_ROOT))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            imported = []
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                imported = [node.module] if node.module else []
+            for name in imported:
+                if name in LEGACY_FLAT_IMPORTS or name.startswith("service.core"):
+                    if relative not in TEST_LEGACY_IMPORT_ALLOWLIST:
+                        violations.append(
+                            f"{relative}:{node.lineno}: unexplained legacy import {name}"
                         )
     assert not violations, "\n".join(violations)
 

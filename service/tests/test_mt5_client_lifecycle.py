@@ -21,7 +21,7 @@ def close_mt5_connection(mt5):
 connection_manager.close_mt5_connection = close_mt5_connection
 sys.modules.setdefault('core.connection_manager', connection_manager)
 
-from service.core.mt5_client import MT5Client
+from service.infrastructure.mt5.client import MT5Client
 
 
 class FakeMT5:
@@ -192,7 +192,7 @@ def test_resolver_configuration_is_refreshed_after_reconnect(monkeypatch):
         def resolve(self, name):
             return name
 
-    monkeypatch.setattr('service.core.symbol_resolver.SymbolResolver', FakeResolver)
+    monkeypatch.setattr('service.infrastructure.mt5.symbol_resolver.SymbolResolver', FakeResolver)
     assert client.ensure_connected()
     client.init_resolver(['XAUUSDm', 'BTC'])
     client.reset()

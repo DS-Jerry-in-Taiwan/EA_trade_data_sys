@@ -1,8 +1,8 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from service.core.component_status import atomic_write_status, read_status
-import service.api_gateway as gateway
+from service.infrastructure.status.component_status import atomic_write_status, read_status
+import service.entrypoints.api_gateway as gateway
 
 
 def test_atomic_status_round_trip_and_staleness(tmp_path):

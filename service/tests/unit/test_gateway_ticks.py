@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 import ast
 from pathlib import Path
 
-import service.api_gateway as gateway
+import service.entrypoints.api_gateway as gateway
 
 
 def _event(received_at=None):
