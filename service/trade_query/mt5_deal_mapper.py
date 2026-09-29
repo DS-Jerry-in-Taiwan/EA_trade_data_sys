@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 import math
 from typing import Any
 
-from service.trade_query.errors import DealMappingError
-from service.trade_query.models import DealRecord
+from service.domain.trades.errors import DealMappingError
+from service.domain.trades.models import DealRecord
 
 
 _DEAL_TYPES = {

@@ -6,7 +6,7 @@ from flask import Blueprint, jsonify, request
 
 from service.gateway.auth import require_readonly_api_key
 from service.metrics import mt5_deal_mapping_errors_total
-from service.trade_query.errors import DealMappingError
+from service.domain.trades.errors import DealMappingError
 
 
 def _parse_date(value):

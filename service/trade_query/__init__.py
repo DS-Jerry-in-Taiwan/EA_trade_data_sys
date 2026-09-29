@@ -1,7 +1,7 @@
 """Read-only account and trade query package."""
 
-from service.trade_query.errors import DealMappingError
-from service.trade_query.models import DealRecord, DealSummary
+from service.domain.trades.errors import DealMappingError
+from service.domain.trades.models import DealRecord, DealSummary
 from service.trade_query.presenters import present_deal_summary_v1, present_deal_v1
 
 

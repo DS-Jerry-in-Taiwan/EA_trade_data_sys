@@ -2,7 +2,7 @@
 
 from typing import Any, Dict
 
-from service.trade_query.models import DealRecord, DealSummary
+from service.domain.trades.models import DealRecord, DealSummary
 
 
 def _round_number(value: float, digits: int = 2) -> float:

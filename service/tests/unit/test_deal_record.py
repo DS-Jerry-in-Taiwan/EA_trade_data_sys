@@ -5,9 +5,8 @@ import inspect
 
 import pytest
 
-from service.trade_query.errors import DealMappingError
+from service.domain.trades import DealMappingError, DealRecord, DealSummary
 from service.trade_query import errors, models
-from service.trade_query.models import DealRecord, DealSummary
 
 
 def make_deal(**overrides):
@@ -162,3 +161,9 @@ def test_domain_models_do_not_load_mt5_runtime_modules():
     assert not {
         name for name in imported_modules if name.split(".", 1)[0] in forbidden_roots
     }
+
+
+def test_legacy_trade_query_paths_reexport_canonical_domain_contracts():
+    assert models.DealRecord is DealRecord
+    assert models.DealSummary is DealSummary
+    assert errors.DealMappingError is DealMappingError

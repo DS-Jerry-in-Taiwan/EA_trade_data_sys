@@ -1,8 +1,5 @@
-"""Domain errors raised while constructing trade query read models."""
+"""Backward-compatible import for the canonical trade-domain error."""
 
-
-class DealMappingError(ValueError):
-    """Raised when source deal data cannot form a valid canonical record."""
-
+from service.domain.trades.errors import DealMappingError
 
 __all__ = ["DealMappingError"]
