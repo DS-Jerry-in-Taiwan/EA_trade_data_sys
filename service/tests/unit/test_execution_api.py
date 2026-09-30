@@ -54,6 +54,17 @@ class FakeAdapter:
         return {"position_id": position_id, "retcode": 10009}
 
 
+class SessionAdapter(FakeAdapter):
+    def __init__(self, session):
+        super().__init__()
+        self.session = session
+        self.refreshes = []
+
+    def session_status(self, *, refresh=False):
+        self.refreshes.append(refresh)
+        return self.session
+
+
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
@@ -128,6 +139,22 @@ def test_non_demo_health_is_not_ready(tmp_path, monkeypatch):
     assert response.json["data"]["ready"] is False
     assert response.json["data"]["account_mode"] == "NON_DEMO_OR_UNKNOWN"
     assert response.json["data"]["mutation_ready"] is False
+
+
+def test_execution_health_refreshes_session_and_fails_closed_when_not_ready(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
+    adapter = SessionAdapter({
+        "state": "switch_detected", "ready": False, "generation": 4,
+        "fingerprint": None, "error": "account_session_transition",
+    })
+    app = create_execution_app(ExecutionContext(
+        adapter, IdempotencyStore(tmp_path / "db.sqlite3"), "TEST_EXECUTION_KEY", False
+    ))
+    response = app.test_client().get("/api/v1/health", headers=headers())
+    assert response.status_code == 503
+    assert response.json["data"]["ready"] is False
+    assert response.json["data"]["account_session"]["error"] == "account_session_transition"
+    assert adapter.refreshes == [True]
 
 
 def test_idempotent_replay_and_conflict(api):

@@ -75,21 +75,29 @@ def create_execution_app(context):
 
     @app.get("/api/v1/health")
     def health():
-        session = (
-            context.adapter.session_status()
-            if callable(getattr(context.adapter, "session_status", None))
-            else {
-                "state": "unknown", "ready": False, "generation": 0,
-                "fingerprint": None, "error": "account_session_unavailable",
-            }
-        )
         try:
             account = context.adapter.account()
             connected = True
             demo = account["mutation_eligible"]
         except ExecutionError:
             connected, demo = False, False
-        ready = connected and demo
+        session_supported = callable(getattr(context.adapter, "session_status", None))
+        if session_supported:
+            try:
+                session = context.adapter.session_status(refresh=True)
+            except Exception:
+                session = {
+                    "state": "disconnected", "ready": False, "generation": 0,
+                    "fingerprint": None, "error": "mt5_disconnected",
+                }
+        else:
+            session = {
+                "state": "unknown", "ready": False, "generation": 0,
+                "fingerprint": None, "error": "account_session_unavailable",
+            }
+        ready = connected and demo and (
+            session.get("ready", False) if session_supported else True
+        )
         return _success({
             "status": "healthy" if ready else "unhealthy",
             "ready": ready,
@@ -97,7 +105,10 @@ def create_execution_app(context):
             "account_mode": "DEMO" if demo else "NON_DEMO_OR_UNKNOWN",
             "account_session": session,
             "mutation_enabled": bool(context.mutation_enabled),
-            "mutation_ready": bool(context.mutation_enabled and demo),
+            "mutation_ready": bool(
+                context.mutation_enabled and demo
+                and (session.get("ready", False) if session_supported else True)
+            ),
         }), 200 if ready else 503
 
     @app.get("/api/v1/account")

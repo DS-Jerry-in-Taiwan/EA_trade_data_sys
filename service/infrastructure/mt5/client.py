@@ -150,9 +150,19 @@ class MT5Client:
         """The process-local account-session guard used by this client."""
         return self._session_guard
 
-    def session_status(self):
-        """Return non-secret account-session readiness facts."""
+    def session_status(self, *, refresh=False):
+        """Return non-secret account-session readiness facts.
+
+        Health probes may request a refresh. The refresh is read-only and
+        observes the current terminal account through ``account_info``; it
+        never supplies credentials or changes the selected account.
+        """
         with self._lock:
+            if refresh:
+                try:
+                    self._ensure_connected_unsafe()
+                except Exception:
+                    self._session_guard.mark_disconnected()
             return self._session_guard.status()
 
     def reconcile_session(self):

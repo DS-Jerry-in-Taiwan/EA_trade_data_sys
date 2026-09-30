@@ -40,10 +40,10 @@ class MT5ExecutionAdapter:
         self.client = mt5_client
         self.resolver_symbols = tuple(resolver_symbols)
 
-    def session_status(self):
+    def session_status(self, *, refresh=False):
         getter = getattr(self.client, "session_status", None)
         if callable(getter):
-            return getter()
+            return getter(refresh=refresh)
         return {
             "state": "unknown",
             "ready": False,

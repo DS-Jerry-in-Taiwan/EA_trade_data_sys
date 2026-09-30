@@ -99,3 +99,8 @@ mode, and monotonic session generation. A changed login/server/trade mode,
 disconnect, or unknown mode makes that session not ready until a later
 reconciliation step acknowledges the observed account. The raw login and all
 credentials remain out of status, logs, metrics, and responses.
+
+Gateway and execution health probes refresh this fact through a read-only
+`account_info()` observation. Overall readiness is false for any session that
+is disconnected, unknown, switching, or has failed reconciliation; history
+storage remains untouched while the account-scoped MT5 state is rebuilt.

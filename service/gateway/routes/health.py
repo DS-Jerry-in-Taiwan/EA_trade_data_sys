@@ -11,21 +11,38 @@ def health_payload(context):
     tick = context.status_reader(context.tick_status_path, context.tick_status_max_age)
     history = context.status_reader(context.history_status_path, context.history_status_max_age)
     account_service = getattr(context, "account_service", None)
-    session_status = (
-        account_service.session_status()
-        if account_service is not None and callable(getattr(account_service, "session_status", None))
-        else {
+    session_status = {
+        "state": "unknown", "ready": False, "generation": 0,
+        "fingerprint": None, "error": "account_session_unavailable",
+    }
+    session_getter = (
+        getattr(account_service, "session_status", None)
+        if account_service is not None else None
+    )
+    if callable(session_getter):
+        try:
+            session_status = session_getter(refresh=True)
+        except TypeError:
+            # Compatibility for injected test/adapters that predate the
+            # refresh keyword; production AccountService supports it.
+            session_status = session_getter()
+        except Exception:
+            session_status = {
+                "state": "disconnected", "ready": False, "generation": 0,
+                "fingerprint": None, "error": "mt5_disconnected",
+            }
+    if not isinstance(session_status, dict):
+        session_status = {
             "state": "unknown", "ready": False, "generation": 0,
             "fingerprint": None, "error": "account_session_unavailable",
         }
-    )
-    session_transition = session_status.get("state") == "switch_detected"
+    session_ready = bool(session_status.get("ready"))
     ready = bool(context.tick_consumer.connected and tick.get("fresh")
                  and tick.get("state") == "healthy" and expected
                  and set(fresh) == set(expected)
-                 and not session_transition)
+                 and session_ready)
     history_ok = bool(history.get("fresh") and history.get("state") in ("healthy", "syncing"))
-    if session_transition:
+    if not session_ready:
         status = "not-ready"
     elif ready:
         status = "healthy" if history_ok else "degraded"

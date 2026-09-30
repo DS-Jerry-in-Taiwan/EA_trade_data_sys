@@ -47,11 +47,11 @@ class AccountService:
     def get_balance(self):
         return self.get_account()
 
-    def session_status(self):
+    def session_status(self, *, refresh=False):
         """Return non-secret MT5 account-session lifecycle facts."""
         getter = getattr(self.mt5_client, "session_status", None)
         if callable(getter):
-            return getter()
+            return getter(refresh=refresh)
         return {
             "state": "unknown",
             "ready": False,
