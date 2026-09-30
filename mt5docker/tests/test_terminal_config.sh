@@ -39,6 +39,59 @@ managed_result="$(prepare_mt5_config managed "$SOURCE" "$TMP/unused.ini")"
     exit 1
 }
 
+MARKER="$TMP/MT5_Data/.mt5-bootstrap-complete"
+if ! bootstrap_config_required "$MARKER" 0; then
+    echo 'FAIL: missing bootstrap marker did not require first import' >&2
+    exit 1
+fi
+write_bootstrap_marker "$MARKER" || {
+    echo 'FAIL: bootstrap marker could not be persisted' >&2
+    exit 1
+}
+if bootstrap_config_required "$MARKER" 0; then
+    echo 'FAIL: valid marker still required bootstrap import' >&2
+    exit 1
+fi
+if ! bootstrap_config_required "$MARKER" 1; then
+    echo 'FAIL: explicit bootstrap re-import was not honored' >&2
+    exit 1
+fi
+if ! grep -Fqx 'mt5-bootstrap-complete-v1' "$MARKER"; then
+    echo 'FAIL: bootstrap marker is not the expected non-secret value' >&2
+    exit 1
+fi
+if grep -Fq 'secret-value' "$MARKER"; then
+    echo 'FAIL: bootstrap marker leaked credential material' >&2
+    exit 1
+fi
+
+# A failed bootstrap must not create the persistent marker. This harness
+# models startup failure before write_bootstrap_marker is reached.
+FAILED_MARKER="$TMP/failed/.mt5-bootstrap-complete"
+if [ -e "$FAILED_MARKER" ]; then
+    echo 'FAIL: failed bootstrap marker unexpectedly exists' >&2
+    exit 1
+fi
+
+bootstrap_output="$(bootstrap_marker_valid "$MARKER" 2>&1 || true)"
+if printf '%s' "$bootstrap_output" | grep -Fq 'secret-value'; then
+    echo 'FAIL: bootstrap status output leaked credentials' >&2
+    exit 1
+fi
+
+grep -Fq 'account_session_ready' "$ROOT/mt5docker/start_server.sh" || {
+    echo 'FAIL: startup does not verify the bootstrap account session' >&2
+    exit 1
+}
+grep -Fq 'timeout "$MT5_ACCOUNT_PROBE_TIMEOUT"' "$ROOT/mt5docker/start_server.sh" || {
+    echo 'FAIL: bootstrap account probe is not bounded' >&2
+    exit 1
+}
+grep -Fq 'MT5_BOOTSTRAP_MARKER' "$ROOT/mt5docker/start_server.sh" || {
+    echo 'FAIL: startup marker path is not configured' >&2
+    exit 1
+}
+
 if validate_mt5_connection_mode invalid; then
     echo 'FAIL: invalid MT5 connection mode was accepted' >&2
     exit 1

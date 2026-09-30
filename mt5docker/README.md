@@ -93,6 +93,19 @@ legacy `MT5_SYNC_CONFIG=1` path is rejected in terminal mode; it is available
 only for an explicit managed deployment. `/skipupdate`, exactly-one-terminal
 readiness, and the single bounded update cycle remain enforced for both modes.
 
+For a clean persistent data directory, terminal mode supports a one-time
+bootstrap import from the private mounted `mt5cfg.ini`. When
+`MT5_Data/.mt5-bootstrap-complete` is absent or invalid, startup may use the
+configured account in that file, waits for a successful read-only MT5
+`account_info()` session through the local RPyC bridge, and then atomically
+writes only the non-secret marker value `mt5-bootstrap-complete-v1`. The next
+startup uses the sanitized config and therefore does not take over an account
+selected in the GUI; it still waits for the selected account session before
+publishing terminal readiness. Set `MT5_BOOTSTRAP_REIMPORT=1` only for an explicit
+operator-requested re-import; unset it afterward. A failed bootstrap never
+writes the marker and startup exits fail-closed. Credentials are never printed
+or copied into the marker.
+
 After the service observes `account_info()`, the client publishes an
 `account_session` health fact containing only a hashed login, server, account
 mode, and monotonic session generation. A changed login/server/trade mode,

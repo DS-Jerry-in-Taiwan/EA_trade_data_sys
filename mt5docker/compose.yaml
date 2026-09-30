@@ -9,6 +9,8 @@ services:
       - VNC_PWD=jerry1234
       - MT5_CONFIG_LINUX=/run/mt5/mt5cfg.ini
       - MT5_CONNECTION_MODE=${MT5_CONNECTION_MODE:-terminal}
+      - MT5_BOOTSTRAP_REIMPORT=${MT5_BOOTSTRAP_REIMPORT:-0}
+      - MT5_BOOTSTRAP_MARKER=/mt5docker/MT5_Data/.mt5-bootstrap-complete
     volumes:
       # 配置與腳本目錄
       - .:/mt5docker

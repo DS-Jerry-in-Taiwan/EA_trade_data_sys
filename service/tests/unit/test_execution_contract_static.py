@@ -61,6 +61,19 @@ def test_compose_keeps_execution_mutation_closed_and_state_durable():
     assert "ready" in health
 
 
+def test_compose_persists_terminal_bootstrap_state_without_exposing_credentials():
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    service = compose["services"]["mt5-server"]
+    env = _service_environment(service)
+    assert env["MT5_BOOTSTRAP_REIMPORT"] == "${MT5_BOOTSTRAP_REIMPORT:-0}"
+    assert env["MT5_BOOTSTRAP_MARKER"] == "/mt5docker/MT5_Data/.mt5-bootstrap-complete"
+    assert any(":/mt5docker/MT5_Data" in mount for mount in service["volumes"])
+    startup = START_SERVER.read_text(encoding="utf-8")
+    assert ".mt5-bootstrap-complete" in startup
+    assert "account_session_ready" in startup
+    assert "Password" not in startup
+
+
 def test_idempotency_state_survives_execution_service_restart(tmp_path):
     path = tmp_path / "runtime" / "execution" / "idempotency.sqlite3"
     first = IdempotencyStore(path)
