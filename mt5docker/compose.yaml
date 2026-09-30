@@ -75,6 +75,9 @@ services:
       EXECUTION_IDEMPOTENCY_DB: /app/runtime/execution/idempotency.sqlite3
     volumes:
       - ..:/app
+      # Keep durable idempotency records on the deployment worktree across
+      # execution-service container recreation.
+      - ../runtime:/app/runtime
     ports:
       - "0.0.0.0:8091:8091"
     entrypoint: /app/mt5docker/start_execution.sh

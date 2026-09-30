@@ -116,3 +116,31 @@ change is rejected as `session_changed_before_send`; it never targets a
 resource from the previous terminal account. An indeterminate order result is
 persisted and must be recovered through `orders/by-client/{client_order_id}`;
 the server never retries it automatically.
+
+## Execution-service deployment migration
+
+The execution API is a separate Compose service on port `8091`; the existing
+trade-data API on `8090` remains read-only. Both services attach to the
+internal `mt5-server` RPyC bridge, while only the API ports and VNC port are
+published. The default deployment keeps `EXECUTION_MUTATION_ENABLED=false`
+and `EXECUTION_ACCOUNT_POLICY=DEMO`, so adding the service cannot enable order
+mutation by accident.
+
+The execution idempotency database is mounted at
+`<deployment-worktree>/runtime/execution/idempotency.sqlite3` through the
+`/app/runtime` bind mount. Preserve this directory during image rebuilds or
+container replacement; deleting it intentionally discards timeout-recovery
+state and requires a migration decision. A safe deployment migration is:
+
+1. Render and inspect `docker compose -f mt5docker/compose.yaml config` with
+   the deployment worktree's existing environment.
+2. Verify the `runtime/` directory is writable and contains no credentials.
+3. Build the image and start the stack from the deployment Compose directory.
+4. Wait for `mt5-server` health, then probe only `GET /api/v1/health`,
+   `GET /api/v1/account`, `GET /api/v1/symbols/{symbol}`, orders, positions
+   and deals with the read-only key.
+5. Keep mutation disabled until Demo-account evidence and the execution client
+   handoff explicitly authorize a separate mutation test.
+
+Do not use `docker compose down -v` during this migration: named or mounted
+runtime state must remain available for restart/idempotency recovery.

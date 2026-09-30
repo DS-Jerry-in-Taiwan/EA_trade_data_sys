@@ -12,7 +12,7 @@ paths:
     get:
       operationId: getExecutionHealth
       responses:
-        '200': {description: Ready, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Ready, content: {application/json: {schema: {$ref: '#/components/schemas/ExecutionHealthEnvelope'}}}}
         '503': {$ref: '#/components/responses/Error'}
   /account:
     get:
@@ -135,6 +135,25 @@ components:
             message: {type: string}
             request_id: {type: string}
             retcode: {type: integer, description: Original MT5 retcode when available.}
+    ExecutionHealthEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExecutionHealth'
+    ExecutionHealth:
+      type: object
+      required: [status, ready, mt5_connected, account_mode, account_session, mutation_enabled, account_policy, mutation_ready]
+      properties:
+        status: {type: string, enum: [healthy, unhealthy]}
+        ready: {type: boolean}
+        mt5_connected: {type: boolean}
+        account_mode: {type: string, enum: [DEMO, NON_DEMO_OR_UNKNOWN]}
+        account_session: {type: object}
+        mutation_enabled: {type: boolean}
+        account_policy: {type: string}
+        mutation_ready: {type: boolean}
     SymbolEnvelope:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
