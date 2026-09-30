@@ -1,5 +1,6 @@
 import threading
 import sys
+import time
 import types
 
 import pytest
@@ -59,6 +60,22 @@ class SessionMT5(RealisticPymt5linuxMT5):
         self.info = info
 
     def account_info(self):
+        return self.info
+
+
+class BlockingSessionMT5(SessionMT5):
+    def __init__(self, info):
+        super().__init__(info)
+        self.account_info_started = threading.Event()
+        self.account_info_release = threading.Event()
+        self.account_info_calls = 0
+        self._account_info_lock = threading.Lock()
+
+    def account_info(self):
+        with self._account_info_lock:
+            self.account_info_calls += 1
+        self.account_info_started.set()
+        self.account_info_release.wait(timeout=5)
         return self.info
 
 
@@ -308,9 +325,44 @@ def test_session_status_refresh_recovers_switch_without_manual_reconcile():
     mt5.info = SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
 
     status = client.session_status(refresh=True)
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and status['generation'] != 2:
+        time.sleep(0.01)
+        status = client.session_status()
     assert status['state'] == 'ready'
     assert status['ready'] is True
     assert status['generation'] == 2
+
+
+def test_session_refresh_is_bounded_and_single_flight_when_rpyc_hangs():
+    from types import SimpleNamespace
+
+    mt5 = BlockingSessionMT5(
+        SimpleNamespace(login=123, server='Demo', trade_mode=0)
+    )
+    client = MT5Client(ConnectorFactory([mt5]))
+
+    started = time.monotonic()
+    first = client.session_status(refresh=True)
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.2
+    assert first['ready'] is False
+    assert mt5.account_info_started.wait(timeout=1)
+
+    second = client.session_status(refresh=True)
+    assert second['ready'] is False
+    assert second['state'] == 'refreshing'
+    time.sleep(0.05)
+    assert mt5.account_info_calls == 1
+
+    mt5.account_info_release.set()
+    deadline = time.monotonic() + 1
+    status = client.session_status()
+    while time.monotonic() < deadline and not status['ready']:
+        time.sleep(0.01)
+        status = client.session_status()
+    assert status['ready'] is True
+    client.shutdown()
 
 
 def test_reconnect_to_new_account_keeps_session_for_reconciliation():

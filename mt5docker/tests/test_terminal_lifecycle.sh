@@ -71,6 +71,17 @@ NEW_LOG="$LOG_ROOT/new-terminal.log"
 printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE > "$NEW_LOG"
 assert_success log_has_new_startup_marker "$SNAPSHOT" "$NEW_LOG"
 
+# A terminal left behind after LiveUpdate must fail health until a later
+# confirmed normal startup marker is observed.  The failure must not become
+# permanent once the normal marker arrives.
+READY_SNAPSHOT="$TMP/ready.snapshot"
+MT5_LOG_ROOT="$LOG_ROOT"
+snapshot_terminal_logs "$LOG_ROOT" "$READY_SNAPSHOT"
+printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_success terminal_update_pending "$READY_SNAPSHOT"
+printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_failure terminal_update_pending "$READY_SNAPSHOT"
+
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'
 grep -q '/skipupdate' "$ROOT/mt5docker/start_server.sh" || fail 'skip-update switch missing'
 if grep -Eq 'pkill.*(python|terminal64)' "$ROOT/mt5docker/start_server.sh"; then

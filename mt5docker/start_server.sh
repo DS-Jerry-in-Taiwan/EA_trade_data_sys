@@ -9,6 +9,7 @@ MT5_CONFIG_LINUX="${MT5_CONFIG_LINUX:-/mt5docker/mt5cfg.ini}"
 MT5_READY_TIMEOUT="${MT5_READY_TIMEOUT:-120}"
 MT5_UPDATE_TIMEOUT="${MT5_UPDATE_TIMEOUT:-180}"
 MT5_LOG_ROOT="${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}"
+MT5_READY_SNAPSHOT="${MT5_READY_SNAPSHOT:-/run/mt5-server/terminal-ready.snapshot}"
 CHILD_PIDS=()
 SHUTTING_DOWN=0
 RUNTIME_CONFIG=""
@@ -19,7 +20,9 @@ cleanup() {
     SHUTTING_DOWN=1; trap - EXIT INT TERM
     mapfile -t terminal_pids < <(terminal_processes | cut -f1)
     stop_exact_pids 10 "${CHILD_PIDS[@]}" "${terminal_pids[@]}"
-    rm -f /run/mt5-server/rpyc.pid "${launch_snapshot:-}"
+    rm -f /run/mt5-server/rpyc.pid /run/mt5-server/terminal-ready \
+        "${MT5_READY_SNAPSHOT:-/run/mt5-server/terminal-ready.snapshot}" \
+        "${launch_snapshot:-}"
     [ -z "$RUNTIME_CONFIG" ] || rm -f "$RUNTIME_CONFIG"
 }
 trap cleanup EXIT INT TERM
@@ -133,6 +136,13 @@ if ! start_terminal_with_one_update_cycle "$launch_snapshot"; then
     exit 1
 fi
 rm -f "$launch_snapshot"
+
+# Health must have an explicit post-update baseline.  A normal terminal
+# process by itself is insufficient: a LiveUpdate prompt can leave one
+# terminal and an RPyC listener alive without completing authorization.
+mkdir -p "$(dirname "$MT5_READY_SNAPSHOT")"
+snapshot_terminal_logs "$MT5_LOG_ROOT" "$MT5_READY_SNAPSHOT"
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /run/mt5-server/terminal-ready
 
 echo '>>> Starting API Proxy after MT5 readiness...'
 wine C:/Python/python.exe -m pymt5linux --host 0.0.0.0 --port 8001 C:/Python/python.exe &

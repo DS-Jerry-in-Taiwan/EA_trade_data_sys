@@ -76,12 +76,6 @@ def create_execution_app(context):
 
     @app.get("/api/v1/health")
     def health():
-        try:
-            account = context.adapter.account()
-            connected = True
-            demo = account["mutation_eligible"]
-        except ExecutionError:
-            connected, demo = False, False
         session_supported = callable(getattr(context.adapter, "session_status", None))
         if session_supported:
             try:
@@ -91,7 +85,17 @@ def create_execution_app(context):
                     "state": "disconnected", "ready": False, "generation": 0,
                     "fingerprint": None, "error": "mt5_disconnected",
                 }
+            fingerprint = session.get("fingerprint") or {}
+            mode = fingerprint.get("account_mode")
+            connected = session.get("state") not in {"disconnected", "unknown"}
+            demo = mode == "DEMO"
         else:
+            try:
+                account = context.adapter.account()
+                connected = True
+                demo = account["mutation_eligible"]
+            except ExecutionError:
+                connected, demo = False, False
             session = {
                 "state": "unknown", "ready": False, "generation": 0,
                 "fingerprint": None, "error": "account_session_unavailable",

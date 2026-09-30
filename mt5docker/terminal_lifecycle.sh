@@ -101,6 +101,38 @@ log_has_new_startup_marker() {
     fi
 }
 
+log_tail_utf8() {
+    local snapshot="$1" log="$2" baseline current
+    baseline="$(log_baseline_size "$snapshot" "$log")"
+    current="$(stat -c %s "$log" 2>/dev/null || printf 0)"
+    # A truncated/replaced log is a new stream.  Do not replay the old
+    # stream, because an old LiveUpdate line must not permanently poison a
+    # later confirmed normal startup.
+    [ "$current" -ge "$baseline" ] || baseline=0
+    baseline=$((baseline - (baseline % 2)))
+    if command -v iconv >/dev/null 2>&1; then
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null |
+            iconv -f UTF-16LE -t UTF-8 2>/dev/null
+    else
+        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000'
+    fi
+}
+
+terminal_update_pending() {
+    local snapshot="$1" log text update_line startup_line
+    [ -r "$snapshot" ] || return 0
+    [ "$(update_terminal_pids | count_lines)" -eq 0 ] || return 0
+    while IFS= read -r -d '' log; do
+        text="$(log_tail_utf8 "$snapshot" "$log")"
+        update_line="$(printf '%s\n' "$text" | grep -Ein 'live[[:space:]]*update|update[[:space:]]+(required|failed|in[[:space:]]+progress)|updat(e|ing)[[:space:]].*terminal' | tail -1 | cut -d: -f1 || true)"
+        [ -n "$update_line" ] || continue
+        startup_line="$(printf '%s\n' "$text" | grep -Ein '(^|[[:space:]])Startup[[:space:]]+successfully[[:space:]]+initialized[[:space:]]+from[[:space:]]+start[[:space:]]+config([[:space:]]|$)' | tail -1 | cut -d: -f1 || true)"
+        [ -n "$startup_line" ] && [ "$startup_line" -gt "$update_line" ] && continue
+        return 0
+    done < <(find "${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
+    return 1
+}
+
 start_terminal_with_one_update_cycle() {
     local snapshot="$1" status
     launch_terminal

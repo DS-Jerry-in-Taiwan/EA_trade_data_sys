@@ -42,6 +42,11 @@ class MT5Client:
         self._session_guard = session_guard or AccountSessionGuard()
         self._session_supported = False
         self._last_transition_detected = False
+        self._session_snapshot_lock = threading.Lock()
+        self._session_monitor_lock = threading.Lock()
+        self._session_monitor_stop = threading.Event()
+        self._session_monitor_thread = None
+        self._session_snapshot = self._session_guard.status()
         self._connector = None
         self._mt5 = None
         self._resolver = None
@@ -50,7 +55,9 @@ class MT5Client:
     def ensure_connected(self):
         """檢查連線狀態，斷線時自動重連。多 thread 安全。"""
         with self._lock:
-            return self._ensure_connected_unsafe()
+            result = self._ensure_connected_unsafe()
+            self._publish_session_status_unsafe()
+            return result
 
     def call(self, func):
         """Thread-safe 執行 MT5 方法調用。
@@ -67,6 +74,7 @@ class MT5Client:
         """
         with self._lock:
             if not self._ensure_connected_unsafe():
+                self._publish_session_status_unsafe()
                 if self._session_guard.state == "switch_detected" or self._last_transition_detected:
                     raise AccountSessionTransition(
                         "MT5 account session transition requires reconciliation"
@@ -81,6 +89,7 @@ class MT5Client:
             if self._session_supported:
                 status = self._session_guard.status()
                 if not self._observe_session_unsafe(self._mt5):
+                    self._publish_session_status_unsafe()
                     if status["state"] == "switch_detected" or self._session_guard.state == "switch_detected":
                         self._reconcile_session_unsafe()
                         raise AccountSessionTransition(
@@ -91,6 +100,7 @@ class MT5Client:
                     raise AccountSessionTransition(
                         "MT5 account session changed during read"
                     )
+            self._publish_session_status_unsafe()
             return result
 
     def _ensure_connected_unsafe(self):
@@ -168,13 +178,66 @@ class MT5Client:
         observes the current terminal account through ``account_info``; it
         never supplies credentials or changes the selected account.
         """
-        with self._lock:
-            if refresh:
-                try:
-                    self._ensure_connected_unsafe()
-                except Exception:
-                    self._session_guard.mark_disconnected()
-            return self._session_guard.status()
+        if refresh:
+            # Health endpoints must never wait on a potentially stalled RPyC
+            # account_info() call. Start one daemon monitor and return the
+            # last snapshot immediately; the monitor is single-flight.
+            self._start_session_monitor()
+        if not refresh and self._lock.acquire(blocking=False):
+            try:
+                self._publish_session_status_unsafe()
+            finally:
+                self._lock.release()
+        return self._session_snapshot_copy()
+
+    def _session_snapshot_copy(self):
+        with self._session_snapshot_lock:
+            return dict(self._session_snapshot)
+
+    def _publish_session_status_unsafe(self):
+        with self._session_snapshot_lock:
+            self._session_snapshot = self._session_guard.status()
+
+    def _mark_session_refreshing(self):
+        with self._session_snapshot_lock:
+            current = dict(self._session_snapshot)
+            current.update({
+                "state": "refreshing",
+                "ready": False,
+                "error": "session_refresh_in_progress",
+            })
+            self._session_snapshot = current
+
+    def _start_session_monitor(self):
+        with self._session_monitor_lock:
+            if (
+                self._session_monitor_thread is not None
+                and self._session_monitor_thread.is_alive()
+            ):
+                return
+            self._session_monitor_stop.clear()
+            self._session_monitor_thread = threading.Thread(
+                target=self._session_monitor_loop,
+                name="mt5-session-monitor",
+                daemon=True,
+            )
+            self._session_monitor_thread.start()
+
+    def _session_monitor_loop(self):
+        # A short interval keeps readiness current while ensuring there is
+        # never more than one potentially blocking account_info call per
+        # MT5Client process. Health callers only observe snapshots.
+        while not self._session_monitor_stop.is_set():
+            self._mark_session_refreshing()
+            try:
+                with self._lock:
+                    try:
+                        self._ensure_connected_unsafe()
+                    except Exception:
+                        self._session_guard.mark_disconnected()
+                    self._publish_session_status_unsafe()
+            finally:
+                self._session_monitor_stop.wait(1.0)
 
     def transition_detected(self):
         """Whether the most recent ensure attempt observed a session switch."""
@@ -313,4 +376,13 @@ class MT5Client:
 
     def shutdown(self):
         """優雅關閉 MT5 連線。"""
-        self.reset()
+        self._session_monitor_stop.set()
+        # A stalled RPyC refresh may still own the lifecycle lock.  Shutdown
+        # must not turn that bounded health design into an unbounded process
+        # exit; the monitor is daemonized and the container supervisor will
+        # reclaim the transport with the process.
+        if self._lock.acquire(timeout=1.0):
+            try:
+                self._reset_unsafe()
+            finally:
+                self._lock.release()

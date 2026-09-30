@@ -65,6 +65,19 @@ class SessionAdapter(FakeAdapter):
         return self.session
 
 
+class CachedHealthAdapter(FakeAdapter):
+    def account(self):
+        raise AssertionError("health must not make a blocking account_info call")
+
+    def session_status(self, *, refresh=False):
+        return {
+            "state": "ready",
+            "ready": True,
+            "generation": 1,
+            "fingerprint": {"account_mode": "DEMO", "id": "demo"},
+        }
+
+
 class MutationSessionAdapter(FakeAdapter):
     def __init__(self, *, changed=False):
         super().__init__()
@@ -188,6 +201,18 @@ def test_execution_health_refreshes_session_and_fails_closed_when_not_ready(tmp_
     assert response.json["data"]["ready"] is False
     assert response.json["data"]["account_session"]["error"] == "account_session_transition"
     assert adapter.refreshes == [True]
+
+
+def test_execution_health_uses_cached_session_without_blocking_account_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
+    adapter = CachedHealthAdapter()
+    app = create_execution_app(ExecutionContext(
+        adapter, IdempotencyStore(tmp_path / "db.sqlite3"), "TEST_EXECUTION_KEY", False
+    ))
+    response = app.test_client().get("/api/v1/health", headers=headers())
+    assert response.status_code == 200
+    assert response.json["data"]["ready"] is True
+    assert response.json["data"]["account_mode"] == "DEMO"
 
 
 def test_idempotent_replay_and_conflict(api):

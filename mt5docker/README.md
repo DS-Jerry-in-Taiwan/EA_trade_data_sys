@@ -108,6 +108,19 @@ The canonical MT5 client performs this rebuild automatically after a detected
 switch. The first read that observes the change is rejected, while subsequent
 reads use the rebuilt session; a failed rebuild remains blocked and retryable.
 
+Health refreshes are single-flight and snapshot-based: a request never waits
+for `account_info()` over RPyC. One daemon monitor owns the potentially slow
+refresh, publishes `refreshing`/not-ready while it is in flight, and keeps the
+last confirmed session facts for subsequent probes. This prevents overlapping
+health requests from consuming RPyC client slots.
+
+`mt5-server` writes a post-startup readiness snapshot only after the normal
+startup marker is observed. Its healthcheck requires that marker, exactly one
+normal terminal, no updater process, and no uncompleted `LiveUpdate` log event.
+After an update event, a later confirmed normal startup marker clears the
+pending state; an old log event alone cannot permanently poison a new log
+stream.
+
 Execution mutation remains fail-closed behind both `EXECUTION_MUTATION_ENABLED`
 and `EXECUTION_ACCOUNT_POLICY=DEMO`. Before preflight and again immediately
 before the one MT5 send/cancel/close call, the execution adapter verifies the
