@@ -10,10 +10,6 @@ def health_payload(context):
     fresh = [symbol for symbol in expected if context.fresh_tick(symbol)]
     tick = context.status_reader(context.tick_status_path, context.tick_status_max_age)
     history = context.status_reader(context.history_status_path, context.history_status_max_age)
-    ready = bool(context.tick_consumer.connected and tick.get("fresh")
-                 and tick.get("state") == "healthy" and expected
-                 and set(fresh) == set(expected))
-    history_ok = bool(history.get("fresh") and history.get("state") in ("healthy", "syncing"))
     account_service = getattr(context, "account_service", None)
     session_status = (
         account_service.session_status()
@@ -23,7 +19,15 @@ def health_payload(context):
             "fingerprint": None, "error": "account_session_unavailable",
         }
     )
-    if ready:
+    session_transition = session_status.get("state") == "switch_detected"
+    ready = bool(context.tick_consumer.connected and tick.get("fresh")
+                 and tick.get("state") == "healthy" and expected
+                 and set(fresh) == set(expected)
+                 and not session_transition)
+    history_ok = bool(history.get("fresh") and history.get("state") in ("healthy", "syncing"))
+    if session_transition:
+        status = "not-ready"
+    elif ready:
         status = "healthy" if history_ok else "degraded"
     elif tick.get("fresh") and tick.get("state") == "unhealthy":
         status = "unhealthy"

@@ -47,7 +47,10 @@ def parse_trade_query_range(config_loader):
 
 
 def _response(result):
-    if isinstance(result, dict) and result.get("error") == "MT5 not connected":
+    if isinstance(result, dict) and (
+        result.get("error") == "MT5 not connected"
+        or result.get("code") == "account_session_transition"
+    ):
         return jsonify(result), 503
     if isinstance(result, dict) and result.get("error"):
         return jsonify(result), 500

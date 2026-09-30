@@ -54,7 +54,10 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
     @bp.get("/api/v1/symbols")
     def list_symbols():
         try:
-            return jsonify(account_service.get_symbols(symbol_names))
+            result = account_service.get_symbols(symbol_names)
+            if isinstance(result, dict) and result.get("code") == "account_session_transition":
+                return jsonify(result), 503
+            return jsonify(result)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
 

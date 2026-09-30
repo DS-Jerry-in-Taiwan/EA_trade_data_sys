@@ -75,6 +75,14 @@ def create_execution_app(context):
 
     @app.get("/api/v1/health")
     def health():
+        session = (
+            context.adapter.session_status()
+            if callable(getattr(context.adapter, "session_status", None))
+            else {
+                "state": "unknown", "ready": False, "generation": 0,
+                "fingerprint": None, "error": "account_session_unavailable",
+            }
+        )
         try:
             account = context.adapter.account()
             connected = True
@@ -87,6 +95,7 @@ def create_execution_app(context):
             "ready": ready,
             "mt5_connected": connected,
             "account_mode": "DEMO" if demo else "NON_DEMO_OR_UNKNOWN",
+            "account_session": session,
             "mutation_enabled": bool(context.mutation_enabled),
             "mutation_ready": bool(context.mutation_enabled and demo),
         }), 200 if ready else 503

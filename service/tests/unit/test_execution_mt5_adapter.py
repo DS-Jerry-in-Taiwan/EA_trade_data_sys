@@ -4,6 +4,7 @@ import pytest
 
 from service.execution.errors import ExecutionError
 from service.execution.mt5_adapter import MT5ExecutionAdapter
+from service.infrastructure.mt5.session import AccountSessionTransition
 
 
 class Client:
@@ -27,6 +28,17 @@ def test_account_requires_explicit_demo_mode():
     assert adapter.account()["mutation_eligible"] is False
     with pytest.raises(ExecutionError, match="Demo"):
         adapter.require_demo()
+
+
+def test_account_session_transition_is_stable_read_error():
+    class TransitionClient:
+        def call(self, _callback):
+            raise AccountSessionTransition("transition")
+
+    with pytest.raises(ExecutionError) as error:
+        MT5ExecutionAdapter(TransitionClient()).account()
+    assert error.value.code == "account_session_transition"
+    assert error.value.status == 503
 
 
 def test_symbol_spec_contains_risk_facts():

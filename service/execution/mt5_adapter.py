@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from service.trade_query.mt5_deal_mapper import map_mt5_deal
 from service.trade_query.presenters import present_deal_v1
+from service.infrastructure.mt5.session import AccountSessionTransition
 
 from .errors import AmbiguousMT5Result, ExecutionError
 from .idempotency import correlation_token
@@ -39,9 +40,27 @@ class MT5ExecutionAdapter:
         self.client = mt5_client
         self.resolver_symbols = tuple(resolver_symbols)
 
+    def session_status(self):
+        getter = getattr(self.client, "session_status", None)
+        if callable(getter):
+            return getter()
+        return {
+            "state": "unknown",
+            "ready": False,
+            "generation": 0,
+            "fingerprint": None,
+            "error": "account_session_unavailable",
+        }
+
     def _call(self, callback):
         try:
             return self.client.call(callback)
+        except AccountSessionTransition as exc:
+            raise ExecutionError(
+                "account_session_transition",
+                "MT5 account session transition requires reconciliation",
+                status=503,
+            ) from exc
         except ConnectionError as exc:
             raise ExecutionError("mt5_unavailable", "MT5 is unavailable", status=503) from exc
 

@@ -22,6 +22,14 @@ MT5_DISCONNECTED = "mt5_disconnected"
 ACCOUNT_IDENTITY_UNKNOWN = "account_identity_unknown"
 ACCOUNT_MODE_UNKNOWN = "account_mode_unknown"
 ACCOUNT_SESSION_CHANGED = "account_session_changed"
+ACCOUNT_RECONCILIATION_FAILED = "account_reconciliation_failed"
+ACCOUNT_SYMBOLS_UNAVAILABLE = "account_symbols_unavailable"
+
+
+class AccountSessionTransition(ConnectionError):
+    """Raised when an MT5 read crosses an un-reconciled account transition."""
+
+    code = "account_session_transition"
 
 
 def _login_hash(login: Any) -> str | None:
@@ -202,7 +210,11 @@ class AccountSessionGuard:
             # newly observed account.
             self._observed = candidate
             self._state = SWITCH_DETECTED
-            self._error = ACCOUNT_SESSION_CHANGED
+            if self._error not in {
+                ACCOUNT_RECONCILIATION_FAILED,
+                ACCOUNT_SYMBOLS_UNAVAILABLE,
+            }:
+                self._error = ACCOUNT_SESSION_CHANGED
             return self.status()
 
         self._active = candidate
@@ -226,6 +238,17 @@ class AccountSessionGuard:
         } else MT5_DISCONNECTED
         return self.status()
 
+    def mark_reconciliation_failed(
+        self, error: str = ACCOUNT_RECONCILIATION_FAILED
+    ) -> dict[str, Any]:
+        """Keep the session blocked after a failed account reconciliation."""
+        self._state = SWITCH_DETECTED
+        self._error = error if error in {
+            ACCOUNT_RECONCILIATION_FAILED,
+            ACCOUNT_SYMBOLS_UNAVAILABLE,
+        } else ACCOUNT_RECONCILIATION_FAILED
+        return self.status()
+
     def reconcile(self) -> dict[str, Any]:
         """Acknowledge the currently observed valid account after reconciliation."""
         candidate = self._observed
@@ -242,9 +265,12 @@ class AccountSessionGuard:
 __all__ = [
     "ACCOUNT_IDENTITY_UNKNOWN",
     "ACCOUNT_MODE_UNKNOWN",
+    "ACCOUNT_RECONCILIATION_FAILED",
     "ACCOUNT_SESSION_CHANGED",
+    "ACCOUNT_SYMBOLS_UNAVAILABLE",
     "AccountFingerprint",
     "AccountSessionGuard",
+    "AccountSessionTransition",
     "AccountSessionStatus",
     "DISCONNECTED",
     "MT5_DISCONNECTED",

@@ -62,6 +62,23 @@ class SessionMT5(RealisticPymt5linuxMT5):
         return self.info
 
 
+class Resolver:
+    def __init__(self, unresolved=()):
+        self.unresolved = list(unresolved)
+        self.mapping = {}
+        self.initialized_with = []
+
+    def initialize(self, mt5, symbols):
+        self.initialized_with.append((mt5, tuple(symbols)))
+        self.mapping = {symbol: symbol for symbol in symbols if symbol not in self.unresolved}
+
+    def refresh(self, mt5, symbols):
+        self.initialize(mt5, symbols)
+
+    def resolve(self, name):
+        return self.mapping.get(name, name)
+
+
 class FakeConnector:
     def __init__(self, connection):
         self.connection = connection
@@ -244,3 +261,112 @@ def test_client_marks_unknown_account_mode_not_ready():
     assert status['state'] == 'unknown'
     assert status['ready'] is False
     assert status['error'] == 'account_mode_unknown'
+
+
+def test_account_switch_invalidates_resolver_and_rebuilds_before_ready():
+    from types import SimpleNamespace
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    old_resolver, new_resolver = Resolver(), Resolver()
+    resolvers = iter([old_resolver, new_resolver])
+    client = MT5Client(ConnectorFactory([mt5]), resolver_factory=lambda: next(resolvers))
+    assert client.ensure_connected()
+    client.init_resolver(['XAUUSDm'])
+    assert client._resolver is old_resolver
+
+    mt5.info = SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
+    assert client.ensure_connected() is False
+    assert client._resolver is None
+    with pytest.raises(ConnectionError, match='transition requires reconciliation'):
+        client.call(lambda current: current)
+
+    status = client.reconcile_session()
+    assert status['ready'] is True
+    assert client._resolver is new_resolver
+    assert new_resolver.initialized_with == [(mt5, ('XAUUSDm',))]
+    assert client.call(lambda current: current) is mt5
+
+
+def test_client_discards_read_that_spans_account_generation_change():
+    from types import SimpleNamespace
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    client = MT5Client(ConnectorFactory([mt5]))
+    assert client.ensure_connected()
+
+    def read_and_switch(current):
+        current.info = SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
+        return "stale-read"
+
+    with pytest.raises(ConnectionError, match='transition'):
+        client.call(read_and_switch)
+    assert client.session_status()['state'] == 'switch_detected'
+
+
+def test_reconnect_to_new_account_keeps_session_for_reconciliation():
+    from types import SimpleNamespace
+
+    first = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    replacement = SessionMT5(
+        SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
+    )
+    old_resolver, new_resolver = Resolver(), Resolver()
+    resolvers = iter([old_resolver, new_resolver])
+    client = MT5Client(
+        ConnectorFactory([first, replacement]),
+        resolver_factory=lambda: next(resolvers),
+    )
+    assert client.ensure_connected()
+    client.init_resolver(['XAUUSDm'])
+    client.reset()
+
+    assert client.ensure_connected() is False
+    assert client.mt5 is replacement
+    assert client.session_status()['state'] == 'switch_detected'
+    assert client.reconcile_session()['ready'] is True
+    assert client._resolver is new_resolver
+
+
+def test_reconciliation_missing_symbols_keeps_reads_not_ready():
+    from types import SimpleNamespace
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    old_resolver, missing_resolver = Resolver(), Resolver(['BTC'])
+    resolvers = iter([old_resolver, missing_resolver])
+    client = MT5Client(ConnectorFactory([mt5]), resolver_factory=lambda: next(resolvers))
+    assert client.ensure_connected()
+    client.init_resolver(['BTC'])
+
+    mt5.info = SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
+    assert client.ensure_connected() is False
+    status = client.reconcile_session()
+    assert status['ready'] is False
+    assert status['state'] == 'switch_detected'
+    assert status['error'] == 'account_symbols_unavailable'
+    assert client._resolver is None
+    assert client.ensure_connected() is False
+    assert client.session_status()['error'] == 'account_symbols_unavailable'
+
+
+def test_reconciliation_failure_keeps_transition_blocked():
+    from types import SimpleNamespace
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    old_resolver = Resolver()
+
+    class FailingResolver(Resolver):
+        def initialize(self, mt5, symbols):
+            raise RuntimeError('symbols unavailable')
+
+    resolvers = iter([old_resolver, FailingResolver()])
+    client = MT5Client(ConnectorFactory([mt5]), resolver_factory=lambda: next(resolvers))
+    assert client.ensure_connected()
+    client.init_resolver(['BTC'])
+    mt5.info = SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
+    assert client.ensure_connected() is False
+
+    status = client.reconcile_session()
+    assert status['ready'] is False
+    assert status['error'] == 'account_reconciliation_failed'
+    with pytest.raises(ConnectionError, match='transition requires reconciliation'):
+        client.call(lambda current: current)

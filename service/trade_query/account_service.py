@@ -10,6 +10,18 @@ from service.trade_query.presenters import present_deal_summary_v1, present_deal
 MT5_NOT_CONNECTED = {'error': 'MT5 not connected'}
 
 
+def _session_not_ready(mt5_client):
+    status_getter = getattr(mt5_client, "session_status", None)
+    status = status_getter() if callable(status_getter) else {}
+    if status.get("state") == "switch_detected":
+        return {
+            "error": "account_session_transition",
+            "code": "account_session_transition",
+            "session_generation": status.get("generation", 0),
+        }
+    return MT5_NOT_CONNECTED
+
+
 def _to_utc_iso(timestamp):
     if not timestamp:
         return None
@@ -50,7 +62,7 @@ class AccountService:
 
     def get_account(self):
         if not self.mt5_client.ensure_connected():
-            return MT5_NOT_CONNECTED
+            return _session_not_ready(self.mt5_client)
         info = self.mt5_client.call(lambda m: m.account_info())
         if info:
             margin = getattr(info, 'margin', 0)
@@ -70,7 +82,7 @@ class AccountService:
 
     def get_positions(self, symbol: Optional[str] = None):
         if not self.mt5_client.ensure_connected():
-            return MT5_NOT_CONNECTED
+            return _session_not_ready(self.mt5_client)
         if symbol:
             positions = self.mt5_client.call(lambda m: m.positions_get(symbol=symbol))
         else:
@@ -99,7 +111,7 @@ class AccountService:
         """Return public symbol metadata while keeping MT5 access behind this service."""
         names = list(logical_symbols)
         if not self.mt5_client.ensure_connected():
-            return {'symbols': names, 'source': 'config'}
+            return _session_not_ready(self.mt5_client)
         if not getattr(self.mt5_client, '_resolver', None):
             self.mt5_client.init_resolver(names)
         result = []
@@ -120,7 +132,7 @@ class AccountService:
 
     def get_orders(self):
         if not self.mt5_client.ensure_connected():
-            return MT5_NOT_CONNECTED
+            return _session_not_ready(self.mt5_client)
         orders = self.mt5_client.call(lambda m: m.orders_get())
         if orders is None:
             return []
@@ -148,7 +160,7 @@ class AccountService:
         include_summary: bool = False,
     ):
         if not self.mt5_client.ensure_connected():
-            return MT5_NOT_CONNECTED
+            return _session_not_ready(self.mt5_client)
         if to_dt is None:
             to_dt = datetime.now(timezone.utc)
         if from_dt is None:
@@ -179,7 +191,7 @@ class AccountService:
 
     def get_history_orders(self, from_dt: datetime, to_dt: datetime):
         if not self.mt5_client.ensure_connected():
-            return MT5_NOT_CONNECTED
+            return _session_not_ready(self.mt5_client)
         orders = self.mt5_client.call(lambda m: m.history_orders_get(from_dt, to_dt))
         if not orders:
             return []

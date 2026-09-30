@@ -8,7 +8,11 @@ and reconnect rules.
 import threading
 
 from core.connection_manager import MT5Connector, close_mt5_connection
-from service.infrastructure.mt5.session import AccountSessionGuard
+from service.infrastructure.mt5.session import (
+    ACCOUNT_SYMBOLS_UNAVAILABLE,
+    AccountSessionGuard,
+    AccountSessionTransition,
+)
 
 
 class MT5Client:
@@ -36,6 +40,7 @@ class MT5Client:
         self._connector_factory = connector_factory
         self._resolver_factory = resolver_factory
         self._session_guard = session_guard or AccountSessionGuard()
+        self._session_supported = False
         self._connector = None
         self._mt5 = None
         self._resolver = None
@@ -61,12 +66,30 @@ class MT5Client:
         """
         with self._lock:
             if not self._ensure_connected_unsafe():
+                if self._session_guard.state == "switch_detected":
+                    raise AccountSessionTransition(
+                        "MT5 account session transition requires reconciliation"
+                    )
                 raise ConnectionError("MT5 not connected")
+            generation = self._session_guard.generation
             try:
-                return func(self._mt5)
+                result = func(self._mt5)
             except Exception:
                 self._reset_unsafe()
                 raise
+            if self._session_supported:
+                status = self._session_guard.status()
+                if not self._observe_session_unsafe(self._mt5):
+                    if status["state"] == "switch_detected" or self._session_guard.state == "switch_detected":
+                        raise AccountSessionTransition(
+                            "MT5 account session transition requires reconciliation"
+                        )
+                    raise ConnectionError("MT5 account session is not ready")
+                if self._session_guard.generation != generation:
+                    raise AccountSessionTransition(
+                        "MT5 account session changed during read"
+                    )
+            return result
 
     def _ensure_connected_unsafe(self):
         """不帶 lock 的連線檢查（caller 需已持有 _lock）"""
@@ -82,6 +105,13 @@ class MT5Client:
                 self._close_connection(None, connector)
                 return False
             if not self._observe_session_unsafe(mt5):
+                if self._session_guard.state == "switch_detected":
+                    # Keep the newly attached terminal available for the
+                    # reconciliation step. Closing it here would make a
+                    # post-reset account switch impossible to reconcile.
+                    self._connector = connector
+                    self._mt5 = mt5
+                    return False
                 self._close_connection(mt5, connector)
                 return False
             self._connector = connector
@@ -132,6 +162,32 @@ class MT5Client:
         lifecycle ticket; this method only advances the guard state.
         """
         with self._lock:
+            if self._mt5 is None:
+                return self._session_guard.status()
+            if self._session_guard.state != "switch_detected":
+                return self._session_guard.status()
+
+            # Build account-scoped state against the newly observed terminal
+            # before making the guard ready. The old resolver was invalidated
+            # as soon as the switch was detected.
+            if self._resolver_symbols:
+                resolver_factory = self._resolver_factory
+                if resolver_factory is None:
+                    from service.infrastructure.mt5.symbol_resolver import SymbolResolver
+
+                    resolver_factory = SymbolResolver
+                candidate = resolver_factory()
+                try:
+                    candidate.initialize(self._mt5, self._resolver_symbols)
+                except Exception:
+                    self._session_guard.mark_reconciliation_failed()
+                    return self._session_guard.status()
+                if candidate.unresolved:
+                    self._session_guard.mark_reconciliation_failed(
+                        ACCOUNT_SYMBOLS_UNAVAILABLE
+                    )
+                    return self._session_guard.status()
+                self._resolver = candidate
             return self._session_guard.reconcile()
 
     def _observe_session_unsafe(self, mt5):
@@ -143,7 +199,9 @@ class MT5Client:
             # retain compatibility for those injected clients without
             # inventing identity.
             if not callable(account_info):
+                self._session_supported = False
                 return True
+            self._session_supported = True
             info = account_info()
             demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0)
             real_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_REAL", 2)
@@ -153,6 +211,10 @@ class MT5Client:
         status = self._session_guard.observe_account_info(
             info, demo_trade_mode=demo_mode, real_trade_mode=real_mode
         )
+        if status["state"] in {"switch_detected", "unknown"}:
+            # Resolver mappings and any future account-scoped state must never
+            # be reused for a different terminal account.
+            self._resolver = None
         return bool(status["ready"])
 
     def _reset_unsafe(self):
@@ -176,6 +238,12 @@ class MT5Client:
         with self._lock:
             if self._mt5 is None:
                 raise RuntimeError("MT5 not connected — call ensure_connected() first")
+            if self._session_supported and not self._session_guard.ready:
+                if self._session_guard.state == "switch_detected":
+                    raise AccountSessionTransition(
+                        "MT5 account session transition requires reconciliation"
+                    )
+                raise ConnectionError("MT5 account session is not ready")
             self._resolver_symbols = tuple(configured_symbols)
             resolver_factory = self._resolver_factory or SymbolResolver
             self._resolver = resolver_factory()
