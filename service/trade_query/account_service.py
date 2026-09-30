@@ -13,7 +13,10 @@ MT5_NOT_CONNECTED = {'error': 'MT5 not connected'}
 def _session_not_ready(mt5_client):
     status_getter = getattr(mt5_client, "session_status", None)
     status = status_getter() if callable(status_getter) else {}
-    if status.get("state") == "switch_detected":
+    transition_getter = getattr(mt5_client, "transition_detected", None)
+    if status.get("state") == "switch_detected" or (
+        callable(transition_getter) and transition_getter()
+    ):
         return {
             "error": "account_session_transition",
             "code": "account_session_transition",

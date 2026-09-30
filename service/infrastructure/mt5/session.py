@@ -243,10 +243,13 @@ class AccountSessionGuard:
     ) -> dict[str, Any]:
         """Keep the session blocked after a failed account reconciliation."""
         self._state = SWITCH_DETECTED
-        self._error = error if error in {
+        valid_errors = {
             ACCOUNT_RECONCILIATION_FAILED,
             ACCOUNT_SYMBOLS_UNAVAILABLE,
-        } else ACCOUNT_RECONCILIATION_FAILED
+        }
+        if error == ACCOUNT_RECONCILIATION_FAILED and self._error in valid_errors:
+            error = self._error
+        self._error = error if error in valid_errors else ACCOUNT_RECONCILIATION_FAILED
         return self.status()
 
     def reconcile(self) -> dict[str, Any]:

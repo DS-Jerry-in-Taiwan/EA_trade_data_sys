@@ -41,6 +41,7 @@ class MT5Client:
         self._resolver_factory = resolver_factory
         self._session_guard = session_guard or AccountSessionGuard()
         self._session_supported = False
+        self._last_transition_detected = False
         self._connector = None
         self._mt5 = None
         self._resolver = None
@@ -66,7 +67,7 @@ class MT5Client:
         """
         with self._lock:
             if not self._ensure_connected_unsafe():
-                if self._session_guard.state == "switch_detected":
+                if self._session_guard.state == "switch_detected" or self._last_transition_detected:
                     raise AccountSessionTransition(
                         "MT5 account session transition requires reconciliation"
                     )
@@ -81,6 +82,7 @@ class MT5Client:
                 status = self._session_guard.status()
                 if not self._observe_session_unsafe(self._mt5):
                     if status["state"] == "switch_detected" or self._session_guard.state == "switch_detected":
+                        self._reconcile_session_unsafe()
                         raise AccountSessionTransition(
                             "MT5 account session transition requires reconciliation"
                         )
@@ -93,10 +95,17 @@ class MT5Client:
 
     def _ensure_connected_unsafe(self):
         """不帶 lock 的連線檢查（caller 需已持有 _lock）"""
+        self._last_transition_detected = False
         if self._mt5 is not None:
-            if not self._observe_session_unsafe(self._mt5):
+            observed = self._observe_session_unsafe(self._mt5)
+            if not observed and self._session_guard.state == "switch_detected":
+                # A switch is reconciled in this same controlled lifecycle,
+                # but this invocation remains fail-closed. A later read can
+                # use the rebuilt state.
+                self._last_transition_detected = True
+                self._reconcile_session_unsafe()
                 return False
-            return True
+            return observed
         connector = None
         try:
             connector = self._connector_factory()
@@ -111,6 +120,8 @@ class MT5Client:
                     # post-reset account switch impossible to reconcile.
                     self._connector = connector
                     self._mt5 = mt5
+                    self._last_transition_detected = True
+                    self._reconcile_session_unsafe()
                     return False
                 self._close_connection(mt5, connector)
                 return False
@@ -165,40 +176,51 @@ class MT5Client:
                     self._session_guard.mark_disconnected()
             return self._session_guard.status()
 
-    def reconcile_session(self):
-        """Acknowledge an observed account after external reconciliation.
+    def transition_detected(self):
+        """Whether the most recent ensure attempt observed a session switch."""
+        with self._lock:
+            return self._last_transition_detected
 
-        Symbol/cache reconciliation is intentionally owned by the follow-up
-        lifecycle ticket; this method only advances the guard state.
+    def reconcile_session(self):
+        """Rebuild account-scoped state and acknowledge an observed account.
+
+        Production reads invoke the same controlled path automatically after a
+        switch is detected; this explicit method remains useful to operators
+        and tests that want to request another reconciliation attempt.
         """
         with self._lock:
-            if self._mt5 is None:
-                return self._session_guard.status()
-            if self._session_guard.state != "switch_detected":
-                return self._session_guard.status()
+            return self._reconcile_session_unsafe()
 
-            # Build account-scoped state against the newly observed terminal
-            # before making the guard ready. The old resolver was invalidated
-            # as soon as the switch was detected.
-            if self._resolver_symbols:
-                resolver_factory = self._resolver_factory
-                if resolver_factory is None:
-                    from service.infrastructure.mt5.symbol_resolver import SymbolResolver
+    def _reconcile_session_unsafe(self):
+        """Rebuild account-scoped state while the client lock is held."""
+        if self._mt5 is None:
+            return self._session_guard.status()
+        if self._session_guard.state != "switch_detected":
+            return self._session_guard.status()
 
-                    resolver_factory = SymbolResolver
+        # Build account-scoped state against the newly observed terminal
+        # before making the guard ready. The old resolver was invalidated as
+        # soon as the switch was detected. No client.ensure/call recursion is
+        # possible because initialization uses the current MT5 object directly.
+        if self._resolver_symbols:
+            resolver_factory = self._resolver_factory
+            if resolver_factory is None:
+                from service.infrastructure.mt5.symbol_resolver import SymbolResolver
+
+                resolver_factory = SymbolResolver
+            try:
                 candidate = resolver_factory()
-                try:
-                    candidate.initialize(self._mt5, self._resolver_symbols)
-                except Exception:
-                    self._session_guard.mark_reconciliation_failed()
-                    return self._session_guard.status()
-                if candidate.unresolved:
-                    self._session_guard.mark_reconciliation_failed(
-                        ACCOUNT_SYMBOLS_UNAVAILABLE
-                    )
-                    return self._session_guard.status()
-                self._resolver = candidate
-            return self._session_guard.reconcile()
+                candidate.initialize(self._mt5, self._resolver_symbols)
+            except Exception:
+                self._session_guard.mark_reconciliation_failed()
+                return self._session_guard.status()
+            if candidate.unresolved:
+                self._session_guard.mark_reconciliation_failed(
+                    ACCOUNT_SYMBOLS_UNAVAILABLE
+                )
+                return self._session_guard.status()
+            self._resolver = candidate
+        return self._session_guard.reconcile()
 
     def _observe_session_unsafe(self, mt5):
         """Observe account identity when the transport exposes account_info."""

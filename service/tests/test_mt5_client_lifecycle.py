@@ -240,13 +240,13 @@ def test_client_blocks_account_switch_until_session_reconciliation():
     assert client.ensure_connected()
     first.info = SimpleNamespace(login=456, server='Demo', trade_mode=0)
 
-    assert client.ensure_connected() is False
+    with pytest.raises(ConnectionError, match='transition requires reconciliation'):
+        client.call(lambda current: current)
     status = client.session_status()
-    assert status['state'] == 'switch_detected'
-    assert status['ready'] is False
+    assert status['state'] == 'ready'
+    assert status['ready'] is True
     assert status['generation'] == 2
 
-    assert client.reconcile_session()['ready'] is True
     assert client.ensure_connected() is True
 
 
@@ -276,13 +276,8 @@ def test_account_switch_invalidates_resolver_and_rebuilds_before_ready():
 
     mt5.info = SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
     assert client.ensure_connected() is False
-    assert client._resolver is None
-    with pytest.raises(ConnectionError, match='transition requires reconciliation'):
-        client.call(lambda current: current)
-
-    status = client.reconcile_session()
-    assert status['ready'] is True
     assert client._resolver is new_resolver
+    assert client.session_status()['ready'] is True
     assert new_resolver.initialized_with == [(mt5, ('XAUUSDm',))]
     assert client.call(lambda current: current) is mt5
 
@@ -300,7 +295,22 @@ def test_client_discards_read_that_spans_account_generation_change():
 
     with pytest.raises(ConnectionError, match='transition'):
         client.call(read_and_switch)
-    assert client.session_status()['state'] == 'switch_detected'
+    assert client.session_status()['state'] == 'ready'
+    assert client.call(lambda current: current) is mt5
+
+
+def test_session_status_refresh_recovers_switch_without_manual_reconcile():
+    from types import SimpleNamespace
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    client = MT5Client(ConnectorFactory([mt5]))
+    assert client.ensure_connected()
+    mt5.info = SimpleNamespace(login=456, server='OANDA-Demo-1', trade_mode=0)
+
+    status = client.session_status(refresh=True)
+    assert status['state'] == 'ready'
+    assert status['ready'] is True
+    assert status['generation'] == 2
 
 
 def test_reconnect_to_new_account_keeps_session_for_reconciliation():
@@ -322,8 +332,8 @@ def test_reconnect_to_new_account_keeps_session_for_reconciliation():
 
     assert client.ensure_connected() is False
     assert client.mt5 is replacement
-    assert client.session_status()['state'] == 'switch_detected'
-    assert client.reconcile_session()['ready'] is True
+    assert client.session_status()['state'] == 'ready'
+    assert client.session_status()['ready'] is True
     assert client._resolver is new_resolver
 
 
