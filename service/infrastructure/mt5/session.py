@@ -110,6 +110,10 @@ class AccountSessionGuard:
         self._active: AccountFingerprint | None = None
         self._observed: AccountFingerprint | None = None
         self._error: str | None = MT5_DISCONNECTED
+        # The key contains only a hashed login plus server/mode facts. It
+        # de-duplicates repeated observations while allowing disconnects to
+        # start a new connection generation.
+        self._last_observation_key: str | None = None
 
     @property
     def generation(self) -> int:
@@ -136,6 +140,11 @@ class AccountSessionGuard:
             error=self._error,
         )
 
+    def _record_observation(self, key: str) -> None:
+        if key != self._last_observation_key:
+            self._generation += 1
+            self._last_observation_key = key
+
     def status(self) -> dict[str, Any]:
         """Return stable, non-secret session facts for health/status output."""
         return self._status().as_dict()
@@ -159,6 +168,9 @@ class AccountSessionGuard:
         login_digest = _login_hash(login)
         server_name = str(server).strip() if server is not None else ""
         if login_digest is None or not server_name:
+            self._record_observation(
+                f"identity-unknown:{login_digest or ''}\x00{server_name}"
+            )
             self._state = UNKNOWN
             self._observed = None
             self._error = ACCOUNT_IDENTITY_UNKNOWN
@@ -168,11 +180,10 @@ class AccountSessionGuard:
             _field(account_info, "trade_mode"), demo_value, real_value
         )
         candidate = AccountFingerprint(login_digest, server_name, mode)
-        was_connected = self._state in {READY, SWITCH_DETECTED}
         previous = self._active
+        self._record_observation(candidate.token)
 
         if previous is None:
-            self._generation += 1
             self._active = candidate if mode != "UNKNOWN" else None
             self._observed = candidate
             self._state = READY if mode != "UNKNOWN" else UNKNOWN
@@ -180,8 +191,6 @@ class AccountSessionGuard:
             return self.status()
 
         if mode == "UNKNOWN":
-            if candidate.token != previous.token:
-                self._generation += 1
             self._observed = candidate
             self._state = UNKNOWN
             self._error = ACCOUNT_MODE_UNKNOWN
@@ -191,14 +200,11 @@ class AccountSessionGuard:
             # A reconnect or GUI switch is a new generation. Keep the old
             # active fingerprint separate until reconciliation acknowledges the
             # newly observed account.
-            self._generation += 1
             self._observed = candidate
             self._state = SWITCH_DETECTED
             self._error = ACCOUNT_SESSION_CHANGED
             return self.status()
 
-        if not was_connected or self._state == UNKNOWN:
-            self._generation += 1
         self._active = candidate
         self._observed = candidate
         self._state = READY
@@ -212,6 +218,7 @@ class AccountSessionGuard:
     def mark_disconnected(self, error: str = MT5_DISCONNECTED) -> dict[str, Any]:
         """Close readiness without discarding the last known identity."""
         self._state = DISCONNECTED
+        self._last_observation_key = None
         self._error = error if error in {
             MT5_DISCONNECTED,
             ACCOUNT_IDENTITY_UNKNOWN,

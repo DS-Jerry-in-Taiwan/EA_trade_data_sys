@@ -77,6 +77,26 @@ def test_unknown_mode_and_identity_fail_closed_with_stable_errors():
     assert missing_identity["error"] == ACCOUNT_IDENTITY_UNKNOWN
 
 
+def test_repeated_unknown_identity_is_idempotent():
+    guard = AccountSessionGuard()
+    first = guard.observe_account_info(account(login=None))
+    second = guard.observe_account_info(account(login=None))
+
+    assert first["generation"] == 1
+    assert second["generation"] == 1
+    assert second["state"] == UNKNOWN
+
+
+def test_repeated_same_unknown_mode_candidate_is_idempotent():
+    guard = AccountSessionGuard()
+    first = guard.observe_account_info(account(trade_mode=99))
+    second = guard.observe_account_info(account(trade_mode=99))
+
+    assert first["generation"] == 1
+    assert second["generation"] == 1
+    assert second["error"] == ACCOUNT_MODE_UNKNOWN
+
+
 def test_mode_change_is_detected_as_account_transition():
     guard = AccountSessionGuard()
     guard.observe_account_info(account(trade_mode=0))
@@ -84,3 +104,14 @@ def test_mode_change_is_detected_as_account_transition():
     assert changed["state"] == SWITCH_DETECTED
     assert changed["ready"] is False
     assert changed["error"] == ACCOUNT_SESSION_CHANGED
+
+
+def test_repeated_same_switch_candidate_is_idempotent():
+    guard = AccountSessionGuard()
+    guard.observe_account_info(account(login=123))
+    first = guard.observe_account_info(account(login=456))
+    second = guard.observe_account_info(account(login=456))
+
+    assert first["generation"] == 2
+    assert second["generation"] == 2
+    assert second["state"] == SWITCH_DETECTED
