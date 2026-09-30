@@ -82,6 +82,19 @@ assert_success terminal_update_pending "$READY_SNAPSHOT"
 printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
 assert_failure terminal_update_pending "$READY_SNAPSHOT"
 
+# Authorization must be a successful marker appended after the launch
+# snapshot. Invalid/failed authorization and old success lines are rejected.
+AUTH_SNAPSHOT="$TMP/auth.snapshot"
+printf 'authorized on old-account\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG_ROOT/auth.log"
+snapshot_terminal_logs "$LOG_ROOT" "$AUTH_SNAPSHOT"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'invalid account authorization failed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_success log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'authorization failed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'
 grep -q '/skipupdate' "$ROOT/mt5docker/start_server.sh" || fail 'skip-update switch missing'
 if grep -Eq 'pkill.*(python|terminal64)' "$ROOT/mt5docker/start_server.sh"; then

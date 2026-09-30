@@ -79,14 +79,14 @@ if printf '%s' "$bootstrap_output" | grep -Fq 'secret-value'; then
     exit 1
 fi
 
-grep -Fq 'account_session_ready' "$ROOT/mt5docker/start_server.sh" || {
-    echo 'FAIL: startup does not verify the bootstrap account session' >&2
+grep -Fq 'await_terminal_authorized' "$ROOT/mt5docker/start_server.sh" || {
+    echo 'FAIL: startup does not verify the Journal authorization session' >&2
     exit 1
 }
-grep -Fq 'timeout "$MT5_ACCOUNT_PROBE_TIMEOUT"' "$ROOT/mt5docker/start_server.sh" || {
-    echo 'FAIL: bootstrap account probe is not bounded' >&2
+if grep -Eq 'account_session_ready|account_info\(|MetaTrader5' "$ROOT/mt5docker/start_server.sh"; then
+    echo 'FAIL: startup readiness probe opened an RPyC/MT5 client' >&2
     exit 1
-}
+fi
 grep -Fq 'MT5_BOOTSTRAP_MARKER' "$ROOT/mt5docker/start_server.sh" || {
     echo 'FAIL: startup marker path is not configured' >&2
     exit 1

@@ -8,7 +8,6 @@ MT5_CONNECTION_MODE="${MT5_CONNECTION_MODE:-terminal}"
 MT5_CONFIG_LINUX="${MT5_CONFIG_LINUX:-/mt5docker/mt5cfg.ini}"
 MT5_READY_TIMEOUT="${MT5_READY_TIMEOUT:-120}"
 MT5_UPDATE_TIMEOUT="${MT5_UPDATE_TIMEOUT:-180}"
-MT5_ACCOUNT_PROBE_TIMEOUT="${MT5_ACCOUNT_PROBE_TIMEOUT:-3}"
 MT5_LOG_ROOT="${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}"
 MT5_READY_SNAPSHOT="${MT5_READY_SNAPSHOT:-/run/mt5-server/terminal-ready.snapshot}"
 MT5_BOOTSTRAP_MARKER="${MT5_BOOTSTRAP_MARKER:-/mt5docker/MT5_Data/.mt5-bootstrap-complete}"
@@ -146,6 +145,12 @@ if ! start_terminal_with_one_update_cycle "$launch_snapshot"; then
     echo '>>> MT5 readiness/update lifecycle failed or exceeded its bounded maintenance cycle.' >&2
     exit 1
 fi
+
+echo '>>> Waiting for MT5 Journal authorization.'
+if ! await_terminal_authorized "$launch_snapshot"; then
+    echo '>>> MT5 Journal authorization was not confirmed; refusing startup.' >&2
+    exit 1
+fi
 rm -f "$launch_snapshot"
 
 # Health must have an explicit post-update baseline.  A normal terminal
@@ -154,29 +159,6 @@ rm -f "$launch_snapshot"
 mkdir -p "$(dirname "$MT5_READY_SNAPSHOT")"
 snapshot_terminal_logs "$MT5_LOG_ROOT" "$MT5_READY_SNAPSHOT"
 
-echo '>>> Starting API Proxy after MT5 readiness...'
-wine C:/Python/python.exe -m pymt5linux --host 0.0.0.0 --port 8001 C:/Python/python.exe &
-RPYC_PID="$!"; remember_child "$RPYC_PID"
-mkdir -p /run/mt5-server
-printf '%s\n' "$RPYC_PID" > /run/mt5-server/rpyc.pid
-
-account_session_ready() {
-    timeout "$MT5_ACCOUNT_PROBE_TIMEOUT" wine C:/Python/python.exe -c 'from pymt5linux import MetaTrader5; mt5 = MetaTrader5(host="127.0.0.1", port=8001); info = mt5.account_info(); raise SystemExit(0 if info is not None and getattr(info, "login", None) else 1)' >/dev/null 2>&1
-}
-await_account_session() {
-    local deadline=$((SECONDS + MT5_READY_TIMEOUT))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        account_session_ready && return 0
-        sleep 1
-    done
-    return 1
-}
-
-echo '>>> Waiting for MT5 account session readiness.'
-if ! await_account_session; then
-    echo '>>> MT5 account session was not established; refusing startup.' >&2
-    exit 1
-fi
 if [ "$BOOTSTRAP_ACTIVE" -eq 1 ]; then
     if ! write_bootstrap_marker "$MT5_BOOTSTRAP_MARKER"; then
         echo '>>> MT5 bootstrap completed but its persistent marker could not be written; refusing startup.' >&2
@@ -184,10 +166,16 @@ if [ "$BOOTSTRAP_ACTIVE" -eq 1 ]; then
     fi
 fi
 
-# The ready marker is written only after bootstrap account authorization (when
-# applicable), so health cannot report success for a terminal left at a login
-# or LiveUpdate prompt.
+# This marker is written only after terminal startup and Journal authorization;
+# health cannot report success for a login or LiveUpdate prompt.
+mkdir -p /run/mt5-server
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /run/mt5-server/terminal-ready
+
+echo '>>> Starting API Proxy after MT5 readiness...'
+wine C:/Python/python.exe -m pymt5linux --host 0.0.0.0 --port 8001 C:/Python/python.exe &
+RPYC_PID="$!"; remember_child "$RPYC_PID"
+mkdir -p /run/mt5-server
+printf '%s\n' "$RPYC_PID" > /run/mt5-server/rpyc.pid
 while kill -0 "$RPYC_PID" 2>/dev/null; do
     exactly_one_normal_terminal || exit 1
     for desktop_pid in "$OPENBOX_PID" "$PCMANFM_PID" "$TINT2_PID"; do

@@ -70,7 +70,7 @@ def test_compose_persists_terminal_bootstrap_state_without_exposing_credentials(
     assert any(":/mt5docker/MT5_Data" in mount for mount in service["volumes"])
     startup = START_SERVER.read_text(encoding="utf-8")
     assert ".mt5-bootstrap-complete" in startup
-    assert "account_session_ready" in startup
+    assert "await_terminal_authorized" in startup
     assert "Password" not in startup
 
 

@@ -97,8 +97,9 @@ For a clean persistent data directory, terminal mode supports a one-time
 bootstrap import from the private mounted `mt5cfg.ini`. When
 `MT5_Data/.mt5-bootstrap-complete` is absent or invalid, startup may use the
 configured account in that file, waits for a successful read-only MT5
-`account_info()` session through the local RPyC bridge, and then atomically
-writes only the non-secret marker value `mt5-bootstrap-complete-v1`. The next
+Journal authorization marker appended after launch, and then atomically writes
+only the non-secret marker value `mt5-bootstrap-complete-v1`. Startup does not
+create a separate RPyC client for this probe. The next
 startup uses the sanitized config and therefore does not take over an account
 selected in the GUI; it still waits for the selected account session before
 publishing terminal readiness. Set `MT5_BOOTSTRAP_REIMPORT=1` only for an explicit

@@ -133,6 +133,27 @@ terminal_update_pending() {
     return 1
 }
 
+log_has_new_authorized_marker() {
+    local snapshot="$1" log="$2" text success_line failure_line
+    text="$(log_tail_utf8 "$snapshot" "$log")"
+    success_line="$(printf '%s\n' "$text" | grep -Ein '(^|[[:space:]])authorized[[:space:]]+on([[:space:]]|$)|authorization[[:space:]]+(succeeded|successful)' | tail -1 | cut -d: -f1 || true)"
+    [ -n "$success_line" ] || return 1
+    failure_line="$(printf '%s\n' "$text" | grep -Ein 'authorization[[:space:]]+(failed|denied|invalid)|invalid[[:space:]]+account|not[[:space:]]+authorized' | tail -1 | cut -d: -f1 || true)"
+    [ -z "$failure_line" ] || [ "$success_line" -gt "$failure_line" ]
+}
+
+await_terminal_authorized() {
+    local snapshot="$1" deadline log
+    deadline=$((SECONDS + MT5_READY_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        while IFS= read -r -d '' log; do
+            log_has_new_authorized_marker "$snapshot" "$log" && return 0
+        done < <(find "${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
+        sleep 1
+    done
+    return 1
+}
+
 start_terminal_with_one_update_cycle() {
     local snapshot="$1" status
     launch_terminal
