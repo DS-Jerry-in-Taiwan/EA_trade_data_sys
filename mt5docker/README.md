@@ -92,3 +92,10 @@ In terminal mode, startup creates a short-lived sanitized copy of the mounted
 legacy `MT5_SYNC_CONFIG=1` path is rejected in terminal mode; it is available
 only for an explicit managed deployment. `/skipupdate`, exactly-one-terminal
 readiness, and the single bounded update cycle remain enforced for both modes.
+
+After the service observes `account_info()`, the client publishes an
+`account_session` health fact containing only a hashed login, server, account
+mode, and monotonic session generation. A changed login/server/trade mode,
+disconnect, or unknown mode makes that session not ready until a later
+reconciliation step acknowledges the observed account. The raw login and all
+credentials remain out of status, logs, metrics, and responses.

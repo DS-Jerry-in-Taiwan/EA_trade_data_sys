@@ -8,6 +8,7 @@ and reconnect rules.
 import threading
 
 from core.connection_manager import MT5Connector, close_mt5_connection
+from service.infrastructure.mt5.session import AccountSessionGuard
 
 
 class MT5Client:
@@ -25,10 +26,16 @@ class MT5Client:
             tick = mt5_client.call(lambda m: m.symbol_info_tick("XAUUSDm"))
     """
 
-    def __init__(self, connector_factory=MT5Connector, resolver_factory=None):
+    def __init__(
+        self,
+        connector_factory=MT5Connector,
+        resolver_factory=None,
+        session_guard=None,
+    ):
         self._lock = threading.RLock()
         self._connector_factory = connector_factory
         self._resolver_factory = resolver_factory
+        self._session_guard = session_guard or AccountSessionGuard()
         self._connector = None
         self._mt5 = None
         self._resolver = None
@@ -64,6 +71,8 @@ class MT5Client:
     def _ensure_connected_unsafe(self):
         """不帶 lock 的連線檢查（caller 需已持有 _lock）"""
         if self._mt5 is not None:
+            if not self._observe_session_unsafe(self._mt5):
+                return False
             return True
         connector = None
         try:
@@ -71,6 +80,9 @@ class MT5Client:
             mt5 = connector.connect()
             if mt5 is None:
                 self._close_connection(None, connector)
+                return False
+            if not self._observe_session_unsafe(mt5):
+                self._close_connection(mt5, connector)
                 return False
             self._connector = connector
             self._mt5 = mt5
@@ -103,10 +115,51 @@ class MT5Client:
         with self._lock:
             return self._mt5
 
+    @property
+    def session_guard(self):
+        """The process-local account-session guard used by this client."""
+        return self._session_guard
+
+    def session_status(self):
+        """Return non-secret account-session readiness facts."""
+        with self._lock:
+            return self._session_guard.status()
+
+    def reconcile_session(self):
+        """Acknowledge an observed account after external reconciliation.
+
+        Symbol/cache reconciliation is intentionally owned by the follow-up
+        lifecycle ticket; this method only advances the guard state.
+        """
+        with self._lock:
+            return self._session_guard.reconcile()
+
+    def _observe_session_unsafe(self, mt5):
+        """Observe account identity when the transport exposes account_info."""
+        try:
+            account_info = getattr(mt5, "account_info", None)
+            # Lightweight test doubles and alternate adapters may not expose
+            # the MT5 account method. The real pymt5linux adapter always does;
+            # retain compatibility for those injected clients without
+            # inventing identity.
+            if not callable(account_info):
+                return True
+            info = account_info()
+            demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0)
+            real_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_REAL", 2)
+        except Exception:
+            self._session_guard.mark_disconnected()
+            return False
+        status = self._session_guard.observe_account_info(
+            info, demo_trade_mode=demo_mode, real_trade_mode=real_mode
+        )
+        return bool(status["ready"])
+
     def _reset_unsafe(self):
         mt5, connector = self._mt5, self._connector
         self._mt5 = None
         self._connector = None
+        self._session_guard.mark_disconnected()
         self._close_connection(mt5, connector)
 
     def reset(self):

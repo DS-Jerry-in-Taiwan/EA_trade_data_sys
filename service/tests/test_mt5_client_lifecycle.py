@@ -50,6 +50,18 @@ class RealisticPymt5linuxMT5(FakeMT5):
         return self._MetaTrader5__conn
 
 
+class SessionMT5(RealisticPymt5linuxMT5):
+    ACCOUNT_TRADE_MODE_DEMO = 0
+    ACCOUNT_TRADE_MODE_REAL = 2
+
+    def __init__(self, info):
+        super().__init__()
+        self.info = info
+
+    def account_info(self):
+        return self.info
+
+
 class FakeConnector:
     def __init__(self, connection):
         self.connection = connection
@@ -201,3 +213,34 @@ def test_resolver_configuration_is_refreshed_after_reconnect(monkeypatch):
         ('initialize', first, ('XAUUSDm', 'BTC')),
         ('refresh', second, ('XAUUSDm', 'BTC')),
     ]
+
+
+def test_client_blocks_account_switch_until_session_reconciliation():
+    from types import SimpleNamespace
+
+    first = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    client = MT5Client(ConnectorFactory([first]))
+    assert client.ensure_connected()
+    first.info = SimpleNamespace(login=456, server='Demo', trade_mode=0)
+
+    assert client.ensure_connected() is False
+    status = client.session_status()
+    assert status['state'] == 'switch_detected'
+    assert status['ready'] is False
+    assert status['generation'] == 2
+
+    assert client.reconcile_session()['ready'] is True
+    assert client.ensure_connected() is True
+
+
+def test_client_marks_unknown_account_mode_not_ready():
+    from types import SimpleNamespace
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=99))
+    client = MT5Client(ConnectorFactory([mt5]))
+
+    assert client.ensure_connected() is False
+    status = client.session_status()
+    assert status['state'] == 'unknown'
+    assert status['ready'] is False
+    assert status['error'] == 'account_mode_unknown'

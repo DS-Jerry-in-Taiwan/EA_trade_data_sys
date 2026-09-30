@@ -35,6 +35,19 @@ class AccountService:
     def get_balance(self):
         return self.get_account()
 
+    def session_status(self):
+        """Return non-secret MT5 account-session lifecycle facts."""
+        getter = getattr(self.mt5_client, "session_status", None)
+        if callable(getter):
+            return getter()
+        return {
+            "state": "unknown",
+            "ready": False,
+            "generation": 0,
+            "fingerprint": None,
+            "error": "account_session_unavailable",
+        }
+
     def get_account(self):
         if not self.mt5_client.ensure_connected():
             return MT5_NOT_CONNECTED

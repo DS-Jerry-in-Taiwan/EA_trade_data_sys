@@ -14,6 +14,15 @@ def health_payload(context):
                  and tick.get("state") == "healthy" and expected
                  and set(fresh) == set(expected))
     history_ok = bool(history.get("fresh") and history.get("state") in ("healthy", "syncing"))
+    account_service = getattr(context, "account_service", None)
+    session_status = (
+        account_service.session_status()
+        if account_service is not None and callable(getattr(account_service, "session_status", None))
+        else {
+            "state": "unknown", "ready": False, "generation": 0,
+            "fingerprint": None, "error": "account_session_unavailable",
+        }
+    )
     if ready:
         status = "healthy" if history_ok else "degraded"
     elif tick.get("fresh") and tick.get("state") == "unhealthy":
@@ -23,6 +32,7 @@ def health_payload(context):
     return {"status": status, "ready": ready,
             "gateway": {"state": "healthy", "ready": ready},
             "tick_service": tick, "history_service": history,
+            "account_session": session_status,
             "tick_ipc_connected": context.tick_consumer.connected,
             "symbols_tracked": expected, "fresh_symbols": fresh,
             "timestamp": datetime.now(timezone.utc).isoformat()}
