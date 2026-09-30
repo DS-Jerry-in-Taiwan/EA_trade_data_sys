@@ -127,6 +127,88 @@ def test_connect_uses_only_configured_docker_dns_host(
     assert mt5.transport._config['sync_request_timeout'] == 10
 
 
+def test_terminal_mode_does_not_read_accounts_file_or_pass_credentials(
+    connection_manager, config_files, monkeypatch
+):
+    settings_path, accounts_path = config_files
+    accounts_path.unlink()
+    constructor_calls = []
+    mt5 = RealisticPymt5linuxMT5()
+
+    monkeypatch.setattr(
+        connection_manager.socket,
+        'getaddrinfo',
+        lambda *args, **kwargs: [(object(),)],
+    )
+    monkeypatch.setattr(
+        connection_manager,
+        'MetaTrader5',
+        lambda **kwargs: constructor_calls.append(kwargs) or mt5,
+    )
+
+    connector = connection_manager.MT5Connector(
+        settings_path=str(settings_path), accounts_path=str(accounts_path)
+    )
+    assert connector.mode == 'terminal'
+    assert connector.connect() is mt5
+    assert mt5.initialize_calls == [{}]
+    assert constructor_calls == [{'host': 'mt5-server', 'port': 8001}]
+
+
+def test_managed_mode_is_explicit_and_initializes_with_private_profile(
+    connection_manager, config_files, monkeypatch
+):
+    settings_path, accounts_path = config_files
+    settings = yaml.safe_load(settings_path.read_text())
+    settings['connection']['mode'] = 'managed'
+    settings_path.write_text(yaml.safe_dump(settings))
+    mt5 = RealisticPymt5linuxMT5()
+
+    monkeypatch.setattr(
+        connection_manager.socket,
+        'getaddrinfo',
+        lambda *args, **kwargs: [(object(),)],
+    )
+    monkeypatch.setattr(connection_manager, 'MetaTrader5', lambda **kwargs: mt5)
+
+    connector = connection_manager.MT5Connector(
+        settings_path=str(settings_path), accounts_path=str(accounts_path)
+    )
+    assert connector.mode == 'managed'
+    assert connector.connect() is mt5
+    assert mt5.initialize_calls == [
+        {'login': 123, 'password': 'test-password', 'server': 'test-server'}
+    ]
+
+
+def test_managed_mode_missing_profile_fails_closed(
+    connection_manager, config_files
+):
+    settings_path, accounts_path = config_files
+    settings = yaml.safe_load(settings_path.read_text())
+    settings['connection']['mode'] = 'managed'
+    settings_path.write_text(yaml.safe_dump(settings))
+    accounts_path.unlink()
+
+    with pytest.raises(FileNotFoundError, match='Accounts file not found'):
+        connection_manager.MT5Connector(
+            settings_path=str(settings_path), accounts_path=str(accounts_path)
+        )
+
+
+@pytest.mark.parametrize('mode', ['invalid', '', None, 1])
+def test_invalid_connection_mode_fails_closed(
+    connection_manager, config_files, mode
+):
+    settings_path, _ = config_files
+    settings = yaml.safe_load(settings_path.read_text())
+    settings['connection']['mode'] = mode
+    settings_path.write_text(yaml.safe_dump(settings))
+
+    with pytest.raises(ValueError, match="connection.mode"):
+        connection_manager.MT5Connector(settings_path=str(settings_path))
+
+
 @pytest.mark.parametrize('timeout', [0, -1, 'invalid', None])
 def test_invalid_transport_timeout_is_rejected(
     connection_manager, config_files, timeout

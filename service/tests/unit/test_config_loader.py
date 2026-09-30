@@ -10,7 +10,12 @@ def test_loader_returns_typed_sections_and_applies_runtime_overrides(tmp_path):
     path.write_text(
         yaml.safe_dump(
             {
-                "connection": {"default_host": "mt5-test", "port": 8002, "timeout": 12},
+                "connection": {
+                    "mode": "managed",
+                    "default_host": "mt5-test",
+                    "port": 8002,
+                    "timeout": 12,
+                },
                 "tick_service": {
                     "symbols": ["BTC"],
                     "socket_path": "/config/ticks.sock",
@@ -39,6 +44,7 @@ def test_loader_returns_typed_sections_and_applies_runtime_overrides(tmp_path):
 
     assert isinstance(settings, Settings)
     assert settings.connection.default_host == "mt5-test"
+    assert settings.connection.mode == "managed"
     assert settings.connection.timeout == 12
     assert settings.tick_service.socket_path == "/env/ticks.sock"
     assert settings.history_service.symbols[0].name == "BTC"
@@ -49,6 +55,28 @@ def test_loader_returns_typed_sections_and_applies_runtime_overrides(tmp_path):
     # Only the environment-variable name is represented; the loader never
     # reads the value stored under that name.
     assert settings.as_dict()["api_gateway"]["readonly_api_key_env"] == "TEST_READONLY_KEY"
+
+
+def test_connection_mode_defaults_to_terminal_and_can_be_overridden_by_environment(
+    tmp_path,
+):
+    path = tmp_path / "settings.yaml"
+    path.write_text(yaml.safe_dump({"connection": {}}), encoding="utf-8")
+
+    assert load_settings(path, environ={}).connection.mode == "terminal"
+    assert load_settings(
+        path, environ={"MT5_CONNECTION_MODE": "managed"}
+    ).connection.mode == "managed"
+
+
+def test_invalid_connection_mode_is_rejected(tmp_path):
+    path = tmp_path / "settings.yaml"
+    path.write_text(
+        yaml.safe_dump({"connection": {"mode": "profile"}}), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="connection.mode"):
+        load_settings(path)
 
 
 def test_loader_preserves_strict_connection_timeout_contract(tmp_path):

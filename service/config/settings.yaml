@@ -1,4 +1,7 @@
 connection:
+  # terminal attaches to the account currently selected in MT5/noVNC.
+  # managed is an explicit opt-in and reads MT5_ACCOUNTS_PATH.
+  mode: "terminal"
   default_host: "mt5-server"
   port: 8001
   timeout: 10

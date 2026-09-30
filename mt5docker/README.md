@@ -71,3 +71,17 @@ Expected health semantics:
 - HTTP 503, `ready: false`: real-time critical path is not ready.
 
 Use the deployment environment's `VNC_PWD` for the VNC UI at `http://localhost:6081/vnc.html`. Never commit passwords, account files, generated terminal configuration, or API keys.
+
+## MT5 connection modes
+
+The service defaults to `connection.mode: terminal`. In this mode the MT5
+terminal selected through the desktop/noVNC UI is authoritative: the Linux
+service calls `initialize()` without login, password, or server arguments and
+never opens `accounts.json`. This allows an operator to switch accounts in the
+terminal without the backend taking the session back to a configured profile.
+
+`managed` mode is an explicit opt-in for deployments that need profile-based
+initialization. Set `MT5_CONNECTION_MODE=managed` (or `connection.mode:
+managed`) and provide the private `MT5_ACCOUNTS_PATH`. Missing or malformed
+managed configuration fails closed. Credentials must remain outside Git,
+logs, API responses, and metrics.

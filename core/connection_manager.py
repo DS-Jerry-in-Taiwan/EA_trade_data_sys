@@ -77,21 +77,72 @@ def configure_mt5_transport_timeout(mt5, timeout):
 
 
 class MT5Connector:
+    """Create an MT5 RPC client using an explicit account connection mode.
+
+    In ``terminal`` mode the terminal selected in the desktop is authoritative:
+    no account file is opened and ``initialize`` is called without credentials.
+    ``managed`` mode is deliberately opt-in and loads the private account
+    profile only after the mode has been validated.
+    """
+
     def __init__(self, settings_path=None, accounts_path=None):
         settings_path = settings_path or os.getenv('MT5_SETTINGS_PATH', '/app/service/config/settings.yaml')
-        accounts_path = accounts_path or os.getenv('MT5_ACCOUNTS_PATH', '/app/service/config/accounts.json')
-        
-        if not os.path.exists(accounts_path):
-            raise FileNotFoundError(f"Accounts file not found: {accounts_path}")
-        
         self.settings = load_settings(settings_path)
-        with open(accounts_path, 'r') as f:
-            self.accounts = json.load(f)
-
         self.connection = self.settings.connection
         self.timeout = self.connection.timeout
-            
+
+        # Keep the profile path lazy. In terminal mode merely constructing a
+        # connector must never touch accounts.json (or any other credential
+        # source), even when MT5_ACCOUNTS_PATH is set in the environment.
+        self.mode = self.connection.mode
+        self.accounts_path = accounts_path or os.getenv(
+            'MT5_ACCOUNTS_PATH', '/app/service/config/accounts.json'
+        )
+        self.accounts = None
+        if self.mode == 'managed':
+            self.accounts = self._load_managed_accounts()
+
+    def _load_managed_accounts(self):
+        """Load and validate a private account profile without exposing it."""
+        if not self.accounts_path or not os.path.isfile(self.accounts_path):
+            raise FileNotFoundError(f"Accounts file not found: {self.accounts_path}")
+        try:
+            with open(self.accounts_path, 'r', encoding='utf-8') as f:
+                accounts = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Managed account configuration is invalid JSON") from exc
+        except OSError as exc:
+            raise FileNotFoundError(
+                f"Unable to read managed account configuration: {self.accounts_path}"
+            ) from exc
+
+        if not isinstance(accounts, dict):
+            raise ValueError("Managed account configuration must be an object")
+        active = accounts.get('active_provider')
+        providers = accounts.get('providers')
+        if not isinstance(active, str) or not active or not isinstance(providers, dict):
+            raise ValueError("Managed account configuration is missing providers")
+        account = providers.get(active)
+        if not isinstance(account, dict):
+            raise ValueError("Managed account configuration has no active provider")
+        required = ('login', 'password', 'server')
+        if any(key not in account for key in required):
+            raise ValueError("Managed account configuration is missing required fields")
+        if not isinstance(account['password'], str) or not account['password']:
+            raise ValueError("Managed account password must be a non-empty string")
+        if not isinstance(account['server'], str) or not account['server']:
+            raise ValueError("Managed account server must be a non-empty string")
+        if isinstance(account['login'], bool) or not isinstance(
+            account['login'], (int, str)
+        ) or not str(account['login']):
+            raise ValueError("Managed account login must be a non-empty identifier")
+        return accounts
+
     def get_active_account(self):
+        if self.mode != 'managed' or self.accounts is None:
+            raise RuntimeError(
+                "active account is unavailable in terminal connection mode"
+            )
         active = self.accounts['active_provider']
         return self.accounts['providers'][active]
 
@@ -111,12 +162,17 @@ class MT5Connector:
         try:
             mt5 = MetaTrader5(host=host, port=port)
             configure_mt5_transport_timeout(mt5, self.timeout)
-            account = self.get_active_account()
-            initialized = mt5.initialize(
-                login=account['login'],
-                password=account['password'],
-                server=account['server'],
-            )
+            if self.mode == 'managed':
+                account = self.get_active_account()
+                initialized = mt5.initialize(
+                    login=account['login'],
+                    password=account['password'],
+                    server=account['server'],
+                )
+            else:
+                # The GUI-selected terminal session is the single source of
+                # truth in terminal mode. Never pass login/password/server.
+                initialized = mt5.initialize()
             if not initialized:
                 raise ConnectionError(
                     f"MT5 initialization failed for {host}:{port}"
