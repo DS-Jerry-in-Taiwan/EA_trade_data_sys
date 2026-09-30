@@ -3,12 +3,15 @@ set -Eeuo pipefail
 export DISPLAY=:100
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$SCRIPT_DIR/terminal_lifecycle.sh"
+. "$SCRIPT_DIR/terminal_config.sh"
+MT5_CONNECTION_MODE="${MT5_CONNECTION_MODE:-terminal}"
 MT5_CONFIG_LINUX="${MT5_CONFIG_LINUX:-/mt5docker/mt5cfg.ini}"
 MT5_READY_TIMEOUT="${MT5_READY_TIMEOUT:-120}"
 MT5_UPDATE_TIMEOUT="${MT5_UPDATE_TIMEOUT:-180}"
 MT5_LOG_ROOT="${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}"
 CHILD_PIDS=()
 SHUTTING_DOWN=0
+RUNTIME_CONFIG=""
 remember_child() { CHILD_PIDS+=("$1"); }
 cleanup() {
     local terminal_pids=()
@@ -17,6 +20,7 @@ cleanup() {
     mapfile -t terminal_pids < <(terminal_processes | cut -f1)
     stop_exact_pids 10 "${CHILD_PIDS[@]}" "${terminal_pids[@]}"
     rm -f /run/mt5-server/rpyc.pid "${launch_snapshot:-}"
+    [ -z "$RUNTIME_CONFIG" ] || rm -f "$RUNTIME_CONFIG"
 }
 trap cleanup EXIT INT TERM
 cleanup_stale_runtime() {
@@ -70,6 +74,11 @@ await_single_update() {
 
 echo '>>> Cleaning up stale MT5 runtime...'
 cleanup_stale_runtime
+validate_mt5_connection_mode "$MT5_CONNECTION_MODE" || exit 1
+if [ "$MT5_CONNECTION_MODE" = terminal ] && [ "${MT5_SYNC_CONFIG:-0}" = 1 ]; then
+    echo '>>> MT5_SYNC_CONFIG is only valid in managed mode; refusing fixed-account takeover.' >&2
+    exit 1
+fi
 echo '>>> Starting GUI services...'
 Xvfb :100 -ac -screen 0 1024x768x24 & remember_child "$!"
 sleep 2
@@ -95,7 +104,7 @@ if [ -z "$MT5_EXE" ]; then
     echo '>>> Verify that MT5_DATA_DIR points to the persistent MT5_Data directory before running docker compose.' >&2
     exit 1
 fi
-if [ "${MT5_SYNC_CONFIG:-0}" = 1 ] && [ -r /app/service/config/accounts.json ]; then
+if [ "$MT5_CONNECTION_MODE" = managed ] && [ "${MT5_SYNC_CONFIG:-0}" = 1 ]; then
     # Legacy opt-in only. Normal deployment consumes the exact read-only file
     # mounted by MT5_CONFIG_FILE and does not duplicate credentials.
     bash /mt5docker/sync_mt5cfg.sh
@@ -107,6 +116,12 @@ fi
 }
 MT5_CONFIG_WINDOWS="$(winepath -w "$MT5_CONFIG_LINUX")"
 [ -n "$MT5_CONFIG_WINDOWS" ] || { echo '>>> winepath could not resolve MT5 config.' >&2; exit 1; }
+if [ "$MT5_CONNECTION_MODE" = terminal ]; then
+    RUNTIME_CONFIG="$(mktemp /tmp/mt5cfg-terminal.XXXXXX)"
+    MT5_CONFIG_LINUX="$(prepare_mt5_config terminal "$MT5_CONFIG_LINUX" "$RUNTIME_CONFIG")"
+    MT5_CONFIG_WINDOWS="$(winepath -w "$MT5_CONFIG_LINUX")"
+    [ -n "$MT5_CONFIG_WINDOWS" ] || { echo '>>> winepath could not resolve sanitized MT5 config.' >&2; exit 1; }
+fi
 
 launch_snapshot="$(mktemp /tmp/mt5-launch.XXXXXX)"
 snapshot_terminal_logs "$MT5_LOG_ROOT" "$launch_snapshot"

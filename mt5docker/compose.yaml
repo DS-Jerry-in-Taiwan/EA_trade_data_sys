@@ -8,6 +8,7 @@ services:
     environment:
       - VNC_PWD=jerry1234
       - MT5_CONFIG_LINUX=/run/mt5/mt5cfg.ini
+      - MT5_CONNECTION_MODE=${MT5_CONNECTION_MODE:-terminal}
     volumes:
       # 配置與腳本目錄
       - .:/mt5docker
@@ -37,6 +38,7 @@ services:
     container_name: trade-data-service
     environment:
       READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
+      MT5_CONNECTION_MODE: ${MT5_CONNECTION_MODE:-terminal}
     volumes:
       # 將整個專案代碼映射到 /app
       - ..:/app

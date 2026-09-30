@@ -85,3 +85,10 @@ initialization. Set `MT5_CONNECTION_MODE=managed` (or `connection.mode:
 managed`) and provide the private `MT5_ACCOUNTS_PATH`. Missing or malformed
 managed configuration fails closed. Credentials must remain outside Git,
 logs, API responses, and metrics.
+
+In terminal mode, startup creates a short-lived sanitized copy of the mounted
+`mt5cfg.ini` with `Login`, `Password`, and `Server` removed. The persistent
+`MT5_Data`/Wine directory remains the source of the GUI-selected session. The
+legacy `MT5_SYNC_CONFIG=1` path is rejected in terminal mode; it is available
+only for an explicit managed deployment. `/skipupdate`, exactly-one-terminal
+readiness, and the single bounded update cycle remain enforced for both modes.
