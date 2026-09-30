@@ -27,6 +27,7 @@ def build_execution_server():
         store=store,
         api_key_env=os.getenv("EXECUTION_API_KEY_ENV", "READONLY_API_KEY"),
         mutation_enabled=_enabled(os.getenv("EXECUTION_MUTATION_ENABLED", "false")),
+        account_policy=os.getenv("EXECUTION_ACCOUNT_POLICY", "DEMO"),
     )
     return create_execution_app(context), client
 

@@ -65,6 +65,39 @@ class SessionAdapter(FakeAdapter):
         return self.session
 
 
+class MutationSessionAdapter(FakeAdapter):
+    def __init__(self, *, changed=False):
+        super().__init__()
+        self.generation = 4
+        self.changed = changed
+        self.cancel_count = 0
+        self.close_count = 0
+
+    def mutation_session(self):
+        return {"generation": self.generation, "fingerprint": "demo"}
+
+    def validate_mutation_session(self, expected_session):
+        if self.changed:
+            raise ExecutionError(
+                "session_changed_before_send",
+                "MT5 account session changed before mutation was sent",
+                status=409,
+            )
+        assert expected_session["generation"] == self.generation
+
+    def cancel(self, order_id, *, expected_session=None):
+        if expected_session is not None:
+            self.validate_mutation_session(expected_session)
+        self.cancel_count += 1
+        return {"order_id": order_id, "retcode": 10009}
+
+    def close(self, position_id, *, expected_session=None):
+        if expected_session is not None:
+            self.validate_mutation_session(expected_session)
+        self.close_count += 1
+        return {"position_id": position_id, "retcode": 10009}
+
+
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
@@ -217,3 +250,67 @@ def test_idempotency_survives_store_restart(tmp_path):
     restored = IdempotencyStore(path).get("client-1")
     assert restored.state == "succeeded"
     assert restored.result == {"order_id": "7"}
+
+
+def test_session_change_before_order_send_is_terminal_and_never_sends(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
+    adapter = MutationSessionAdapter(changed=True)
+    store = IdempotencyStore(tmp_path / "db.sqlite3")
+    app = create_execution_app(ExecutionContext(
+        adapter, store, "TEST_EXECUTION_KEY", True,
+    ))
+    client = app.test_client()
+    payload = {
+        "client_order_id": "client-switch",
+        "symbol": "XAUUSDm",
+        "side": "BUY",
+        "volume": 0.01,
+    }
+    request_headers = headers(**{"Idempotency-Key": "client-switch"})
+
+    response = client.post("/api/v1/orders", headers=request_headers, json=payload)
+    replay = client.post("/api/v1/orders", headers=request_headers, json=payload)
+    lookup = client.get("/api/v1/orders/by-client/client-switch", headers=headers())
+
+    assert response.status_code == 409
+    assert response.json["error"]["code"] == "session_changed_before_send"
+    assert replay.status_code == 200
+    assert replay.json["data"]["state"] == "failed"
+    assert lookup.json["data"]["state"] == "failed"
+    assert adapter.send_count == 0
+
+
+def test_account_policy_blocks_mutation_before_adapter(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
+    adapter = MutationSessionAdapter()
+    app = create_execution_app(ExecutionContext(
+        adapter, IdempotencyStore(tmp_path / "db.sqlite3"),
+        "TEST_EXECUTION_KEY", True, account_policy="REAL",
+    ))
+    response = app.test_client().post(
+        "/api/v1/orders",
+        headers=headers(**{"Idempotency-Key": "policy-denied"}),
+        json={"client_order_id": "policy-denied", "symbol": "XAUUSDm", "side": "BUY", "volume": 0.01},
+    )
+    assert response.status_code == 403
+    assert response.json["error"]["code"] == "mutation_policy_denied"
+    assert adapter.send_count == 0
+
+
+@pytest.mark.parametrize("path,attribute", [
+    ("/api/v1/orders/7/cancel", "cancel_count"),
+    ("/api/v1/positions/9/close", "close_count"),
+])
+def test_session_change_blocks_cancel_and_close_before_mt5_mutation(
+    tmp_path, monkeypatch, path, attribute,
+):
+    monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
+    adapter = MutationSessionAdapter(changed=True)
+    app = create_execution_app(ExecutionContext(
+        adapter, IdempotencyStore(tmp_path / "db.sqlite3"),
+        "TEST_EXECUTION_KEY", True,
+    ))
+    response = app.test_client().post(path, headers=headers())
+    assert response.status_code == 409
+    assert response.json["error"]["code"] == "session_changed_before_send"
+    assert getattr(adapter, attribute) == 0

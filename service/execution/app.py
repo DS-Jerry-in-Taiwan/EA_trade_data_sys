@@ -23,6 +23,7 @@ class ExecutionContext:
     api_key_env: str = "READONLY_API_KEY"
     mutation_enabled: bool = False
     openapi_path: str = "/app/service/execution_openapi.yaml"
+    account_policy: str = "DEMO"
 
 
 def _request_id():
@@ -105,6 +106,7 @@ def create_execution_app(context):
             "account_mode": "DEMO" if demo else "NON_DEMO_OR_UNKNOWN",
             "account_session": session,
             "mutation_enabled": bool(context.mutation_enabled),
+            "account_policy": str(context.account_policy).strip().upper(),
             "mutation_ready": bool(
                 context.mutation_enabled and demo
                 and (session.get("ready", False) if session_supported else True)
@@ -163,11 +165,21 @@ def create_execution_app(context):
             raise ExecutionError(
                 "mutation_disabled", "Execution mutation is disabled", status=403
             )
+        if str(context.account_policy).strip().upper() != "DEMO":
+            raise ExecutionError(
+                "mutation_policy_denied",
+                "Execution mutation account policy must be Demo",
+                status=403,
+            )
+        capture = getattr(context.adapter, "mutation_session", None)
+        if callable(capture):
+            return capture()
         context.adapter.require_demo()
+        return None
 
     @app.post("/api/v1/orders")
     def create_order():
-        require_mutation()
+        expected_session = require_mutation()
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             raise ExecutionError("invalid_request", "JSON object body is required")
@@ -198,7 +210,15 @@ def create_execution_app(context):
             })
         try:
             mt5_request, check = context.adapter.preflight(payload)
-            result = context.adapter.send_once(mt5_request)
+            validate = getattr(context.adapter, "validate_mutation_session", None)
+            if expected_session is not None and callable(validate):
+                validate(expected_session)
+            if expected_session is None:
+                result = context.adapter.send_once(mt5_request)
+            else:
+                result = context.adapter.send_once(
+                    mt5_request, expected_session=expected_session
+                )
             result["preflight"] = check
             record = context.store.finish(client_order_id, "succeeded", result)
             return _success({
@@ -220,13 +240,17 @@ def create_execution_app(context):
 
     @app.post("/api/v1/orders/<order_id>/cancel")
     def cancel_order(order_id):
-        require_mutation()
-        return _success(context.adapter.cancel(order_id))
+        expected_session = require_mutation()
+        if expected_session is None:
+            return _success(context.adapter.cancel(order_id))
+        return _success(context.adapter.cancel(order_id, expected_session=expected_session))
 
     @app.post("/api/v1/positions/<position_id>/close")
     def close_position(position_id):
-        require_mutation()
-        return _success(context.adapter.close(position_id))
+        expected_session = require_mutation()
+        if expected_session is None:
+            return _success(context.adapter.close(position_id))
+        return _success(context.adapter.close(position_id, expected_session=expected_session))
 
     @app.get("/api/v1/openapi.yaml")
     def openapi():

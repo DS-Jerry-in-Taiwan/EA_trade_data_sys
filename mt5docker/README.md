@@ -107,3 +107,12 @@ storage remains untouched while the account-scoped MT5 state is rebuilt.
 The canonical MT5 client performs this rebuild automatically after a detected
 switch. The first read that observes the change is rejected, while subsequent
 reads use the rebuilt session; a failed rebuild remains blocked and retryable.
+
+Execution mutation remains fail-closed behind both `EXECUTION_MUTATION_ENABLED`
+and `EXECUTION_ACCOUNT_POLICY=DEMO`. Before preflight and again immediately
+before the one MT5 send/cancel/close call, the execution adapter verifies the
+Demo account fingerprint and captures the session generation. A generation
+change is rejected as `session_changed_before_send`; it never targets a
+resource from the previous terminal account. An indeterminate order result is
+persisted and must be recovered through `orders/by-client/{client_order_id}`;
+the server never retries it automatically.

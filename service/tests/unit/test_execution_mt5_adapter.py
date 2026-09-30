@@ -19,6 +19,15 @@ class Client:
         return symbol
 
 
+class SessionClient(Client):
+    def __init__(self, module, session):
+        super().__init__(module)
+        self.session = session
+
+    def session_status(self, *, refresh=False):
+        return self.session
+
+
 def test_account_requires_explicit_demo_mode():
     module = SimpleNamespace(
         ACCOUNT_TRADE_MODE_DEMO=0,
@@ -75,3 +84,36 @@ def test_preflight_stable_error_mapping(retcode, code):
         adapter.preflight({"symbol": "XAUUSDm", "side": "BUY", "volume": 0.01})
     assert error.value.code == code
     assert error.value.retcode == retcode
+
+
+@pytest.mark.parametrize("session,code,status", [
+    ({"state": "ready", "ready": True, "generation": 2,
+      "fingerprint": {"id": "real", "account_mode": "REAL"}},
+     "real_account_forbidden", 403),
+    ({"state": "unknown", "ready": False, "generation": 2,
+      "fingerprint": {"account_mode": "UNKNOWN"}},
+     "account_mode_unknown", 503),
+    ({"state": "switch_detected", "ready": False, "generation": 3,
+      "fingerprint": {"account_mode": "DEMO"}},
+     "account_session_transition", 503),
+])
+def test_mutation_session_has_stable_mode_and_transition_errors(session, code, status):
+    adapter = MT5ExecutionAdapter(SessionClient(SimpleNamespace(), session))
+    with pytest.raises(ExecutionError) as error:
+        adapter.mutation_session()
+    assert error.value.code == code
+    assert error.value.status == status
+
+
+def test_mutation_session_rejects_generation_change_before_send():
+    session = {
+        "state": "ready", "ready": True, "generation": 2,
+        "fingerprint": {"id": "demo", "account_mode": "DEMO"},
+    }
+    adapter = MT5ExecutionAdapter(SessionClient(SimpleNamespace(), session))
+    expected = adapter.mutation_session()
+    session["generation"] = 3
+    with pytest.raises(ExecutionError) as error:
+        adapter.validate_mutation_session(expected)
+    assert error.value.code == "session_changed_before_send"
+    assert error.value.status == 409

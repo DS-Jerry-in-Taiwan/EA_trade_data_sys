@@ -99,6 +99,86 @@ class MT5ExecutionAdapter:
                 status=403,
             )
 
+    @staticmethod
+    def _session_error(status):
+        """Map session readiness to stable mutation-gate errors."""
+        state = status.get("state")
+        if state == "switch_detected":
+            return ExecutionError(
+                "account_session_transition",
+                "MT5 account session transition requires reconciliation",
+                status=503,
+            )
+        if state == "unknown" or status.get("error") == "account_mode_unknown":
+            return ExecutionError(
+                "account_mode_unknown",
+                "MT5 account mode could not be verified",
+                status=503,
+            )
+        if not status.get("ready"):
+            return ExecutionError(
+                "mt5_unavailable",
+                "MT5 account session is not ready",
+                status=503,
+            )
+        return None
+
+    @staticmethod
+    def _account_mode_error(status):
+        fingerprint = status.get("fingerprint") or {}
+        mode = fingerprint.get("account_mode")
+        if mode == "REAL":
+            return ExecutionError(
+                "real_account_forbidden",
+                "Execution mutation is forbidden for Real accounts",
+                status=403,
+            )
+        if mode != "DEMO":
+            return ExecutionError(
+                "account_mode_unknown",
+                "MT5 account mode could not be verified as Demo",
+                status=503,
+            )
+        return None
+
+    def mutation_session(self):
+        """Capture a verified Demo session generation before mutation work."""
+        status = self.session_status(refresh=True)
+        transition_getter = getattr(self.client, "transition_detected", None)
+        if callable(transition_getter) and transition_getter():
+            raise ExecutionError(
+                "account_session_transition",
+                "MT5 account session transition requires reconciliation",
+                status=503,
+            )
+        error = self._session_error(status)
+        if error is not None:
+            raise error
+        error = self._account_mode_error(status)
+        if error is not None:
+            raise error
+        return {
+            "generation": status["generation"],
+            "fingerprint": (status.get("fingerprint") or {}).get("id"),
+        }
+
+    def validate_mutation_session(self, expected_session):
+        """Revalidate the captured generation immediately before MT5 send."""
+        status = self.session_status(refresh=True)
+        error = self._session_error(status)
+        if error is not None:
+            raise error
+        if status.get("generation") != expected_session.get("generation"):
+            raise ExecutionError(
+                "session_changed_before_send",
+                "MT5 account session changed before mutation was sent",
+                status=409,
+            )
+        error = self._account_mode_error(status)
+        if error is not None:
+            raise error
+        return status
+
     def symbol(self, logical_symbol):
         symbol = self._resolve(logical_symbol)
         info = self._call(lambda mt5: mt5.symbol_info(symbol))
@@ -235,11 +315,19 @@ class MT5ExecutionAdapter:
             raise ExecutionError(code, message, status=422, retcode=retcode)
         return request, {"retcode": retcode, "margin": getattr(result, "margin", None)}
 
-    def send_once(self, request):
+    def send_once(self, request, *, expected_session=None):
         invoked = False
         try:
             invoked = True
             result = self._call(lambda mt5: mt5.order_send(request))
+        except ExecutionError as exc:
+            if expected_session is not None and exc.code == "account_session_transition":
+                raise ExecutionError(
+                    "session_changed_before_send",
+                    "MT5 account session changed before mutation was sent",
+                    status=409,
+                ) from exc
+            raise
         except Exception as exc:
             if invoked:
                 raise AmbiguousMT5Result() from exc
@@ -258,11 +346,16 @@ class MT5ExecutionAdapter:
             raise ExecutionError(code, message, status=422, retcode=retcode)
         return payload
 
-    def cancel(self, order_id):
+    def cancel(self, order_id, *, expected_session=None):
         constants = self._call(lambda mt5: getattr(mt5, "TRADE_ACTION_REMOVE", 8))
-        return self.send_once({"action": constants, "order": int(order_id)})
+        if expected_session is not None:
+            self.validate_mutation_session(expected_session)
+        return self.send_once(
+            {"action": constants, "order": int(order_id)},
+            expected_session=expected_session,
+        )
 
-    def close(self, position_id):
+    def close(self, position_id, *, expected_session=None):
         positions = self._call(lambda mt5: mt5.positions_get(ticket=int(position_id))) or ()
         if not positions:
             raise ExecutionError("position_not_found", "Position was not found", status=404)
@@ -283,4 +376,6 @@ class MT5ExecutionAdapter:
             "type": constants["buy"] if closing_buy else constants["sell"],
             "price": getattr(info, "ask" if closing_buy else "bid", 0), "deviation": 20,
         }
-        return self.send_once(request)
+        if expected_session is not None:
+            self.validate_mutation_session(expected_session)
+        return self.send_once(request, expected_session=expected_session)

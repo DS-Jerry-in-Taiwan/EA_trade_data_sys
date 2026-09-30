@@ -71,6 +71,7 @@ services:
     environment:
       READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
       EXECUTION_MUTATION_ENABLED: "false"
+      EXECUTION_ACCOUNT_POLICY: "DEMO"
       EXECUTION_IDEMPOTENCY_DB: /app/runtime/execution/idempotency.sqlite3
     volumes:
       - ..:/app
