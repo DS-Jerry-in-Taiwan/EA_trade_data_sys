@@ -38,6 +38,19 @@ assert_failure exactly_one_normal_terminal
 [ "$(update_terminal_pids)" = 102 ] || fail 'update terminal was not classified'
 # This is the same fail-closed predicate used by startup and healthcheck.
 [ "$(update_terminal_pids | count_lines)" -gt 0 ] || fail 'LiveUpdate did not fail closed'
+capture_terminal_process_state
+[ "$NORMAL_COUNT" -eq 1 ] && [ "$UPDATE_COUNT" -eq 1 ] || fail 'single-scan process classification disagreed'
+diagnostic="$(log_terminal_lifecycle_state startup 1)"
+if printf '%s\n' "$diagnostic" | grep -Eq 'Program Files|terminal64\.exe|portable|skipupdate'; then
+    fail 'lifecycle diagnostics included raw command-line contents'
+fi
+
+clear_processes
+add_process 103 'C:\synthetic\liveupdate\terminal64.exe' /portable
+[ "$(update_terminal_pids)" = 103 ] || fail 'updater payload path was classified as normal'
+add_process 104 'C:\synthetic\liveupdate\terminal64.exe /update'
+printf 'terminal64.exe\n' > "$PROC_ROOT/104/comm"
+[ "$(update_terminal_pids | count_lines)" -eq 2 ] || fail 'Wine combined argv updater was not classified by comm'
 
 clear_processes
 add_process 201 'C:\Program Files\MetaTrader 5\terminal64.exe' /portable
@@ -69,6 +82,18 @@ LOG="$LOG_ROOT/terminal.log"
 SNAPSHOT="$TMP/log.snapshot"
 printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG"
 snapshot_terminal_logs "$LOG_ROOT" "$SNAPSHOT"
+UNCHANGED_LOG="$LOG_ROOT/old-terminal.log"
+printf 'old synthetic Journal\r\n' | iconv -f UTF-8 -t UTF-16LE > "$UNCHANGED_LOG"
+touch -d '2000-01-01 UTC' "$UNCHANGED_LOG"
+for day in $(seq 1 72); do
+    printf 'synthetic historic Journal\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG_ROOT/history-$day.log"
+    touch -d '2000-01-01 UTC' "$LOG_ROOT/history-$day.log"
+done
+MT5_LOG_ROOT="$LOG_ROOT"
+if changed_terminal_logs "$SNAPSHOT" | tr '\0' '\n' | grep -Fq "$UNCHANGED_LOG"; then
+    fail 'unchanged historical Journal was scanned'
+fi
+[ "$(changed_terminal_logs "$SNAPSHOT" | tr '\0' '\n' | count_lines)" -eq 1 ] || fail 'historic Journal scan did not stay limited to changed files'
 assert_failure log_has_new_startup_marker "$SNAPSHOT" "$LOG"
 printf 'network scan completed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
 assert_failure log_has_new_startup_marker "$SNAPSHOT" "$LOG"
@@ -162,6 +187,12 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
             duplicate-update) printf '501\n502\n' ;;
         esac
     }
+    capture_terminal_process_state() {
+        NORMAL_PIDS="$(normal_terminal_pids | paste -sd, -)"
+        UPDATE_PIDS="$(update_terminal_pids | paste -sd, -)"
+        NORMAL_COUNT="$(normal_terminal_pids | count_lines)"
+        UPDATE_COUNT="$(update_terminal_pids | count_lines)"
+    }
     sleep() { POLL=$((POLL + 1)); SECONDS=$((SECONDS + 1)); }
     assert_status() {
         local expected="$1" actual; shift
@@ -175,6 +206,7 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     POLL_CASE=duplicate-update; assert_status 12 await_terminal_authorized "$POLL_SNAPSHOT"
     POLL_CASE=normal-and-update; POLL=0
     assert_status 10 await_terminal_authorized "$POLL_SNAPSHOT"
+    MT5_UPDATE_OBSERVED=1
     POLL_CASE=updater; POLL=0
     assert_status 15 await_single_update
     [ "$POLL" -eq 3 ] || fail 'mandatory update timeout was not bounded'
@@ -188,6 +220,15 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
     assert_status 1 await_terminal_authorized "$POLL_SNAPSHOT"
     [ "$POLL" -eq 3 ] || fail 'Journal-only update prompt bypassed authorization'
+    printf 'LiveUpdate start synthetic/liveupdate/terminal64.exe /update\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
+    assert_status 10 await_terminal_ready "$POLL_SNAPSHOT"
+    [ "$MT5_UPDATE_OBSERVED" -eq 0 ] || fail 'Journal-only launch was mistaken for an observed updater process'
+    POLL_CASE=vanished; POLL=0
+    assert_status 15 await_single_update "$POLL_SNAPSHOT"
+    [ "$POLL" -eq 3 ] || fail 'Journal updater visibility gap triggered an immediate duplicate launch'
+    POLL_CASE=normal
+    printf 'Terminal MetaTrader 5 build 5321 started\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
+    assert_status 20 await_single_update "$POLL_SNAPSHOT"
 )
 
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'

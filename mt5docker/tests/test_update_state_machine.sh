@@ -121,6 +121,12 @@ run_native_case() (
     update_terminal_pids() {
         if [ "$NATIVE_PHASE" -eq 1 ] || [ "$NATIVE_PHASE" -eq 2 ]; then printf '601\n'; fi
     }
+    capture_terminal_process_state() {
+        NORMAL_PIDS="$(normal_terminal_pids | paste -sd, -)"
+        UPDATE_PIDS="$(update_terminal_pids | paste -sd, -)"
+        NORMAL_COUNT="$(normal_terminal_pids | count_lines)"
+        UPDATE_COUNT="$(update_terminal_pids | count_lines)"
+    }
     sleep() {
         SECONDS=$((SECONDS + 1))
         [ "$NATIVE_CASE" != timeout ] || return 0
