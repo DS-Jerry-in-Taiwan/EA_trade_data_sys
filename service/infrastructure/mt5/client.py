@@ -35,10 +35,12 @@ class MT5Client:
         connector_factory=MT5Connector,
         resolver_factory=None,
         session_guard=None,
+        symbol_aliases=None,
     ):
         self._lock = threading.RLock()
         self._connector_factory = connector_factory
         self._resolver_factory = resolver_factory
+        self._symbol_aliases = dict(symbol_aliases or {})
         self._session_guard = session_guard or AccountSessionGuard()
         self._session_supported = False
         self._last_transition_detected = False
@@ -266,13 +268,8 @@ class MT5Client:
         # soon as the switch was detected. No client.ensure/call recursion is
         # possible because initialization uses the current MT5 object directly.
         if self._resolver_symbols:
-            resolver_factory = self._resolver_factory
-            if resolver_factory is None:
-                from service.infrastructure.mt5.symbol_resolver import SymbolResolver
-
-                resolver_factory = SymbolResolver
             try:
-                candidate = resolver_factory()
+                candidate = self._create_resolver_unsafe()
                 candidate.initialize(self._mt5, self._resolver_symbols)
             except Exception:
                 self._session_guard.mark_reconciliation_failed()
@@ -329,10 +326,9 @@ class MT5Client:
 
         必須在 ensure_connected() 之後呼叫（需已取得 _mt5）。
         """
-        from service.infrastructure.mt5.symbol_resolver import SymbolResolver
         with self._lock:
             if self._mt5 is None:
-                raise RuntimeError("MT5 not connected — call ensure_connected() first")
+                raise ConnectionError("MT5 not connected — call ensure_connected() first")
             if self._session_supported and not self._session_guard.ready:
                 if self._session_guard.state == "switch_detected":
                     raise AccountSessionTransition(
@@ -340,19 +336,35 @@ class MT5Client:
                     )
                 raise ConnectionError("MT5 account session is not ready")
             self._resolver_symbols = tuple(configured_symbols)
-            resolver_factory = self._resolver_factory or SymbolResolver
-            self._resolver = resolver_factory()
+            self._resolver = self._create_resolver_unsafe()
             self._resolver.initialize(self._mt5, self._resolver_symbols)
 
-    def resolve(self, logical_name):
-        """將 logical name 解析為 broker 實際名稱。
+    def _create_resolver_unsafe(self):
+        from service.infrastructure.mt5.symbol_resolver import SymbolResolver
 
-        若 resolver 未初始化，回傳原名稱（graceful fallback）。
-        """
+        if self._resolver_factory is not None:
+            return self._resolver_factory()
+        if self._symbol_aliases:
+            return SymbolResolver(broker_aliases=self._symbol_aliases)
+        return SymbolResolver()
+
+    def resolve(self, logical_name):
+        """Return a catalog-validated broker name or fail closed."""
+        from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+
         with self._lock:
-            if self._resolver is None:
-                return logical_name
+            if self._mt5 is None or self._resolver is None:
+                raise SymbolResolutionError(logical_name, "resolver_not_initialized")
             return self._resolver.resolve(logical_name)
+
+    def logical_symbol(self, broker_name):
+        """Normalize a broker result using the current account's mapping."""
+        from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+
+        with self._lock:
+            if self._mt5 is None or self._resolver is None:
+                raise SymbolResolutionError(broker_name, "resolver_not_initialized")
+            return self._resolver.logical_for(broker_name)
 
     def _refresh_resolver_unsafe(self):
         if self._resolver is not None and self._resolver_symbols is not None:
@@ -362,7 +374,8 @@ class MT5Client:
         """Return whether resolver initialization produced an explicit mapping."""
         with self._lock:
             return (
-                self._resolver is not None
+                self._mt5 is not None
+                and self._resolver is not None
                 and logical_name in self._resolver.mapping
             )
 

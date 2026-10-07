@@ -24,7 +24,7 @@ def build_gateway(config_path=None):
     tick_cfg, history_cfg = settings.tick_service, settings.history_service
     tick_interval = tick_cfg.update_interval_seconds
     history_interval = history_cfg.update_interval_seconds
-    client = MT5Client()
+    client = MT5Client(symbol_aliases=settings.symbol_aliases)
     account_service = AccountService(settings=settings, mt5_client=client)
     consumer = TickConsumer(tick_cfg.socket_path or DEFAULT_SOCKET_PATH)
     context = GatewayContext(

@@ -432,3 +432,69 @@ def test_reconciliation_failure_keeps_transition_blocked():
     assert status['error'] == 'account_reconciliation_failed'
     with pytest.raises(ConnectionError, match='transition requires reconciliation'):
         client.call(lambda current: current)
+
+
+def test_real_resolver_rebuilds_forward_and_reverse_names_after_account_switch():
+    from types import SimpleNamespace
+    from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    mt5.catalog = ['XAUUSD.sim', 'BTCUSDm']
+    mt5.symbols_get = lambda: [SimpleNamespace(name=name) for name in mt5.catalog]
+    client = MT5Client(ConnectorFactory([mt5]))
+    assert client.ensure_connected()
+    client.init_resolver(['XAUUSDm', 'BTC'])
+    assert client.resolve('XAUUSDm') == 'XAUUSD.sim'
+    assert client.logical_symbol('BTCUSDm') == 'BTC'
+
+    mt5.info = SimpleNamespace(login=456, server='Other-Demo', trade_mode=0)
+    mt5.catalog = ['XAU_USD', 'BTC_USD']
+    assert client.ensure_connected() is False
+    assert client.session_status()['ready'] is True
+    assert client.ensure_connected() is True
+    assert client.resolve('XAUUSDm') == 'XAU_USD'
+    assert client.logical_symbol('BTC_USD') == 'BTC'
+    with pytest.raises(SymbolResolutionError, match='unsupported_broker_symbol'):
+        client.logical_symbol('BTCUSDm')
+
+
+def test_real_resolver_missing_configured_alias_blocks_new_account():
+    from types import SimpleNamespace
+    from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+
+    mt5 = SessionMT5(SimpleNamespace(login=123, server='Demo', trade_mode=0))
+    mt5.catalog = ['XAU_USD']
+    mt5.symbols_get = lambda: [SimpleNamespace(name=name) for name in mt5.catalog]
+    client = MT5Client(ConnectorFactory([mt5]), symbol_aliases={'XAUUSDm': 'XAU_USD'})
+    assert client.ensure_connected()
+    client.init_resolver(['XAUUSDm'])
+    assert client.resolve('XAUUSDm') == 'XAU_USD'
+
+    mt5.info = SimpleNamespace(login=456, server='Other-Demo', trade_mode=0)
+    mt5.catalog = ['XAUUSDm']
+    assert client.ensure_connected() is False
+    assert client.session_status()['ready'] is False
+    assert client.session_status()['error'] == 'account_symbols_unavailable'
+    with pytest.raises(SymbolResolutionError, match='resolver_not_initialized'):
+        client.resolve('XAUUSDm')
+
+
+def test_disconnected_client_does_not_expose_cached_symbol_mapping():
+    from types import SimpleNamespace
+    from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+
+    first, second = FakeMT5(), FakeMT5()
+    first.symbols_get = lambda: [SimpleNamespace(name='BTCUSDm')]
+    second.symbols_get = lambda: [SimpleNamespace(name='BTCUSD.sim')]
+    client = MT5Client(ConnectorFactory([first, second]))
+    assert client.ensure_connected()
+    client.init_resolver(['BTC'])
+    client.reset()
+
+    assert client.is_resolved('BTC') is False
+    with pytest.raises(SymbolResolutionError, match='resolver_not_initialized'):
+        client.resolve('BTC')
+    with pytest.raises(SymbolResolutionError, match='resolver_not_initialized'):
+        client.logical_symbol('BTCUSDm')
+    assert client.ensure_connected()
+    assert client.resolve('BTC') == 'BTCUSD.sim'

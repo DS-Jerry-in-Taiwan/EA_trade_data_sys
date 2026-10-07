@@ -2,6 +2,9 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from service.config import Settings, load_settings
 from service.infrastructure.mt5.client import MT5Client
+from service.infrastructure.mt5.session import AccountSessionTransition
+from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+from service.trade_query.contracts import TradeQueryError
 from service.trade_query.mt5_deal_mapper import map_mt5_deal
 from service.domain.trades.models import DealRecord, DealSummary
 from service.trade_query.presenters import present_deal_summary_v1, present_deal_v1
@@ -45,7 +48,10 @@ class AccountService:
                  settings: Settings | None = None):
         self.settings = settings or load_settings(config_path)
         self.cfg = self.settings.as_dict()
-        self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
+        self.mt5_client = (
+            mt5_client if mt5_client is not None
+            else MT5Client(symbol_aliases=self.settings.symbol_aliases)
+        )
 
     def get_balance(self):
         return self.get_account()
@@ -84,43 +90,101 @@ class AccountService:
         return {'error': 'Failed to get account info'}
 
     def get_positions(self, symbol: Optional[str] = None):
-        if not self.mt5_client.ensure_connected():
+        if not self._connected():
             return _session_not_ready(self.mt5_client)
-        if symbol:
-            positions = self.mt5_client.call(lambda m: m.positions_get(symbol=symbol))
-        else:
-            positions = self.mt5_client.call(lambda m: m.positions_get())
-        if not positions:
-            return []
-        result = []
-        for p in positions:
-            result.append({
-                'ticket': getattr(p, 'ticket', None),
-                'symbol': getattr(p, 'symbol', symbol),
-                'type': 'BUY' if getattr(p, 'type', 0) == 0 else 'SELL',
-                'volume': getattr(p, 'volume', None),
-                'price_open': getattr(p, 'price_open', None),
-                'price_current': getattr(p, 'price_current', None),
-                'sl': getattr(p, 'sl', None),
-                'tp': getattr(p, 'tp', None),
-                'profit': _round_number(getattr(p, 'profit', None), 2),
-                'swap': _round_number(getattr(p, 'swap', None), 2),
-                'time': _to_utc_iso(getattr(p, 'time', None)),
-                'comment': getattr(p, 'comment', '')
-            })
-        return result
+
+        def read(module):
+            self._ensure_resolver()
+            if symbol:
+                broker_symbol = self.mt5_client.resolve(symbol)
+                positions = module.positions_get(symbol=broker_symbol)
+            else:
+                positions = module.positions_get()
+            result = []
+            for p in positions or ():
+                result.append({
+                    'ticket': getattr(p, 'ticket', None),
+                    'symbol': self._public_symbol(getattr(p, 'symbol', symbol)),
+                    'type': 'BUY' if getattr(p, 'type', 0) == 0 else 'SELL',
+                    'volume': getattr(p, 'volume', None),
+                    'price_open': getattr(p, 'price_open', None),
+                    'price_current': getattr(p, 'price_current', None),
+                    'sl': getattr(p, 'sl', None),
+                    'tp': getattr(p, 'tp', None),
+                    'profit': _round_number(getattr(p, 'profit', None), 2),
+                    'swap': _round_number(getattr(p, 'swap', None), 2),
+                    'time': _to_utc_iso(getattr(p, 'time', None)),
+                    'comment': getattr(p, 'comment', '')
+                })
+            return result
+
+        return self._call(read)
+
+    def _translate_query_failure(self, operation):
+        """Keep transport/catalog details inside the trade-query service."""
+        try:
+            return operation()
+        except SymbolResolutionError as exc:
+            if exc.reason in {'resolver_not_initialized', 'symbol_catalog_unavailable'}:
+                raise TradeQueryError('mt5_unavailable', 'MT5 symbol catalog is unavailable', 503) from exc
+            if exc.reason in {'ambiguous_broker_symbol', 'ambiguous_logical_alias'}:
+                raise TradeQueryError('ambiguous_symbol', 'Symbol mapping is ambiguous', 409) from exc
+            raise TradeQueryError('symbol_not_found', 'Symbol is unavailable', 404) from exc
+        except AccountSessionTransition as exc:
+            raise TradeQueryError(
+                'account_session_transition',
+                'MT5 account session transition requires reconciliation', 503,
+            ) from exc
+        except ConnectionError as exc:
+            raise TradeQueryError('mt5_unavailable', 'MT5 is unavailable', 503) from exc
+
+    def _connected(self):
+        return self._translate_query_failure(self.mt5_client.ensure_connected)
+
+    def _call(self, operation):
+        return self._translate_query_failure(lambda: self.mt5_client.call(operation))
+
+    def _ensure_resolver(self, names=()):
+        """Initialize only inside client.call's account-readiness boundary."""
+        if not getattr(self.mt5_client, '_resolver', None):
+            configured = tuple(dict.fromkeys((
+                *self.settings.tick_service.symbols,
+                *(item.name for item in self.settings.history_service.symbols),
+                *names,
+            )))
+            self.mt5_client.init_resolver(configured)
+
+    def _public_symbol(self, broker_symbol):
+        normalize = getattr(self.mt5_client, 'logical_symbol', None)
+        if not callable(normalize):
+            return broker_symbol
+        try:
+            return normalize(broker_symbol)
+        except SymbolResolutionError as exc:
+            if exc.reason == 'unsupported_broker_symbol':
+                # Unfiltered read-only account views also include instruments
+                # outside the service's configured logical symbol universe.
+                return broker_symbol
+            raise
 
     def get_symbols(self, logical_symbols):
         """Return public symbol metadata while keeping MT5 access behind this service."""
         names = list(logical_symbols)
-        if not self.mt5_client.ensure_connected():
+        if not self._connected():
             return _session_not_ready(self.mt5_client)
-        if not getattr(self.mt5_client, '_resolver', None):
-            self.mt5_client.init_resolver(names)
+        self._call(lambda _module: self._ensure_resolver(names))
         result = []
         for name in names:
-            broker_name = self.mt5_client.resolve(name)
-            info = self.mt5_client.call(lambda module: module.symbol_info(broker_name))
+            try:
+                info = self._call(
+                    lambda module: module.symbol_info(self.mt5_client.resolve(name))
+                )
+            except TradeQueryError as exc:
+                if exc.status not in {404, 409}:
+                    raise
+                result.append({'name': name, 'digits': None, 'spread': None,
+                               **exc.as_response()})
+                continue
             if info:
                 result.append({
                     'name': name,

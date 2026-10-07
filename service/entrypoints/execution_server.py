@@ -16,7 +16,7 @@ def _enabled(value):
 
 def build_execution_server():
     settings = load_settings()
-    client = MT5Client()
+    client = MT5Client(symbol_aliases=settings.symbol_aliases)
     symbols = [item.name for item in settings.history_service.symbols]
     adapter = MT5ExecutionAdapter(client, symbols)
     store = IdempotencyStore(

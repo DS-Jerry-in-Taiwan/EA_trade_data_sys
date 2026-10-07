@@ -66,7 +66,10 @@ class HistoryService:
             raise ValueError('fetch_timeout_seconds must be positive')
         if any(value <= 0 for value in self.minimum_bars.values()):
             raise ValueError('minimum_bars values must be positive')
-        self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
+        self.mt5_client = (
+            mt5_client if mt5_client is not None
+            else MT5Client(symbol_aliases=settings.symbol_aliases)
+        )
         self._resolver_initialized = False
         # MT5Client serializes calls with one lock, so multiple executor workers
         # only accumulate blocked retries. Keep exactly one operation in flight

@@ -1,112 +1,167 @@
-"""
-Logical-to-broker symbol resolution infrastructure.
+"""Catalog-validated mapping between public logical and broker symbols.
 
-功能：
-- initialize(): 連上 MT5 broker 查詢可用 symbol 列表，建立對照表
-- resolve(): 精確比對優先 → 模糊比對（去 m、加 m、大小寫）→ 原名稱 fallback
-- refresh(): 重新查詢（重連後呼叫）
+Only exact names, known ``m``/``.sim`` suffixes, and a single underscore
+between the base and quote are inferred. Deployment-specific names must be
+configured explicitly, and are still checked against the current catalog.
 """
+
+import re
 import threading
+from collections.abc import Mapping
+
+
+class SymbolResolutionError(ValueError):
+    """A logical symbol has no unambiguous, catalog-validated broker name."""
+
+    def __init__(self, symbol, reason, candidates=()):
+        self.symbol = symbol
+        self.reason = reason
+        self.candidates = tuple(sorted(candidates))
+        detail = f": {', '.join(self.candidates)}" if self.candidates else ""
+        super().__init__(f"Symbol {symbol!r} cannot be resolved ({reason}){detail}")
 
 
 class SymbolResolver:
-    """動態 Symbol 解析器。精確比對優先，模糊比對作為 fallback。"""
+    """Resolve configured logical names, rejecting unsupported/ambiguous names.
 
-    CRYPTO_BASES = frozenset({'BTC', 'ETH'})
-    CRYPTO_QUOTES = ('USD', 'USDT')
+    ``broker_aliases`` contains exact logical-to-broker names for the deployment
+    broker. An explicit alias takes precedence over inference, but an alias that
+    disappears after reconnect/account switch is rejected rather than replaced
+    with a different product. ``BTC``/``ETH`` infer only USD markets; selecting
+    a USDT or other quote requires an explicit deployment alias.
+    """
 
-    def __init__(self):
+    CRYPTO_BASES = frozenset({"BTC", "ETH"})
+    KNOWN_SUFFIXES = ("", "m", ".sim")
+
+    def __init__(self, broker_aliases=None):
+        if broker_aliases is None:
+            broker_aliases = {}
+        if not isinstance(broker_aliases, Mapping) or any(
+            not isinstance(logical, str) or not logical or logical != logical.strip()
+            or not isinstance(broker, str) or not broker or broker != broker.strip()
+            for logical, broker in broker_aliases.items()
+        ):
+            raise ValueError("broker_aliases must map non-empty symbol names to exact broker names")
+        self._aliases = dict(broker_aliases)
         self._mapping = {}
+        self._reverse_mapping = {}
+        self._failures = {}
         self._unresolved = []
         self._broker_symbols = set()
         self._initialized = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def initialize(self, mt5, configured_symbols):
-        """查詢 broker 可用 symbol，建立 logical → broker 對照表。
+        """Replace all account-scoped state using the current broker catalog.
 
-        Args:
-            mt5: MT5 connector 物件（需已連線）
-            configured_symbols: settings.yaml 中的 symbol 名稱列表
+        Failed catalog reads invalidate the old mappings too. Initialization
+        records per-symbol failures so callers can publish readiness details;
+        ``resolve`` raises before an unsupported broker call can be made.
         """
         with self._lock:
+            self._mapping = {}
+            self._reverse_mapping = {}
+            self._failures = {}
+            self._unresolved = []
+            self._broker_symbols = set()
+            self._initialized = False
             all_symbols = mt5.symbols_get()
-            self._broker_symbols = {s.name for s in all_symbols}
-            for logical in configured_symbols:
-                resolved = self._resolve_one(logical)
-                if resolved:
-                    self._mapping[logical] = resolved
+            if all_symbols is None:
+                raise SymbolResolutionError("catalog", "symbol_catalog_unavailable")
+            self._broker_symbols = {
+                symbol.name for symbol in all_symbols
+                if isinstance(getattr(symbol, "name", None), str) and symbol.name
+            }
+            logical_symbols = tuple(dict.fromkeys(configured_symbols))
+            for logical in logical_symbols:
+                try:
+                    self._mapping[logical] = self._resolve_one(logical)
+                except SymbolResolutionError as exc:
+                    self._failures[logical] = (exc.reason, exc.candidates)
+
+            # Reverse normalization must never pick an arbitrary logical name
+            # when multiple public symbols point at the same broker instrument.
+            by_broker = {}
+            for logical, broker in self._mapping.items():
+                by_broker.setdefault(broker, []).append(logical)
+            for broker, logical_names in by_broker.items():
+                if len(logical_names) > 1:
+                    for logical in logical_names:
+                        self._mapping.pop(logical)
+                        self._failures[logical] = ("ambiguous_logical_alias", (broker,))
                 else:
-                    self._unresolved.append(logical)
+                    self._reverse_mapping[broker] = logical_names[0]
+            self._unresolved = [logical for logical in logical_symbols if logical in self._failures]
             self._initialized = True
-            print(f'[SymbolResolver] Resolved {len(self._mapping)}/{len(configured_symbols)}.'
-                  f' Unresolved: {self._unresolved}')
+            print(f"[SymbolResolver] Resolved {len(self._mapping)}/{len(logical_symbols)}."
+                  f" Unresolved: {self._unresolved}")
 
     def resolve(self, logical_name):
-        """將 logical name 解析為 broker 實際名稱。
+        """Return a validated broker name; never fall back to unchecked input."""
+        with self._lock:
+            if not self._initialized:
+                raise SymbolResolutionError(logical_name, "resolver_not_initialized")
+            if logical_name in self._mapping:
+                return self._mapping[logical_name]
+            reason, candidates = self._failures.get(logical_name, ("unsupported_symbol", ()))
+            raise SymbolResolutionError(logical_name, reason, candidates)
 
-        若未初始化或找不到對應，回傳 logical_name 本身（graceful fallback）。
-        """
-        if not self._initialized:
-            return logical_name
-        return self._mapping.get(logical_name, logical_name)
+    def logical_for(self, broker_name):
+        """Normalize a broker result using only established current mappings."""
+        with self._lock:
+            if not self._initialized:
+                raise SymbolResolutionError(broker_name, "resolver_not_initialized")
+            if broker_name in self._reverse_mapping:
+                return self._reverse_mapping[broker_name]
+            raise SymbolResolutionError(broker_name, "unsupported_broker_symbol")
 
     def _resolve_one(self, logical):
-        """單一 symbol 解析流程。"""
-        # Logical crypto names are business aliases, not literal broker
-        # symbols. Resolve them first using a fixed market preference.
-        crypto_base = logical.upper()
-        if crypto_base in self.CRYPTO_BASES:
-            for quote in self.CRYPTO_QUOTES:
-                for candidate in (f'{crypto_base}{quote}m', f'{crypto_base}{quote}'):
-                    broker_symbol = self._find_case_insensitive(candidate)
-                    if broker_symbol:
-                        print(
-                            f'[SymbolResolver] Crypto alias: '
-                            f'"{logical}" → "{broker_symbol}"'
-                        )
-                        return broker_symbol
-        # ① 精確比對
+        if not isinstance(logical, str) or not logical:
+            raise SymbolResolutionError(logical, "unsupported_symbol")
+        if logical in self._aliases:
+            alias = self._aliases[logical]
+            if alias not in self._broker_symbols:
+                raise SymbolResolutionError(logical, "configured_alias_unavailable", (alias,))
+            return alias
         if logical in self._broker_symbols:
             return logical
-        # ② 去 m 後綴（XAUUSDm → XAUUSD）
-        if logical.endswith('m') and logical[:-1] in self._broker_symbols:
-            print(f'[SymbolResolver] Fuzzy match: "{logical}" → "{logical[:-1]}"')
-            return logical[:-1]
-        # ③ 加 m 後綴（XAUUSD → XAUUSDm）
-        if logical + 'm' in self._broker_symbols:
-            print(f'[SymbolResolver] Fuzzy match: "{logical}" → "{logical + "m"}"')
-            return logical + 'm'
-        # ④ 大小寫不敏感
-        case_insensitive = self._find_case_insensitive(logical)
-        if case_insensitive:
-            print(
-                f'[SymbolResolver] Case-insensitive match: '
-                f'"{logical}" → "{case_insensitive}"'
-            )
-            return case_insensitive
-        return None
 
-    def _find_case_insensitive(self, candidate):
-        matches = sorted(
-            symbol
-            for symbol in self._broker_symbols
-            if symbol.casefold() == candidate.casefold()
-        )
-        return matches[0] if matches else None
+        candidates = {logical.casefold()}
+        base = logical
+        if base.casefold().endswith("m"):
+            base = base[:-1]
+        elif base.casefold().endswith(".sim"):
+            base = base[:-4]
+        base = base.upper()
+        if base in self.CRYPTO_BASES:
+            base += "USD"
+        # Infer only a base/quote pair, never arbitrary punctuation removal or
+        # partial-prefix matches such as BTCUSD matching BTCUSDT.
+        if re.fullmatch(r"[A-Z]{3}_[A-Z]{3}", base):
+            base = base.replace("_", "")
+        if re.fullmatch(r"[A-Z]{6}", base):
+            for stem in (base, f"{base[:3]}_{base[3:]}"):
+                candidates.update((stem + suffix).casefold() for suffix in self.KNOWN_SUFFIXES)
+        matches = {
+            symbol for symbol in self._broker_symbols if symbol.casefold() in candidates
+        }
+        if len(matches) == 1:
+            return matches.pop()
+        if matches:
+            raise SymbolResolutionError(logical, "ambiguous_broker_symbol", matches)
+        raise SymbolResolutionError(logical, "unsupported_symbol")
 
     @property
     def mapping(self):
-        return dict(self._mapping) if self._initialized else {}
+        with self._lock:
+            return dict(self._mapping) if self._initialized else {}
 
     @property
     def unresolved(self):
-        return list(self._unresolved) if self._initialized else []
+        with self._lock:
+            return list(self._unresolved) if self._initialized else []
 
     def refresh(self, mt5, configured_symbols):
-        """重新查詢 broker symbol 列表（重連後呼叫）。"""
-        with self._lock:
-            self._mapping = {}
-            self._unresolved = []
-            self._initialized = False
+        """Rebuild mappings after reconnect or account change."""
         self.initialize(mt5, configured_symbols)

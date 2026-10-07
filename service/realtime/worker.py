@@ -25,7 +25,10 @@ class TickService:
         self.socket_path = cfg.socket_path or DEFAULT_SOCKET_PATH
         self.max_retry_seconds = cfg.max_retry_seconds
         self.status_path = cfg.status_path
-        self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
+        self.mt5_client = (
+            mt5_client if mt5_client is not None
+            else MT5Client(symbol_aliases=settings.symbol_aliases)
+        )
         self.publisher = publisher if publisher is not None else TickPublisher(self.socket_path)
         self.snapshot_store = (
             snapshot_store if snapshot_store is not None

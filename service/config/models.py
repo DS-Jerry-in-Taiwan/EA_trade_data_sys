@@ -45,6 +45,16 @@ def _strings(value: Any, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     return tuple(item for item in value if isinstance(item, str))
 
 
+def _symbol_aliases(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping) or any(
+        not isinstance(logical, str) or not logical or logical != logical.strip()
+        or not isinstance(broker, str) or not broker or broker != broker.strip()
+        for logical, broker in value.items()
+    ):
+        raise ValueError("symbol_aliases must map logical names to non-empty exact broker names")
+    return dict(value)
+
+
 @dataclass(frozen=True)
 class ConnectionSettings:
     # ``terminal`` attaches to the account already selected in the MT5 GUI.
@@ -256,6 +266,7 @@ class Settings:
     history_service: HistoryServiceSettings = field(default_factory=HistoryServiceSettings)
     api_gateway: ApiGatewaySettings = field(default_factory=ApiGatewaySettings)
     trade_query: TradeQuerySettings = field(default_factory=TradeQuerySettings)
+    symbol_aliases: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(
@@ -277,6 +288,7 @@ class Settings:
             trade_query=TradeQuerySettings.from_mapping(
                 _section(raw, "trade_query")
             ),
+            symbol_aliases=_symbol_aliases(raw.get("symbol_aliases", {})),
         )
 
     def as_dict(self) -> dict[str, Any]:

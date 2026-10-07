@@ -99,3 +99,27 @@ def test_runtime_loader_reads_only_supervisor_environment():
 def test_runtime_loader_rejects_invalid_timeout():
     with pytest.raises(ValueError, match="SUPERVISOR_SHUTDOWN_TIMEOUT must be numeric"):
         load_runtime_settings(environ={"SUPERVISOR_SHUTDOWN_TIMEOUT": "invalid"})
+
+
+def test_loader_preserves_explicit_broker_aliases_separately_from_logical_names(tmp_path):
+    path = tmp_path / "settings.yaml"
+    path.write_text(yaml.safe_dump({
+        "symbol_aliases": {"XAUUSDm": "XAU_USD", "BTC": "BTCUSD.sim"},
+        "tick_service": {"symbols": ["XAUUSDm", "BTC"]},
+        "history_service": {"symbols": [{"name": "XAUUSDm", "timeframes": ["M5"]}]},
+    }), encoding="utf-8")
+
+    settings = load_settings(path, environ={})
+    assert settings.symbol_aliases == {"XAUUSDm": "XAU_USD", "BTC": "BTCUSD.sim"}
+    assert settings.tick_service.symbols == ("XAUUSDm", "BTC")
+    assert settings.history_service.symbols[0].name == "XAUUSDm"
+    assert settings.as_dict()["symbol_aliases"] == settings.symbol_aliases
+
+
+@pytest.mark.parametrize("aliases", [[], None, {"BTC": ""}, {"BTC": 1}, {"BTC": " BTCUSD"}])
+def test_loader_rejects_invalid_alias_mapping(tmp_path, aliases):
+    path = tmp_path / "settings.yaml"
+    path.write_text(yaml.safe_dump({"symbol_aliases": aliases}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="symbol_aliases"):
+        load_settings(path, environ={})

@@ -57,6 +57,9 @@ def gateway_module():
     mt5_client_module = types.ModuleType('service.infrastructure.mt5.client')
 
     class MT5Client:
+        def __init__(self, *, symbol_aliases=None):
+            self.symbol_aliases = dict(symbol_aliases or {})
+
         def shutdown(self):
             return None
 
@@ -145,6 +148,25 @@ def valid_row(time, close=100.5):
         'tick_volume': 12,
         'source_symbol': 'XAUUSDm',
     }
+
+
+def test_gateway_passes_broker_aliases_without_renaming_public_symbols(gateway_module, tmp_path):
+    config = tmp_path / 'settings.yaml'
+    config.write_text(
+        'symbol_aliases: {XAUUSDm: XAU_USD, BTC: BTCUSD.sim}\n'
+        'tick_service:\n  symbols: [XAUUSDm, BTC]\n'
+        'history_service:\n  symbols:\n'
+        '    - {name: XAUUSDm, timeframes: [M5]}\n'
+        '    - {name: BTC, timeframes: [M5]}\n',
+        encoding='utf-8',
+    )
+
+    gateway, mt5_client = gateway_module.build_gateway(config)
+
+    assert mt5_client.symbol_aliases == {'XAUUSDm': 'XAU_USD', 'BTC': 'BTCUSD.sim'}
+    assert gateway.context.tick_symbols == ['XAUUSDm', 'BTC']
+    assert gateway.context.symbol_names == ['XAUUSDm', 'BTC']
+    assert gateway.context.account_service.mt5_client is mt5_client
 
 
 def test_rejects_unsorted_and_duplicate_cache(client):
