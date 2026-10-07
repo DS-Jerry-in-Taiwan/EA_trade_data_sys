@@ -1,6 +1,8 @@
 import time
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import numpy as np
@@ -8,6 +10,7 @@ import pytest
 import yaml
 
 from service.history.worker import HistoryService
+from service.infrastructure.mt5.client import MT5Client
 
 
 def _bar(timestamp, close=100.0):
@@ -55,6 +58,41 @@ class FakeMT5Client:
 
     def call(self, operation):
         return operation(self.mt5)
+
+
+class AccountMT5(FakeMT5):
+    """A terminal whose catalog and history change with its current account."""
+
+    def __init__(self, aliases=('BTCUSDm', 'BTC_USD')):
+        super().__init__([_bar('2026-09-08T10:00:00Z')])
+        self.login = 1
+        self.aliases = aliases
+        self.read_accounts = []
+
+    def account_info(self):
+        return SimpleNamespace(login=self.login, server='test-demo', trade_mode=0)
+
+    def symbols_get(self):
+        return [SimpleNamespace(name=self.aliases[self.login - 1])]
+
+    def copy_rates_from_pos(self, symbol, timeframe, position, count):
+        self.requests.append((symbol, timeframe, position, count))
+        self.read_accounts.append(self.login)
+        close = 100 * self.login if symbol == self.aliases[self.login - 1] else 999
+        bars = [
+            _bar('2026-09-08T10:00:00Z', close=close),
+            _bar('2026-09-08T10:15:00Z', close=close),
+        ]
+        return bars[position:position + count]
+
+    def shutdown(self):
+        pass
+
+
+def _account_client(mt5, client_type=MT5Client):
+    return client_type(connector_factory=lambda: SimpleNamespace(
+        connect=lambda: mt5, close=lambda: None,
+    ))
 
 
 def _write_config(path, data_path, timeframes=None, **history_overrides):
@@ -384,6 +422,125 @@ def test_changed_source_identity_rebuilds_without_mixing_instruments(tmp_path):
     assert (data_path / 'BTC_M5.csv.ready').read_text() == 'broker-BTC'
 
 
+def test_account_switch_before_read_uses_reconciled_alias_for_later_timeframe(tmp_path):
+    class SwitchBeforeReadClient(MT5Client):
+        first_read = True
+
+        def call(self, operation):
+            if self.first_read:
+                self.first_read = False
+                terminal.login = 2
+            return super().call(operation)
+
+    config_path = tmp_path / 'settings.yaml'
+    data_path = tmp_path / 'history'
+    _write_config(
+        config_path, data_path, timeframes=['M5', 'M15'],
+        minimum_bars={'M5': 1, 'M15': 1}, retention_margin_bars=0,
+    )
+    data_path.mkdir()
+    ready = data_path / 'BTC_M5.csv.ready'
+    ready.write_text('BTCUSDm', encoding='utf-8')
+    terminal = AccountMT5()
+    client = _account_client(terminal, SwitchBeforeReadClient)
+    service = HistoryService(config_path=config_path, mt5_client=client)
+    try:
+        service.fetch_incremental(now=datetime(2026, 9, 8, 12, tzinfo=timezone.utc))
+
+        assert not ready.exists()
+        assert not (data_path / 'BTC_M5.csv').exists()
+        saved = pd.read_csv(data_path / 'BTC_M15.csv')
+        assert set(saved['source_symbol']) == {'BTC_USD'}
+        assert set(saved['close']) == {200}
+        assert {request[0] for request in terminal.requests} == {'BTC_USD'}
+        assert terminal.read_accounts == [2]
+        assert (data_path / 'BTC_M15.csv.ready').read_text() == 'BTC_USD'
+        status = service.get_sync_status()['BTC:M15']
+        assert status['source_symbol'] == 'BTC_USD'
+        assert status['session_generation'] == client.session_guard.generation == 2
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize('new_alias', ['BTC_USD', 'BTCUSDm'])
+@pytest.mark.parametrize(
+    ('page_size', 'minimum', 'error'),
+    [(1, 2, 'changed between history pages'),
+     (2, 1, 'changed before history publication')],
+)
+def test_account_generation_change_never_publishes_mixed_history(
+    tmp_path, new_alias, page_size, minimum, error
+):
+    class ReconcileBetweenPagesClient(MT5Client):
+        first_read = True
+
+        def call(self, operation):
+            result = super().call(operation)
+            if self.first_read:
+                self.first_read = False
+                terminal.login = 2
+                assert self.ensure_connected() is False
+                assert self.session_guard.ready is True
+            return result
+
+    config_path = tmp_path / 'settings.yaml'
+    data_path = tmp_path / 'history'
+    _write_config(
+        config_path, data_path, timeframes=['M5'], minimum_bars={'M5': minimum},
+        retention_margin_bars=0, fetch_page_size=page_size,
+    )
+    data_path.mkdir()
+    ready = data_path / 'BTC_M5.csv.ready'
+    ready.write_text('BTCUSDm', encoding='utf-8')
+    terminal = AccountMT5(aliases=('BTCUSDm', new_alias))
+    client = _account_client(terminal, ReconcileBetweenPagesClient)
+    service = HistoryService(config_path=config_path, mt5_client=client)
+    try:
+        service.fetch_incremental(now=datetime(2026, 9, 8, 12, tzinfo=timezone.utc))
+
+        assert terminal.requests == [('BTCUSDm', 5, 0, page_size)]
+        assert terminal.read_accounts == [1]
+        assert not (data_path / 'BTC_M5.csv').exists()
+        assert not ready.exists()
+        status = service.get_sync_status()['BTC:M5']
+        assert status['state'] == 'error'
+        assert error in status['detail']
+    finally:
+        service.close()
+
+
+def test_account_switch_during_csv_write_revokes_publication(tmp_path, monkeypatch):
+    config_path = tmp_path / 'settings.yaml'
+    data_path = tmp_path / 'history'
+    _write_config(
+        config_path, data_path, timeframes=['M5'], minimum_bars={'M5': 1},
+        retention_margin_bars=0,
+    )
+    data_path.mkdir()
+    ready = data_path / 'BTC_M5.csv.ready'
+    ready.write_text('BTCUSDm', encoding='utf-8')
+    terminal = AccountMT5()
+    client = _account_client(terminal)
+    service = HistoryService(config_path=config_path, mt5_client=client)
+    write_csv = service._atomic_write_csv
+
+    def write_then_reconcile(dataframe, filepath):
+        write_csv(dataframe, filepath)
+        terminal.login = 2
+        assert client.ensure_connected() is False
+
+    monkeypatch.setattr(service, '_atomic_write_csv', write_then_reconcile)
+    try:
+        service.fetch_incremental(now=datetime(2026, 9, 8, 12, tzinfo=timezone.utc))
+
+        assert not ready.exists()
+        status = service.get_sync_status()['BTC:M5']
+        assert status['state'] == 'error'
+        assert 'changed before history publication' in status['detail']
+    finally:
+        service.close()
+
+
 def test_legacy_cache_without_source_identity_is_rebuilt(tmp_path):
     config_path = tmp_path / 'settings.yaml'
     data_path = tmp_path / 'history'
@@ -555,6 +712,51 @@ def test_repeated_refresh_does_not_queue_calls_behind_timed_out_request(tmp_path
     assert client.calls == 1
     assert service.get_sync_status()['BTC:M5']['state'] == 'error'
     assert 'still running' in service.get_sync_status()['BTC:M5']['detail']
+
+
+def test_timed_out_guarded_read_does_not_block_other_timeframes_or_refresh(tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class BlockingMT5(AccountMT5):
+        def copy_rates_from_pos(self, *args):
+            entered.set()
+            assert release.wait(timeout=5)
+            return super().copy_rates_from_pos(*args)
+
+    config_path = tmp_path / 'settings.yaml'
+    _write_config(
+        config_path, tmp_path / 'history', timeframes=['M5', 'M15'],
+        minimum_bars={'M5': 1, 'M15': 1}, fetch_timeout_seconds=0.01,
+    )
+    terminal = BlockingMT5()
+    service = HistoryService(config_path=config_path, mt5_client=_account_client(terminal))
+
+    def refresh_twice():
+        try:
+            for _ in range(2):
+                service.fetch_incremental(
+                    now=datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+                )
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=refresh_twice)
+    thread.start()
+    try:
+        assert entered.wait(timeout=1)
+        # The real MT5Client lock is still held by the stalled first read.
+        assert finished.wait(timeout=1)
+        assert service._inflight_future is not None
+        assert not service._inflight_future.done()
+        assert all(status['state'] == 'error' for status in service.sync_status.values())
+    finally:
+        release.set()
+        thread.join(timeout=2)
+        service._executor.shutdown(wait=True)
+        service.close()
+    assert len(terminal.requests) == 1
 
 
 def test_status_publication_failure_does_not_stop_history_worker(tmp_path, monkeypatch):

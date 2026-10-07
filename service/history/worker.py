@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 from service.config import Settings, load_settings
 from service.infrastructure.mt5.client import MT5Client
+from service.infrastructure.mt5.session import AccountSessionTransition
 from service.infrastructure.status.component_status import (
     atomic_write_status,
 )
@@ -120,11 +121,29 @@ class HistoryService:
             print(f'[HistoryService] Status publication failed: {exc}')
             return None
 
-    def _fetch_pages(self, broker_symbol, timeframe_attr, target_count):
+    def _session_generation(self):
+        guard = getattr(self.mt5_client, 'session_guard', None)
+        return getattr(guard, 'generation', None)
+
+    def _history_call_running(self):
+        return self._inflight_future is not None and not self._inflight_future.done()
+
+    def _mark_pending_history_call(self, sym_conf):
+        for timeframe in sym_conf['timeframes']:
+            normalized = str(timeframe).upper()
+            if normalized in self.minimum_bars:
+                self._set_status(
+                    sym_conf['name'], normalized, 'error',
+                    detail='previous timed-out MT5 history call is still running',
+                )
+
+    def _fetch_pages(self, symbol, timeframe_attr, target_count,
+                     filepath=None, cached_source=None):
         """Fetch newest-to-oldest MT5 pages until enough rows or source exhaustion."""
         pages = []
         offset = 0
         source_exhausted = False
+        source_identity = None
         while offset < target_count:
             requested = min(self.fetch_page_size, target_count - offset)
             if self._inflight_future is not None:
@@ -136,15 +155,29 @@ class HistoryService:
                 except Exception:
                     pass
                 self._inflight_future = None
-            future = self._executor.submit(
-                self.mt5_client.call,
-                lambda m, pos=offset, count=requested: m.copy_rates_from_pos(
+            def read_page(mt5, pos=offset, count=requested,
+                          expected_identity=source_identity):
+                # Resolve only after call() has checked/reconciled the account
+                # and while it holds the same lock as the actual MT5 read.
+                broker_symbol = self.mt5_client.resolve(symbol)
+                identity = (broker_symbol, self._session_generation())
+                if expected_identity is not None and identity != expected_identity:
+                    raise AccountSessionTransition(
+                        'MT5 account session changed between history pages'
+                    )
+                if filepath is not None and cached_source != broker_symbol:
+                    # Revoke another instrument's cache before a network call
+                    # that might time out, using the current guarded mapping.
+                    self._invalidate_cache(filepath)
+                rates = mt5.copy_rates_from_pos(
                     broker_symbol, timeframe_attr, pos, count
-                ),
-            )
+                )
+                return rates, identity
+
+            future = self._executor.submit(self.mt5_client.call, read_page)
             self._inflight_future = future
             try:
-                rates = future.result(timeout=self.fetch_timeout_seconds)
+                rates, identity = future.result(timeout=self.fetch_timeout_seconds)
             except FutureTimeoutError as exc:
                 raise TimeoutError(
                     f'MT5 history page timed out after {self.fetch_timeout_seconds:g}s'
@@ -153,6 +186,7 @@ class HistoryService:
                 if future.done():
                     self._inflight_future = None
 
+            source_identity = identity
             page = pd.DataFrame(rates) if rates is not None else pd.DataFrame()
             if page.empty:
                 source_exhausted = True
@@ -161,8 +195,12 @@ class HistoryService:
             offset += len(page.index)
 
         if not pages:
-            return pd.DataFrame(), source_exhausted
-        return pd.concat(pages, ignore_index=True).iloc[:target_count], source_exhausted
+            return pd.DataFrame(), source_exhausted, source_identity
+        return (
+            pd.concat(pages, ignore_index=True).iloc[:target_count],
+            source_exhausted,
+            source_identity,
+        )
 
     @classmethod
     def _keep_closed_bars(cls, dataframe, timeframe, now=None):
@@ -263,6 +301,13 @@ class HistoryService:
 
     def fetch_incremental(self, now=None):
         self._publish_status('syncing')
+        if self._history_call_running():
+            # A timed-out call can still own MT5Client's lock. Do not block on
+            # even its mt5 property/ensure_connected while that call runs.
+            for sym_conf in self.symbols:
+                self._mark_pending_history_call(sym_conf)
+            self._publish_status('degraded')
+            return
         was_connected = self.mt5_client.mt5 is not None
         if not self.mt5_client.ensure_connected():
             print(f'[{datetime.now()}] MT5 connection failed')
@@ -285,6 +330,9 @@ class HistoryService:
 
         for sym_conf in self.symbols:
             symbol = sym_conf['name']
+            if self._history_call_running():
+                self._mark_pending_history_call(sym_conf)
+                continue
             if not self.mt5_client.is_resolved(symbol):
                 for timeframe in sym_conf['timeframes']:
                     normalized = str(timeframe).upper()
@@ -300,9 +348,15 @@ class HistoryService:
                             detail='broker symbol unresolved',
                         )
                 continue
-            broker_symbol = self.mt5_client.resolve(symbol)
             for tf_str in sym_conf['timeframes']:
                 tf_str = str(tf_str).upper()
+                if self._history_call_running():
+                    if tf_str in self.minimum_bars:
+                        self._set_status(
+                            symbol, tf_str, 'error',
+                            detail='previous timed-out MT5 history call is still running',
+                        )
+                    continue
                 tf = self._get_timeframe_attr(tf_str)
                 if tf is None:
                     print(f'[{datetime.now()}] Unknown timeframe: {tf_str}')
@@ -317,6 +371,7 @@ class HistoryService:
                 try:
                     filepath = os.path.join(self.data_path, f'{symbol}_{tf_str}.csv')
                     old_df = pd.read_csv(filepath) if os.path.exists(filepath) else None
+                    cached_source = None
                     if old_df is not None:
                         source_values = (
                             old_df['source_symbol']
@@ -324,19 +379,18 @@ class HistoryService:
                             else pd.Series(dtype=object)
                         )
                         source_symbols = set(source_values.dropna().astype(str))
-                        identity_matches = (
-                            not source_values.isna().any()
-                            and source_symbols == {broker_symbol}
-                        )
-                        if not identity_matches:
-                            # Revoke publication before any network operation;
-                            # a timeout/error must not leave another instrument
-                            # serviceable under the logical cache name.
-                            self._invalidate_cache(filepath)
-                            old_df = None
-                    rates, source_exhausted = self._fetch_pages(
-                        broker_symbol, tf, fetch_count
+                        if not source_values.isna().any() and len(source_symbols) == 1:
+                            cached_source = next(iter(source_symbols))
+                    rates, source_exhausted, source_identity = self._fetch_pages(
+                        symbol, tf, fetch_count, filepath, cached_source
                     )
+                    broker_symbol, generation = source_identity
+                    if self._session_generation() != generation:
+                        raise AccountSessionTransition(
+                            'MT5 account session changed before history publication'
+                        )
+                    if cached_source != broker_symbol:
+                        old_df = None
                     new_df = rates if not rates.empty else None
                     if new_df is not None:
                         new_df = new_df.copy()
@@ -349,6 +403,10 @@ class HistoryService:
                     status = 'ready' if len(final_df) >= minimum else 'insufficient'
                     if not final_df.empty:
                         self._atomic_write_csv(final_df, filepath)
+                        if self._session_generation() != generation:
+                            raise AccountSessionTransition(
+                                'MT5 account session changed before history publication'
+                            )
                         if status == 'ready':
                             self._publish_cache(filepath, broker_symbol)
                         else:
@@ -358,7 +416,10 @@ class HistoryService:
                     details = {
                         'bars': len(final_df),
                         'source_exhausted': source_exhausted,
+                        'source_symbol': broker_symbol,
                     }
+                    if generation is not None:
+                        details['session_generation'] = generation
                     if rates.empty:
                         details['detail'] = 'MT5 returned no history bars'
                     self._set_status(symbol, tf_str, status, **details)
@@ -367,6 +428,8 @@ class HistoryService:
                         f'for {symbol} {tf_str} ({status}, minimum={minimum})'
                     )
                 except Exception as e:
+                    if isinstance(e, AccountSessionTransition):
+                        self._invalidate_cache(filepath)
                     self._set_status(
                         symbol, tf_str, 'error', detail=str(e)
                     )

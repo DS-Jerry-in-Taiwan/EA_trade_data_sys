@@ -129,10 +129,10 @@ class SymbolResolver:
 
         candidates = {logical.casefold()}
         base = logical
-        if base.casefold().endswith("m"):
-            base = base[:-1]
-        elif base.casefold().endswith(".sim"):
+        if base.casefold().endswith(".sim"):
             base = base[:-4]
+        elif base.casefold().endswith("m"):
+            base = base[:-1]
         base = base.upper()
         if base in self.CRYPTO_BASES:
             base += "USD"

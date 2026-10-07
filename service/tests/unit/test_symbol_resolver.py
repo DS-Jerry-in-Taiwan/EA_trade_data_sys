@@ -89,6 +89,21 @@ def test_known_catalog_name_variants_preserve_public_symbol(broker):
     assert resolver.logical_for(broker) == 'XAUUSDm'
 
 
+@pytest.mark.parametrize(('logical', 'broker'), [
+    ('EURUSD.sim', 'EURUSDm'),
+    ('BTCUSD.sim', 'BTCUSDm'),
+    ('BTCUSD.sim', 'BTC_USD'),
+    ('eurusd.SIM', 'eurUSDM'),
+    ('btcusd.SiM', 'bTc_UsD'),
+])
+def test_sim_suffix_infers_known_catalog_variants(logical, broker):
+    resolver = _initialize([broker], configured=[logical])
+
+    assert resolver.resolve(logical) == broker
+    assert resolver.logical_for(broker) == logical
+    assert resolver.unresolved == []
+
+
 def test_arbitrary_prefixes_suffixes_and_quote_products_are_not_inferred():
     resolver = _initialize(['XAUUSDc', 'XAUUSDcash', 'BTCUSDT', 'micro.BTCUSD'],
                            configured=['XAUUSDm', 'BTC'])

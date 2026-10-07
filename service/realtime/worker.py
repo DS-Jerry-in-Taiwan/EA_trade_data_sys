@@ -60,8 +60,12 @@ class TickService:
         result = {}
         for symbol in self.symbols:
             try:
-                broker_symbol = self.mt5_client.resolve(symbol)
-                tick = self.mt5_client.call(lambda mt5: mt5.symbol_info_tick(broker_symbol))
+                # Resolve after the account guard runs and under the same
+                # client lock as the read, so a reconciled account cannot use
+                # the previous account's broker alias.
+                tick = self.mt5_client.call(
+                    lambda mt5: mt5.symbol_info_tick(self.mt5_client.resolve(symbol))
+                )
                 if tick:
                     source_timestamp = getattr(tick, 'time_msc', None)
                     if source_timestamp:
