@@ -86,26 +86,44 @@ managed`) and provide the private `MT5_ACCOUNTS_PATH`. Missing or malformed
 managed configuration fails closed. Credentials must remain outside Git,
 logs, API responses, and metrics.
 
-In terminal mode, startup creates a short-lived sanitized copy of the mounted
-`mt5cfg.ini` with `Login`, `Password`, and `Server` removed. The persistent
-`MT5_Data`/Wine directory remains the source of the GUI-selected session. The
+In terminal mode, normal startup omits `/config` and restores the native saved
+terminal settings. The persistent `MT5_Data`/Wine directory remains the source
+of the GUI-selected session. The private mounted `mt5cfg.ini` is used only for
+bootstrap or an explicit operator re-import. The optional config-sanitizing
+helper removes `Login`, `Password`, and `Server` from UTF-8 or Windows UTF-16
+files and fails without publishing a partial file for malformed encoding. The
 legacy `MT5_SYNC_CONFIG=1` path is rejected in terminal mode; it is available
 only for an explicit managed deployment. `/skipupdate`, exactly-one-terminal
 readiness, and the single bounded update cycle remain enforced for both modes.
 
 For a clean persistent data directory, terminal mode supports a one-time
 bootstrap import from the private mounted `mt5cfg.ini`. When
-`MT5_Data/.mt5-bootstrap-complete` is absent or invalid, startup may use the
+`MT5_Data/.mt5-bootstrap-complete` is absent or invalid and the portable tree
+has no existing `Config/accounts.dat` account store, startup may use the
 configured account in that file, waits for a successful read-only MT5
 Journal authorization marker appended after launch, and then atomically writes
 only the non-secret marker value `mt5-bootstrap-complete-v1`. Startup does not
 create a separate RPyC client for this probe. The next
-startup uses the sanitized config and therefore does not take over an account
-selected in the GUI; it still waits for the selected account session before
+startup restores the native saved session without passing a startup config;
+it still waits for the selected account session before
 publishing terminal readiness. Set `MT5_BOOTSTRAP_REIMPORT=1` only for an explicit
 operator-requested re-import; unset it afterward. A failed bootstrap never
 writes the marker and startup exits fail-closed. Credentials are never printed
 or copied into the marker.
+
+The `/portable` executable is selected only from the root of the persistent
+terminal tree (`MT5_PORTABLE_ROOT`, normally the Wine path mounted from
+`MT5_Data`). A missing root executable fails startup; installer, backup, or
+`liveupdate/terminal64.exe` payloads are never selected as a replacement.
+Journal authorization also requires exactly one normal terminal and no update
+process or unresolved update prompt. A mandatory updater observed during
+authorization shares the same single bounded update cycle used during
+startup. If LiveUpdate restarts exactly one normal terminal, startup preserves
+that process and verifies its native `Terminal ... build ... started` and fresh
+authorization records. It never launches a second terminal over the native
+replacement. If the updater exits without a replacement, the single controlled
+restart restores saved settings without repeating the bootstrap import.
+An authorization timeout does not trigger a credential re-import.
 
 After the service observes `account_info()`, the client publishes an
 `account_session` health fact containing only a hashed login, server, account

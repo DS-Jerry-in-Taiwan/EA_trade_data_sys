@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 PROC_ROOT="${PROC_ROOT:-/proc}"
+MT5_STARTUP_PATTERN='(^|[[:space:]])Startup[[:space:]]+successfully[[:space:]]+initialized[[:space:]]+from[[:space:]]+start[[:space:]]+config([[:space:]]|$)|(^|[[:space:]])Terminal[[:space:]]+.*build[[:space:]]+[0-9]+[[:space:]]+started([[:space:]]|$)'
 
 read_process_exe() { IFS= read -r -d '' REPLY < "$1"; }
 read_process_cmdline() { tr '\0' ' ' < "$1"; }
+
+find_mt5_exe() {
+    local portable_root="${1:-${MT5_PORTABLE_ROOT:-/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5}}"
+    # /portable reads its saved account beside the executable. Searching all
+    # of drive_c can choose a different installation or liveupdate payload.
+    # Only the root executable in the persistent portable tree is eligible.
+    [ -f "$portable_root/terminal64.exe" ] && [ -r "$portable_root/terminal64.exe" ] || return 1
+    printf '%s\n' "$portable_root/terminal64.exe"
+}
 
 terminal_processes() {
     local proc cmdline exe pid
@@ -70,6 +80,46 @@ rpyc_is_listening() {
     else return 1; fi
 }
 
+await_terminal_ready() {
+    local snapshot="$1" deadline log normal_count update_count
+    deadline=$((SECONDS + MT5_READY_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        normal_count="$(normal_terminal_pids | count_lines)"
+        update_count="$(update_terminal_pids | count_lines)"
+        [ "$update_count" -le 1 ] || return 12
+        [ "$normal_count" -le 1 ] || return 13
+        [ "$update_count" -eq 0 ] || return 10
+        [ "$normal_count" -eq 1 ] || { sleep 1; continue; }
+        while IFS= read -r -d '' log; do
+            log_has_new_startup_marker "$snapshot" "$log" && return 0
+        done < <(find "$MT5_LOG_ROOT" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
+        sleep 1
+    done
+    return 1
+}
+
+await_single_update() {
+    # Readiness observed one updater, possibly overlapping its replacement
+    # normal terminal. Its exit between probes still completes the cycle.
+    local deadline normal_count update_count
+    deadline=$((SECONDS + MT5_UPDATE_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        normal_count="$(normal_terminal_pids | count_lines)"
+        update_count="$(update_terminal_pids | count_lines)"
+        [ "$update_count" -le 1 ] || return 12
+        [ "$normal_count" -le 1 ] || return 13
+        if [ "$update_count" -eq 0 ]; then
+            # Native LiveUpdate can restart the normal terminal itself. Its
+            # new Startup+authorization still need verification, but launching
+            # a second terminal here would create a duplicate.
+            [ "$normal_count" -eq 0 ] && return 0
+            return 20
+        fi
+        sleep 1
+    done
+    return 15
+}
+
 snapshot_terminal_logs() {
     local log_root="$1" snapshot="$2" log size
     : > "$snapshot"
@@ -88,17 +138,9 @@ log_baseline_size() {
 }
 
 log_has_new_startup_marker() {
-    local snapshot="$1" log="$2" baseline current
-    baseline="$(log_baseline_size "$snapshot" "$log")"
-    current="$(stat -c %s "$log" 2>/dev/null || printf 0)"
-    [ "$current" -ge "$baseline" ] || baseline=0
-    baseline=$((baseline - (baseline % 2)))
-    # Only inspect bytes appended after launch and never echo account logs.
-    if command -v iconv >/dev/null 2>&1; then
-        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | iconv -f UTF-16LE -t UTF-8 2>/dev/null | grep -Eiq '(^|[[:space:]])Startup[[:space:]]+successfully[[:space:]]+initialized[[:space:]]+from[[:space:]]+start[[:space:]]+config([[:space:]]|$)'
-    else
-        tail -c "+$((baseline + 1))" "$log" 2>/dev/null | tr -d '\000' | grep -Eiq '(^|[[:space:]])Startup[[:space:]]+successfully[[:space:]]+initialized[[:space:]]+from[[:space:]]+start[[:space:]]+config([[:space:]]|$)'
-    fi
+    # Consume the entire decoded tail. grep -q can close its input early,
+    # making iconv fail with SIGPIPE under the startup script's pipefail.
+    log_tail_utf8 "$1" "$2" | grep -Ei "$MT5_STARTUP_PATTERN" >/dev/null
 }
 
 log_tail_utf8() {
@@ -126,7 +168,7 @@ terminal_update_pending() {
         text="$(log_tail_utf8 "$snapshot" "$log")"
         update_line="$(printf '%s\n' "$text" | grep -Ein 'live[[:space:]]*update|update[[:space:]]+(required|failed|in[[:space:]]+progress)|updat(e|ing)[[:space:]].*terminal' | tail -1 | cut -d: -f1 || true)"
         [ -n "$update_line" ] || continue
-        startup_line="$(printf '%s\n' "$text" | grep -Ein '(^|[[:space:]])Startup[[:space:]]+successfully[[:space:]]+initialized[[:space:]]+from[[:space:]]+start[[:space:]]+config([[:space:]]|$)' | tail -1 | cut -d: -f1 || true)"
+        startup_line="$(printf '%s\n' "$text" | grep -Ein "$MT5_STARTUP_PATTERN" | tail -1 | cut -d: -f1 || true)"
         [ -n "$startup_line" ] && [ "$startup_line" -gt "$update_line" ] && continue
         return 0
     done < <(find "${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
@@ -138,16 +180,28 @@ log_has_new_authorized_marker() {
     text="$(log_tail_utf8 "$snapshot" "$log")"
     success_line="$(printf '%s\n' "$text" | grep -Ein '(^|[[:space:]])authorized[[:space:]]+on([[:space:]]|$)|authorization[[:space:]]+(succeeded|successful)' | tail -1 | cut -d: -f1 || true)"
     [ -n "$success_line" ] || return 1
-    failure_line="$(printf '%s\n' "$text" | grep -Ein 'authorization[[:space:]]+(failed|denied|invalid)|invalid[[:space:]]+account|not[[:space:]]+authorized' | tail -1 | cut -d: -f1 || true)"
+    failure_line="$(printf '%s\n' "$text" | grep -Ein "authorization[[:space:]]+.*(failed|denied|invalid)|invalid[[:space:]]+account|not[[:space:]]+authorized|disconnected[[:space:]]+from|connection[[:space:]]+(lost|closed)|live[[:space:]]*update|$MT5_STARTUP_PATTERN" | tail -1 | cut -d: -f1 || true)"
     [ -z "$failure_line" ] || [ "$success_line" -gt "$failure_line" ]
 }
 
 await_terminal_authorized() {
-    local snapshot="$1" deadline log
+    local snapshot="$1" deadline log normal_count update_count
     deadline=$((SECONDS + MT5_READY_TIMEOUT))
     while [ "$SECONDS" -lt "$deadline" ]; do
+        normal_count="$(normal_terminal_pids | count_lines)"
+        update_count="$(update_terminal_pids | count_lines)"
+        [ "$update_count" -le 1 ] || return 12
+        [ "$normal_count" -le 1 ] || return 13
+        [ "$update_count" -eq 0 ] || return 10
+        [ "$normal_count" -eq 1 ] || return 11
+        # A Journal-only update prompt can leave a normal terminal process
+        # alive. Do not erase that pending state with a fresh health snapshot.
+        if terminal_update_pending "$snapshot"; then sleep 1; continue; fi
         while IFS= read -r -d '' log; do
-            log_has_new_authorized_marker "$snapshot" "$log" && return 0
+            if log_has_new_authorized_marker "$snapshot" "$log"; then
+                exactly_one_normal_terminal && return 0
+                return 11
+            fi
         done < <(find "${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}" -maxdepth 1 -type f -name '*.log' -print0 2>/dev/null)
         sleep 1
     done
@@ -155,18 +209,31 @@ await_terminal_authorized() {
 }
 
 start_terminal_with_one_update_cycle() {
-    local snapshot="$1" status
-    launch_terminal
-    if await_terminal_ready "$snapshot"; then return 0; else status=$?; fi
-    [ "$status" -eq 10 ] || return "$status"
+    local snapshot="$1" status update_cycles=0 launch_required=1
+    while :; do
+        if [ "$launch_required" -eq 1 ]; then launch_terminal || return 11; fi
+        if await_terminal_ready "$snapshot"; then
+            # An updater may start after the initial Startup line. Keep the
+            # same bounded recovery budget through Journal authorization.
+            if await_terminal_authorized "$snapshot"; then return 0; else status=$?; fi
+        else
+            status=$?
+        fi
+        [ "$status" -eq 10 ] || return "$status"
+        [ "$update_cycles" -eq 0 ] || return 14
+        update_cycles=$((update_cycles + 1))
 
-    # Mandatory MetaTrader updates are permitted once per container start.
-    # RPyC has not started yet, so health remains strictly unavailable.
-    await_single_update || return $?
-    snapshot_terminal_logs "$MT5_LOG_ROOT" "$snapshot"
-    launch_terminal
-    if await_terminal_ready "$snapshot"; then return 0; else status=$?; fi
-    # A second update request is a loop, not another maintenance cycle.
-    [ "$status" -ne 10 ] || return 14
-    return "$status"
+        # RPyC has not started yet, so health remains unavailable.
+        if await_single_update; then
+            snapshot_terminal_logs "$MT5_LOG_ROOT" "$snapshot"
+            launch_required=1
+        else
+            status=$?
+            [ "$status" -eq 20 ] || return "$status"
+            # Preserve the original baseline: the native restart may already
+            # have written its Startup/auth lines before this poll sees it.
+            # Latest Startup/LiveUpdate ordering rejects pre-update auth.
+            launch_required=0
+        fi
+    done
 }
