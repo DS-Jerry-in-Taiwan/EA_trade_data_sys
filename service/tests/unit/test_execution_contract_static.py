@@ -44,6 +44,21 @@ def test_execution_openapi_covers_client_lifecycle_and_health_contract():
     assert {"IdempotencyKey", "RequestId"} <= parameter_names
     health_required = set(spec["components"]["schemas"]["ExecutionHealth"]["required"])
     assert {"ready", "account_session", "mutation_enabled", "account_policy", "mutation_ready"} <= health_required
+    schemas = spec["components"]["schemas"]
+    for name in ("SuccessEnvelope", "ErrorEnvelope"):
+        assert schemas[name]["properties"]["schema_version"] == {"type": "integer", "enum": [1]}
+    health_unavailable = paths["/health"]["get"]["responses"]["503"]["content"]["application/json"]["schema"]
+    assert {item["$ref"].split("/")[-1] for item in health_unavailable["oneOf"]} == {
+        "ExecutionHealthEnvelope", "ErrorEnvelope",
+    }
+    expected_schemas = {
+        "/account": "AccountEnvelope", "/orders": "OrdersEnvelope", "/orders/{id}": "OrderEnvelope",
+        "/orders/by-client/{client_order_id}": "OrderEnvelope", "/positions": "PositionsEnvelope",
+        "/deals": "DealsEnvelope",
+    }
+    for path, envelope in expected_schemas.items():
+        response = paths[path]["get"]["responses"]["200"]
+        assert response["content"]["application/json"]["schema"]["$ref"].endswith("/" + envelope)
 
 
 def test_compose_keeps_execution_mutation_closed_and_state_durable():
@@ -70,7 +85,8 @@ def test_compose_persists_terminal_bootstrap_state_without_exposing_credentials(
     assert any(":/mt5docker/MT5_Data" in mount for mount in service["volumes"])
     startup = START_SERVER.read_text(encoding="utf-8")
     assert ".mt5-bootstrap-complete" in startup
-    assert "await_terminal_authorized" in startup
+    lifecycle = TERMINAL_LIFECYCLE.read_text(encoding="utf-8")
+    assert "await_terminal_authorized" in lifecycle
     assert "Password" not in startup
 
 
