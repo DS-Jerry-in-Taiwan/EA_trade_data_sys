@@ -14,6 +14,7 @@ READY_INDEX=0
 AUTH_INDEX=0
 UPDATE_STATUS=0
 MT5_LOG_ROOT=/fixture/logs
+MT5_READY_TIMEOUT=3
 launch_terminal() { LAUNCHES=$((LAUNCHES + 1)); }
 snapshot_terminal_logs() { SNAPSHOTS=$((SNAPSHOTS + 1)); }
 await_terminal_ready() {
@@ -35,7 +36,7 @@ assert_success start_terminal_with_one_update_cycle /fixture/snapshot
 
 reset_case; READY_CODES=(10 0)
 assert_success start_terminal_with_one_update_cycle /fixture/snapshot
-[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 1 ] || fail 'controlled update did not relaunch with fresh snapshot'
+[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 2 ] || fail 'controlled update did not relaunch with fresh snapshot'
 
 reset_case; READY_CODES=(12)
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
@@ -47,16 +48,16 @@ assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
 
 reset_case; READY_CODES=(10 10)
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
-[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 1 ] || fail 'repeated update path was not bounded to one cycle'
+[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 2 ] || fail 'repeated update path was not bounded to one cycle'
 
 # A late mandatory update after Startup shares the same one-cycle budget.
 reset_case; READY_CODES=(0 0); AUTH_CODES=(10 0)
 assert_success start_terminal_with_one_update_cycle /fixture/snapshot
-[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 1 ] && [ "$AUTH_INDEX" -eq 2 ] || fail 'late update did not recover through authorization'
+[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 2 ] && [ "$AUTH_INDEX" -eq 2 ] || fail 'late update did not recover through authorization'
 
 reset_case; READY_CODES=(10 0); AUTH_CODES=(10)
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
-[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 1 ] || fail 'late update exceeded the shared recovery budget'
+[ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 2 ] || fail 'late update exceeded the shared recovery budget'
 
 reset_case; READY_CODES=(0); AUTH_CODES=(21)
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
@@ -70,11 +71,11 @@ assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
 # Preserve its existing Journal baseline and do not launch a duplicate.
 reset_case; READY_CODES=(10 0); UPDATE_STATUS=20
 assert_success start_terminal_with_one_update_cycle /fixture/snapshot
-[ "$LAUNCHES" -eq 1 ] && [ "$SNAPSHOTS" -eq 0 ] || fail 'native auto-restart launched a second terminal or lost its Journal markers'
+[ "$LAUNCHES" -eq 1 ] && [ "$SNAPSHOTS" -eq 1 ] || fail 'native auto-restart launched a second terminal or lost its Journal checkpoint'
 
 reset_case; READY_CODES=(0 0); AUTH_CODES=(10 0); UPDATE_STATUS=20
 assert_success start_terminal_with_one_update_cycle /fixture/snapshot
-[ "$LAUNCHES" -eq 1 ] && [ "$SNAPSHOTS" -eq 0 ] && [ "$AUTH_INDEX" -eq 2 ] || fail 'late native auto-restart bypassed authorization or launched a duplicate'
+[ "$LAUNCHES" -eq 1 ] && [ "$SNAPSHOTS" -eq 1 ] && [ "$AUTH_INDEX" -eq 2 ] || fail 'late native auto-restart bypassed authorization or launched a duplicate'
 
 reset_case; READY_CODES=(10 10); UPDATE_STATUS=20
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
@@ -113,7 +114,12 @@ run_native_case() (
                 return 0
                 ;;
         esac
-        write_journal 'Terminal MetaTrader 5 x64 build 5320 started' 'account authorized on synthetic-old-session' 'LiveUpdate start synthetic/liveupdate/terminal64.exe /update /config:synthetic.ini'
+        write_journal 'Terminal MetaTrader 5 x64 build 5320 started' 'account authorized on synthetic-old-session'
+        if [ "$NATIVE_CASE" != stale-no-update-log ]; then write_journal 'LiveUpdate start synthetic/liveupdate/terminal64.exe /update /config:synthetic.ini'; fi
+        if [ "$NATIVE_CASE" = ambiguous-pre-observation ]; then
+            NATIVE_PHASE=2
+            write_journal 'Terminal MetaTrader5 build 5321 started' 'account authorized on synthetic-unattributed-session'
+        fi
     }
     normal_terminal_pids() {
         if [ "$NATIVE_PHASE" -ge 2 ]; then printf '701\n'; fi
@@ -131,7 +137,7 @@ run_native_case() (
         SECONDS=$((SECONDS + 1))
         [ "$NATIVE_CASE" != timeout ] || return 0
         NATIVE_PHASE=$((NATIVE_PHASE + 1))
-        if [ "$NATIVE_PHASE" -eq 2 ]; then
+        if [ "$NATIVE_PHASE" -eq 2 ] && [ "$NATIVE_CASE" != stale-no-update-log ]; then
             write_journal 'Terminal MetaTrader5 build 5321 started for synthetic-broker'
             if [ "$NATIVE_CASE" = authorized ]; then write_journal 'account authorized on synthetic-GUI-session'; fi
         fi
@@ -141,6 +147,7 @@ run_native_case() (
         authorized|saved-authorized) [ "$status" -eq 0 ] || fail 'native saved session did not authorize' ;;
         no-new-auth|saved-no-auth) [ "$status" -eq 21 ] || fail 'native saved session reused stale authorization' ;;
         timeout) [ "$status" -eq 15 ] || fail 'native updater did not time out' ;;
+        stale-no-update-log|ambiguous-pre-observation) [ "$status" -eq 1 ] || fail 'native replacement reused old or unattributable Startup/auth' ;;
     esac
     [ "$NATIVE_LAUNCHES" -eq 1 ] || fail 'native updater completion launched a duplicate/fixed-account terminal'
 )
@@ -149,5 +156,7 @@ run_native_case no-new-auth
 run_native_case timeout
 run_native_case saved-authorized
 run_native_case saved-no-auth
+run_native_case stale-no-update-log
+run_native_case ambiguous-pre-observation
 
 echo 'terminal update state-machine tests passed'

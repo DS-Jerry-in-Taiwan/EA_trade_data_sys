@@ -122,6 +122,9 @@ assert_success log_has_new_startup_marker "$SNAPSHOT" "$NEW_LOG"
 # confirmed normal startup marker is observed.  The failure must not become
 # permanent once the normal marker arrives.
 READY_SNAPSHOT="$TMP/ready.snapshot"
+LOG_ROOT="$TMP/update-logs"; mkdir -p "$LOG_ROOT"
+LOG="$LOG_ROOT/terminal.log"
+printf 'Terminal MetaTrader 5 build 5320 started\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG"
 MT5_LOG_ROOT="$LOG_ROOT"
 snapshot_terminal_logs "$LOG_ROOT" "$READY_SNAPSHOT"
 printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
@@ -174,7 +177,7 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     MT5_LOG_ROOT="$POLL_LOG_ROOT"
     POLL_SNAPSHOT="$TMP/poll.snapshot"
     snapshot_terminal_logs "$POLL_LOG_ROOT" "$POLL_SNAPSHOT"
-    printf 'account authorized on synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$POLL_LOG_ROOT/journal.log"
+    printf 'Terminal MetaTrader 5 build 5320 started\r\naccount authorized on synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$POLL_LOG_ROOT/journal.log"
     normal_terminal_pids() {
         case "$POLL_CASE" in
             normal|normal-and-update) printf '401\n' ;;
@@ -276,6 +279,39 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
         assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
         [ "$POLL" -eq 0 ] || fail 'maintenance entered while an updater was active'
     )
+)
+
+# Daily rollover must compare all appended Journal events in date/line order.
+# Yesterday's authorization cannot authorize today's newly started terminal,
+# and today's disconnect/failure invalidates success from an earlier file.
+(
+    DAILY_ROOT="$TMP/daily-logs"; mkdir -p "$DAILY_ROOT"
+    MT5_LOG_ROOT="$DAILY_ROOT"
+    DAILY_SNAPSHOT="$TMP/daily.snapshot"
+    snapshot_terminal_logs "$DAILY_ROOT" "$DAILY_SNAPSHOT"
+    printf 'Terminal MetaTrader5 build 5320 started\r\naccount authorized on synthetic-old-session\r\nLiveUpdate start synthetic/liveupdate/terminal64.exe /update\r\n' |
+        iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/20261006.log"
+    printf 'Terminal MetaTrader5 build 5321 started\r\n' | iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/20261007.log"
+    assert_success terminal_journal_started "$DAILY_SNAPSHOT"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    update_terminal_pids() { return 0; }
+    assert_failure terminal_update_pending "$DAILY_SNAPSHOT"
+    assert_failure terminal_update_launch_pending "$DAILY_SNAPSHOT"
+    printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261007.log"
+    assert_success terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'authorization on synthetic-broker failed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261007.log"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261007.log"
+    assert_success terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'disconnected from synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/20261008.log"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'Terminal MetaTrader5 build 5322 started\r\naccount authorized on synthetic-GUI-session\r\n' |
+        iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261008.log"
+    assert_success terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'Terminal MetaTrader5 build 5323 started\r\naccount authorized on ambiguous-other-stream\r\n' |
+        iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/unknown-stream.log"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    assert_success terminal_update_pending "$DAILY_SNAPSHOT"
 )
 
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'

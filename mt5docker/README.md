@@ -119,9 +119,15 @@ terminal tree (`MT5_PORTABLE_ROOT`, normally the Wine path mounted from
 Journal authorization also requires exactly one normal terminal and no update
 process or unresolved update prompt. A mandatory updater observed during
 authorization shares the same single bounded update cycle used during
-startup. If LiveUpdate restarts exactly one normal terminal, startup preserves
-that process and verifies its native `Terminal ... build ... started` and fresh
-authorization records. It never launches a second terminal over the native
+startup. When an updater is observed, startup records a new Journal byte
+checkpoint after the old normal process is absent, before waiting for its replacement. If LiveUpdate restarts exactly
+one normal terminal, startup preserves that process and requires its native
+`Terminal ... build ... started` plus later authorization records appended
+after that checkpoint. If no checkpoint without a normal process was observed,
+the replacement's events cannot be attributed safely and readiness stays closed.
+Events written after the checkpoint but before updater
+exit remain valid; events already present before observation are not reused.
+It never launches a second terminal over the native
 replacement. If the updater exits without a replacement, the single controlled
 restart restores saved settings without repeating the bootstrap import.
 An authorization timeout does not trigger a credential re-import.
@@ -133,6 +139,10 @@ only Journal files modified since the startup snapshot are decoded during
 polling. A `LiveUpdate start ... terminal64.exe ... /update` event enters the
 bounded update phase even if the updater is not yet visible in `/proc`; a
 process visibility gap alone does not trigger another terminal launch.
+Fresh Journal events are ordered across `YYYYMMDD.log` files before checking
+startup, authorization, disconnect, and update state. A new day's startup or
+failure invalidates an earlier day's authorization. Multiple streams without
+unambiguous daily filenames keep readiness closed.
 
 If initial startup succeeds but Journal authorization times out, startup
 keeps exactly one normal terminal and its GUI alive for a bounded manual-login
