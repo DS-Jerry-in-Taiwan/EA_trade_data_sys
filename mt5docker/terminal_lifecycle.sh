@@ -256,25 +256,30 @@ log_has_new_authorized_marker() {
 }
 
 await_terminal_authorized() {
-    local snapshot="$1" deadline log journal_update
-    deadline=$((SECONDS + MT5_READY_TIMEOUT))
+    local snapshot="$1" timeout="${2:-$MT5_READY_TIMEOUT}" stage="${3:-authorization}" expected_normal_pids="${4:-}" deadline log journal_update
+    deadline=$((SECONDS + timeout))
     while [ "$SECONDS" -lt "$deadline" ]; do
         capture_terminal_process_state
         journal_update=0
         terminal_update_launch_pending "$snapshot" && journal_update=1
-        log_terminal_lifecycle_state authorization "$journal_update"
+        log_terminal_lifecycle_state "$stage" "$journal_update"
         [ "$UPDATE_COUNT" -le 1 ] || return 12
         [ "$NORMAL_COUNT" -le 1 ] || return 13
         MT5_UPDATE_OBSERVED=0
         [ "$UPDATE_COUNT" -eq 0 ] || { MT5_UPDATE_OBSERVED=1; return 10; }
         [ "$journal_update" -eq 0 ] || return 10
         [ "$NORMAL_COUNT" -eq 1 ] || return 11
+        [ -z "$expected_normal_pids" ] || [ "$NORMAL_PIDS" = "$expected_normal_pids" ] || return 11
         # A Journal-only update prompt can leave a normal terminal process
         # alive. Do not erase that pending state with a fresh health snapshot.
-        if terminal_update_pending "$snapshot"; then sleep 1; continue; fi
+        if terminal_update_pending "$snapshot"; then
+            [ "$stage" != authorization-maintenance ] || return 10
+            sleep 1; continue
+        fi
         while IFS= read -r -d '' log; do
             if log_has_new_authorized_marker "$snapshot" "$log"; then
                 if exactly_one_normal_terminal; then
+                    [ -z "$expected_normal_pids" ] || [ "$NORMAL_PIDS" = "$expected_normal_pids" ] || return 11
                     log_terminal_lifecycle_state authorized
                     return 0
                 fi
@@ -284,7 +289,26 @@ await_terminal_authorized() {
         done < <(changed_terminal_logs "$snapshot")
         sleep 1
     done
-    return 1
+    return 21
+}
+
+hold_for_terminal_authorization() {
+    local snapshot="$1" status
+    # Only an authorization timeout may enter this bounded operator window.
+    # Keep the original process and baseline, with no RPyC/readiness marker.
+    capture_terminal_process_state
+    [ "$UPDATE_COUNT" -le 1 ] || return 12
+    [ "$NORMAL_COUNT" -le 1 ] || return 13
+    [ "$UPDATE_COUNT" -eq 0 ] || return 10
+    [ "$NORMAL_COUNT" -eq 1 ] || return 11
+    terminal_update_pending "$snapshot" && return 10
+    if await_terminal_authorized "$snapshot" "$MT5_AUTH_MAINTENANCE_TIMEOUT" authorization-maintenance "$NORMAL_PIDS"; then
+        return 0
+    else
+        status=$?
+        [ "$status" -ne 21 ] || return 22
+        return "$status"
+    fi
 }
 
 start_terminal_with_one_update_cycle() {

@@ -8,12 +8,13 @@ MT5_CONNECTION_MODE="${MT5_CONNECTION_MODE:-terminal}"
 MT5_CONFIG_LINUX="${MT5_CONFIG_LINUX:-/mt5docker/mt5cfg.ini}"
 MT5_READY_TIMEOUT="${MT5_READY_TIMEOUT:-120}"
 MT5_UPDATE_TIMEOUT="${MT5_UPDATE_TIMEOUT:-180}"
+MT5_AUTH_MAINTENANCE_TIMEOUT="${MT5_AUTH_MAINTENANCE_TIMEOUT:-900}"
 MT5_PORTABLE_ROOT="${MT5_PORTABLE_ROOT:-/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5}"
 MT5_LOG_ROOT="${MT5_LOG_ROOT:-/mt5docker/MT5_Data/logs}"
 MT5_READY_SNAPSHOT="${MT5_READY_SNAPSHOT:-/run/mt5-server/terminal-ready.snapshot}"
 MT5_BOOTSTRAP_MARKER="${MT5_BOOTSTRAP_MARKER:-/mt5docker/MT5_Data/.mt5-bootstrap-complete}"
 MT5_BOOTSTRAP_REIMPORT="${MT5_BOOTSTRAP_REIMPORT:-0}"
-for timeout in "$MT5_READY_TIMEOUT" "$MT5_UPDATE_TIMEOUT"; do
+for timeout in "$MT5_READY_TIMEOUT" "$MT5_UPDATE_TIMEOUT" "$MT5_AUTH_MAINTENANCE_TIMEOUT"; do
     case "$timeout" in
         ''|*[!0-9]*|0|0*)
             echo '>>> MT5 lifecycle timeouts must be positive integer seconds.' >&2
@@ -117,14 +118,22 @@ if start_terminal_with_one_update_cycle "$launch_snapshot"; then
     :
 else
     lifecycle_status=$?
-    case "$lifecycle_status" in
-        1) echo '>>> MT5 startup or Journal authorization timed out; readiness remains closed.' >&2 ;;
-        11) echo '>>> MT5 terminal disappeared before authorization; readiness remains closed.' >&2 ;;
-        12|13) echo '>>> MT5 lifecycle found conflicting terminal/update processes; readiness remains closed.' >&2 ;;
-        14|15) echo '>>> MT5 mandatory update exceeded its one bounded maintenance cycle; readiness remains closed.' >&2 ;;
-        *) echo '>>> MT5 readiness/update lifecycle failed; readiness remains closed.' >&2 ;;
-    esac
-    exit 1
+    if [ "$lifecycle_status" -eq 21 ]; then
+        echo ">>> MT5 Journal authorization timed out; keeping the GUI available for ${MT5_AUTH_MAINTENANCE_TIMEOUT}s of manual login. Readiness remains closed."
+        if hold_for_terminal_authorization "$launch_snapshot"; then lifecycle_status=0; else lifecycle_status=$?; fi
+    fi
+    if [ "$lifecycle_status" -ne 0 ]; then
+        case "$lifecycle_status" in
+            1) echo '>>> MT5 startup timed out; readiness remains closed.' >&2 ;;
+            10) echo '>>> MT5 entered an update during authorization maintenance; readiness remains closed.' >&2 ;;
+            11) echo '>>> MT5 terminal disappeared before authorization; readiness remains closed.' >&2 ;;
+            12|13) echo '>>> MT5 lifecycle found conflicting terminal/update processes; readiness remains closed.' >&2 ;;
+            14|15) echo '>>> MT5 mandatory update exceeded its one bounded maintenance cycle; readiness remains closed.' >&2 ;;
+            22) echo '>>> MT5 manual authorization maintenance window expired; readiness remains closed.' >&2 ;;
+            *) echo '>>> MT5 readiness/update lifecycle failed; readiness remains closed.' >&2 ;;
+        esac
+        exit 1
+    fi
 fi
 
 rm -f "$launch_snapshot"

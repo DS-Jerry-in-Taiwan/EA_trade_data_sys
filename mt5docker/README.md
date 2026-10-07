@@ -1,11 +1,12 @@
 # MT5 Docker runtime
 
-This directory defines the two-container runtime for the trade-data application:
+This directory defines the three-container runtime for the trade-data application:
 
 - `mt5-server` runs the Wine MT5 terminal, VNC and the `pymt5linux` RPyC bridge.
 - `trade-data-service` runs one application image/container with three supervised OS processes: `service.entrypoints.tick_worker`, `service.entrypoints.history_worker` and `service.entrypoints.api_gateway`.
+- `execution-service` runs the separately gated execution API on port `8091`.
 
-Port `8090` on API Gateway is the only external trade-data API. RPyC port `8001` is reachable only through the Compose network and must not be published on the host. VNC is an operational interface, not a trade-data API.
+Port `8090` on API Gateway serves external trade-data reads; port `8091` serves the execution contract, with mutations gated separately. RPyC port `8001` is reachable only through the Compose network and must not be published on the host. VNC is an operational interface, not a trade-data API.
 
 ## Startup
 
@@ -16,9 +17,9 @@ docker compose up -d
 
 The lifecycle is ordered as follows:
 
-1. `mt5-server` starts Wine with the Windows-readable terminal config path, skips LiveUpdate and waits until exactly one terminal is ready.
-2. The RPyC bridge starts only after terminal readiness. Its healthcheck fails if the terminal exits or enters LiveUpdate.
-3. Compose starts `trade-data-service` after `mt5-server` is healthy.
+1. `mt5-server` starts the persisted portable terminal with `/skipupdate`; normal startup restores its saved GUI session, while bootstrap/explicit re-import or managed mode uses a Windows-readable config path. A mandatory updater can still launch, and readiness remains closed during its bounded maintenance cycle.
+2. The RPyC bridge starts only after exactly one normal terminal confirms fresh Journal authorization. Its healthcheck fails if the terminal exits or enters LiveUpdate.
+3. Compose starts `trade-data-service` and `execution-service` after `mt5-server` is healthy.
 4. `start_runner.sh` installs `/app/mt5docker/requirements.txt` from the bind-mounted checkout, then `exec`s `service.runtime.supervisor`. These packages are installed at service startup; they are not baked into the image.
 5. The supervisor starts Tick Service, History Worker and API Gateway. If any child exits unexpectedly, it terminates the others and exits non-zero so the container restart policy can act.
 6. `trade-data-service` becomes healthy only when Gateway reports HTTP 200 and `ready: true`.
@@ -33,7 +34,7 @@ inside Wine, so `Dockerfile` installs the pinned packages in
 changing those versions:
 
 ```bash
-docker compose build mt5-server trade-data-service
+docker compose build mt5-server trade-data-service execution-service
 ```
 
 ## Application process boundaries
@@ -124,6 +125,23 @@ authorization records. It never launches a second terminal over the native
 replacement. If the updater exits without a replacement, the single controlled
 restart restores saved settings without repeating the bootstrap import.
 An authorization timeout does not trigger a credential re-import.
+
+Lifecycle diagnostics report only the startup/update/authorization stage,
+elapsed seconds, numeric normal/updater PIDs, and whether a fresh Journal
+updater launch was seen. Process categories come from one `/proc` scan, and
+only Journal files modified since the startup snapshot are decoded during
+polling. A `LiveUpdate start ... terminal64.exe ... /update` event enters the
+bounded update phase even if the updater is not yet visible in `/proc`; a
+process visibility gap alone does not trigger another terminal launch.
+
+If initial startup succeeds but Journal authorization times out, startup
+keeps exactly one normal terminal and its GUI alive for a bounded manual-login
+window (`MT5_AUTH_MAINTENANCE_TIMEOUT`, default 900 seconds). Health remains
+unavailable and RPyC is not started. A fresh successful Journal authorization
+from the original startup snapshot allows normal readiness to proceed. This
+window never relaunches the terminal or re-imports a configured account. A new
+updater/update prompt, conflicting process, terminal exit, or window expiration
+fails startup closed. Startup/update timeouts do not enter this operator window.
 
 After the service observes `account_info()`, the client publishes an
 `account_session` health fact containing only a hashed login, server, account

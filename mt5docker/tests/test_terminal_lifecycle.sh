@@ -178,6 +178,7 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     normal_terminal_pids() {
         case "$POLL_CASE" in
             normal|normal-and-update) printf '401\n' ;;
+            replacement) printf '403\n' ;;
             duplicate) printf '401\n402\n' ;;
         esac
     }
@@ -218,7 +219,7 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     [ "$POLL" -eq 3 ] || fail 'native update/restart overlap was not bounded'
     POLL_CASE=normal; POLL=0
     printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
-    assert_status 1 await_terminal_authorized "$POLL_SNAPSHOT"
+    assert_status 21 await_terminal_authorized "$POLL_SNAPSHOT"
     [ "$POLL" -eq 3 ] || fail 'Journal-only update prompt bypassed authorization'
     printf 'LiveUpdate start synthetic/liveupdate/terminal64.exe /update\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
     assert_status 10 await_terminal_ready "$POLL_SNAPSHOT"
@@ -229,6 +230,52 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     POLL_CASE=normal
     printf 'Terminal MetaTrader 5 build 5321 started\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
     assert_status 20 await_single_update "$POLL_SNAPSHOT"
+
+    # Authorization maintenance preserves the live GUI-selected terminal and
+    # original launch baseline. A new success opens readiness, while update,
+    # conflicts, process exit, and expiration stop the holding phase.
+    (
+        MT5_AUTH_MAINTENANCE_TIMEOUT=4
+        MAINTENANCE_SNAPSHOT="$TMP/maintenance.snapshot"
+        launch_terminal() { fail 'authorization maintenance relaunched a terminal'; }
+        stop_exact_pids() { fail 'authorization maintenance stopped the live GUI'; }
+        reset_maintenance() {
+            printf 'account authorized on stale-prior-launch\r\n' | iconv -f UTF-8 -t UTF-16LE > "$POLL_LOG_ROOT/journal.log"
+            snapshot_terminal_logs "$POLL_LOG_ROOT" "$MAINTENANCE_SNAPSHOT"
+            printf 'Terminal MetaTrader 5 build 5321 started\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
+            POLL_CASE=normal; POLL=0; MAINTENANCE_ACTION=none
+        }
+        sleep() {
+            POLL=$((POLL + 1)); SECONDS=$((SECONDS + 1))
+            case "$MAINTENANCE_ACTION:$POLL" in
+                authorize:2) printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log" ;;
+                update:1) POLL_CASE=updater ;;
+                conflict:1) POLL_CASE=duplicate ;;
+                exit:1) POLL_CASE=vanished ;;
+                replace:1) POLL_CASE=replacement ;;
+                prompt:1) printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log" ;;
+            esac
+        }
+        reset_maintenance; MAINTENANCE_ACTION=authorize
+        assert_status 0 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 2 ] || fail 'maintenance did not accept fresh manual-login authorization'
+        reset_maintenance
+        assert_status 22 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 4 ] || fail 'manual-login hold was not bounded'
+        reset_maintenance; MAINTENANCE_ACTION=update
+        assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION=conflict
+        assert_status 13 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION='exit'
+        assert_status 11 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION=replace
+        assert_status 11 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION=prompt
+        assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; POLL_CASE=updater
+        assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 0 ] || fail 'maintenance entered while an updater was active'
+    )
 )
 
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'

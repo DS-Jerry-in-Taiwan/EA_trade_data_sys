@@ -58,7 +58,7 @@ reset_case; READY_CODES=(10 0); AUTH_CODES=(10)
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
 [ "$LAUNCHES" -eq 2 ] && [ "$SNAPSHOTS" -eq 1 ] || fail 'late update exceeded the shared recovery budget'
 
-reset_case; READY_CODES=(0); AUTH_CODES=(1)
+reset_case; READY_CODES=(0); AUTH_CODES=(21)
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
 [ "$LAUNCHES" -eq 1 ] && [ "$SNAPSHOTS" -eq 0 ] || fail 'authorization timeout caused an unbounded credential/restart retry'
 
@@ -80,7 +80,7 @@ reset_case; READY_CODES=(10 10); UPDATE_STATUS=20
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
 [ "$LAUNCHES" -eq 1 ] || fail 'native auto-restart exceeded the one-update budget'
 
-reset_case; READY_CODES=(10 0); AUTH_CODES=(1); UPDATE_STATUS=20
+reset_case; READY_CODES=(10 0); AUTH_CODES=(21); UPDATE_STATUS=20
 assert_failure start_terminal_with_one_update_cycle /fixture/snapshot
 [ "$LAUNCHES" -eq 1 ] || fail 'native auto-restart bypassed fresh authorization'
 
@@ -139,7 +139,7 @@ run_native_case() (
     if start_terminal_with_one_update_cycle "$NATIVE_SNAPSHOT"; then status=0; else status=$?; fi
     case "$NATIVE_CASE" in
         authorized|saved-authorized) [ "$status" -eq 0 ] || fail 'native saved session did not authorize' ;;
-        no-new-auth|saved-no-auth) [ "$status" -eq 1 ] || fail 'native saved session reused stale authorization' ;;
+        no-new-auth|saved-no-auth) [ "$status" -eq 21 ] || fail 'native saved session reused stale authorization' ;;
         timeout) [ "$status" -eq 15 ] || fail 'native updater did not time out' ;;
     esac
     [ "$NATIVE_LAUNCHES" -eq 1 ] || fail 'native updater completion launched a duplicate/fixed-account terminal'
