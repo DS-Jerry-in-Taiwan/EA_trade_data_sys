@@ -6,7 +6,7 @@ import signal
 from service.config import load_settings, resolve_config_path
 from service.gateway.app import GatewayContext, create_app
 from service.history.query_service import HistoryQueryService
-from service.history.repository import HistoryRepository
+from service.history.repository import HistoryRepository, history_storage_id
 from service.infrastructure.ipc.tick_protocol import DEFAULT_SOCKET_PATH
 from service.infrastructure.mt5.client import MT5Client
 from service.infrastructure.observability import metrics
@@ -20,16 +20,21 @@ def _config_path():
 
 
 def build_gateway(config_path=None):
-    settings = load_settings(config_path or _config_path())
+    settings = load_settings(config_path)
     tick_cfg, history_cfg = settings.tick_service, settings.history_service
     tick_interval = tick_cfg.update_interval_seconds
     history_interval = history_cfg.update_interval_seconds
-    client = MT5Client(symbol_aliases=settings.symbol_aliases)
+    client = MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
     account_service = AccountService(settings=settings, mt5_client=client)
     consumer = TickConsumer(tick_cfg.socket_path or DEFAULT_SOCKET_PATH)
     context = GatewayContext(
         tick_consumer=consumer,
-        history_query_service=HistoryQueryService(HistoryRepository()),
+        history_query_service=HistoryQueryService(HistoryRepository(
+            history_cfg.data_path,
+            publication_status=lambda: read_status(
+                history_cfg.status_path, max(history_interval * 3, 30)
+            ),
+        )),
         account_service=account_service,
         metrics=metrics,
         status_reader=read_status,
@@ -43,6 +48,7 @@ def build_gateway(config_path=None):
         ),
         history_status_path=history_cfg.status_path,
         history_status_max_age=float(max(history_interval * 3, 30)),
+        history_storage_id=history_storage_id(history_cfg.data_path),
     )
     return create_app(context), client
 

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from service.config import Settings, load_settings
+from service.history.repository import history_storage_id
 from service.infrastructure.mt5.client import MT5Client
 from service.infrastructure.mt5.session import AccountSessionTransition
 from service.infrastructure.status.component_status import (
@@ -30,7 +31,7 @@ class HistoryService:
     DEFAULT_FETCH_PAGE_SIZE = 500
     DEFAULT_FETCH_TIMEOUT_SECONDS = 10
 
-    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None,
+    def __init__(self, config_path=None, mt5_client=None,
                  settings: Settings | None = None):
         settings = settings or load_settings(config_path)
         cfg = settings.history_service
@@ -69,7 +70,7 @@ class HistoryService:
             raise ValueError('minimum_bars values must be positive')
         self.mt5_client = (
             mt5_client if mt5_client is not None
-            else MT5Client(symbol_aliases=settings.symbol_aliases)
+            else MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
         )
         self._resolver_initialized = False
         # MT5Client serializes calls with one lock, so multiple executor workers
@@ -113,7 +114,7 @@ class HistoryService:
         try:
             return atomic_write_status(
                 self.status_path, 'history_service', state,
-                sync=self.get_sync_status(), **details,
+                sync=self.get_sync_status(), storage_id=history_storage_id(self.data_path), **details,
             )
         except OSError as exc:
             # A full/read-only runtime directory degrades observability, not

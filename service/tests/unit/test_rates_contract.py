@@ -57,8 +57,9 @@ def gateway_module():
     mt5_client_module = types.ModuleType('service.infrastructure.mt5.client')
 
     class MT5Client:
-        def __init__(self, *, symbol_aliases=None):
+        def __init__(self, *, symbol_aliases=None, settings=None):
             self.symbol_aliases = dict(symbol_aliases or {})
+            self.settings = settings
 
         def shutdown(self):
             return None
@@ -125,6 +126,9 @@ def gateway_module():
 @pytest.fixture
 def client(gateway_module, tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_module.history_query_svc.repository, 'data_path', str(tmp_path))
+    from service.history.repository import history_storage_id
+    monkeypatch.setattr(gateway_module.history_query_svc.repository, 'publication_status',
+                        lambda: {'fresh': True, 'storage_id': history_storage_id(tmp_path)})
     gateway_module.app.config.update(TESTING=True)
     return gateway_module.app.test_client(), tmp_path
 

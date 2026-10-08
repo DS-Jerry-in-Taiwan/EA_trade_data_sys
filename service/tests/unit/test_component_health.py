@@ -34,8 +34,9 @@ def _configure_health(monkeypatch, tmp_path, history_state="healthy", session=No
     tick_path = tmp_path / "tick.json"
     history_path = tmp_path / "history.json"
     atomic_write_status(str(tick_path), "tick_service", "healthy")
-    atomic_write_status(str(history_path), "history_service", history_state)
     context = gateway.app.extensions["gateway_context"]
+    atomic_write_status(str(history_path), "history_service", history_state,
+                        storage_id=context.history_storage_id)
     monkeypatch.setattr(context, "tick_symbols", ["XAUUSDm"])
     monkeypatch.setattr(context, "tick_status_path", str(tick_path))
     monkeypatch.setattr(context, "tick_status_max_age", 30)
@@ -68,6 +69,26 @@ def test_history_failure_degrades_without_failing_realtime_readiness(monkeypatch
     assert response.status_code == 200
     assert response.json["status"] == "degraded"
     assert response.json["ready"] is True
+
+
+def test_history_directory_mismatch_fails_readiness(monkeypatch, tmp_path):
+    _configure_health(monkeypatch, tmp_path)
+    context = gateway.app.extensions["gateway_context"]
+    atomic_write_status(context.history_status_path, "history_service", "healthy",
+                        storage_id="different-storage")
+    response = gateway.app.test_client().get("/api/v1/health")
+    assert response.status_code == 503
+    assert response.json["history_service"]["error"] == "history_configuration_unavailable"
+
+
+def test_missing_history_status_does_not_block_realtime(monkeypatch, tmp_path):
+    _configure_health(monkeypatch, tmp_path)
+    context = gateway.app.extensions['gateway_context']
+    monkeypatch.setattr(context, 'history_status_path', str(tmp_path / 'missing-status'))
+    response = gateway.app.test_client().get('/api/v1/health')
+    assert response.status_code == 200
+    assert response.json['ready'] is True
+    assert response.json['status'] == 'degraded'
 
 
 def test_tick_ipc_disconnect_is_not_ready(monkeypatch, tmp_path):

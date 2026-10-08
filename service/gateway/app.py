@@ -28,6 +28,7 @@ class GatewayContext:
     history_status_path: str
     history_status_max_age: float
     openapi_path: str = "/app/service/openapi.yaml"
+    history_storage_id: str | None = None
 
     def fresh_tick(self, symbol):
         tick = self.tick_consumer.get(symbol)

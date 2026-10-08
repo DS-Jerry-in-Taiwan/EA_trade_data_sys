@@ -1,4 +1,5 @@
 import os
+import hashlib
 
 import pandas as pd
 
@@ -19,13 +20,23 @@ class HistoryReadError(HistoryStorageError):
     pass
 
 
+def history_storage_id(data_path):
+    """Compare effective storage roots without publishing filesystem paths."""
+    return hashlib.sha256(os.path.realpath(data_path).encode()).hexdigest()
+
+
 class HistoryRepository:
     """Read-only access to atomically published history CSV files."""
 
-    def __init__(self, data_path='/app/service/data/history'):
+    def __init__(self, data_path='/app/service/data/history', publication_status=None):
         self.data_path = data_path
+        self.publication_status = publication_status
 
     def read(self, symbol, timeframe):
+        if self.publication_status is not None:
+            status = self.publication_status()
+            if not status.get('fresh') or status.get('storage_id') != history_storage_id(self.data_path):
+                raise HistoryNotReadyError
         filepath = os.path.join(self.data_path, f'{symbol}_{timeframe}.csv')
         if not os.path.exists(filepath):
             raise HistoryNotFoundError
