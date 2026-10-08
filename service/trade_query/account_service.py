@@ -44,13 +44,13 @@ def _round_number(value, digits=2):
 
 
 class AccountService:
-    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None,
+    def __init__(self, config_path=None, mt5_client=None,
                  settings: Settings | None = None):
         self.settings = settings or load_settings(config_path)
         self.cfg = self.settings.as_dict()
         self.mt5_client = (
             mt5_client if mt5_client is not None
-            else MT5Client(symbol_aliases=self.settings.symbol_aliases)
+            else MT5Client(symbol_aliases=self.settings.symbol_aliases, settings=self.settings)
         )
 
     def get_balance(self):

@@ -85,9 +85,10 @@ class MT5Connector:
     profile only after the mode has been validated.
     """
 
-    def __init__(self, settings_path=None, accounts_path=None):
-        settings_path = settings_path or os.getenv('MT5_SETTINGS_PATH', '/app/service/config/settings.yaml')
-        self.settings = load_settings(settings_path)
+    def __init__(self, settings_path=None, accounts_path=None, *, settings=None):
+        if settings is not None and settings_path is not None:
+            raise ValueError('Supply settings or settings_path, not both')
+        self.settings = settings if settings is not None else load_settings(settings_path)
         self.connection = self.settings.connection
         self.timeout = self.connection.timeout
 

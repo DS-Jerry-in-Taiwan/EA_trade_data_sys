@@ -36,9 +36,11 @@ class MT5Client:
         resolver_factory=None,
         session_guard=None,
         symbol_aliases=None,
+        settings=None,
     ):
         self._lock = threading.RLock()
         self._connector_factory = connector_factory
+        self._settings = settings
         self._resolver_factory = resolver_factory
         self._symbol_aliases = dict(symbol_aliases or {})
         self._session_guard = session_guard or AccountSessionGuard()
@@ -120,7 +122,10 @@ class MT5Client:
             return observed
         connector = None
         try:
-            connector = self._connector_factory()
+            connector = (
+                self._connector_factory(settings=self._settings)
+                if self._settings is not None else self._connector_factory()
+            )
             mt5 = connector.connect()
             if mt5 is None:
                 self._close_connection(None, connector)

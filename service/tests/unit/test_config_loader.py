@@ -1,8 +1,34 @@
 import pytest
 import yaml
 
-from service.config import load_runtime_settings, load_settings
+from service.config import load_runtime_settings, load_settings, resolve_config_path
 from service.config.models import Settings
+
+
+def test_legacy_connector_selector_uses_shared_loader(tmp_path):
+    path = tmp_path / "custom.yaml"
+    path.write_text("connection:\n  port: 8123\n", encoding="utf-8")
+    assert load_settings(environ={"MT5_SETTINGS_PATH": str(path)}).connection.port == 8123
+
+
+def test_equivalent_selectors_are_accepted(tmp_path):
+    path = tmp_path / "settings.yaml"
+    assert resolve_config_path(path, environ={
+        "TRADE_DATA_CONFIG": str(path),
+        "MT5_SETTINGS_PATH": str(tmp_path / "nested" / ".." / "settings.yaml"),
+    }) == path
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_conflicting_selectors_fail_without_disclosing_paths(tmp_path, explicit):
+    first, second = tmp_path / "private-a.yaml", tmp_path / "private-b.yaml"
+    env = {"TRADE_DATA_CONFIG": str(first)}
+    if not explicit:
+        env["MT5_SETTINGS_PATH"] = str(second)
+    with pytest.raises(ValueError, match="Conflicting configuration selectors") as error:
+        resolve_config_path(second if explicit else None, environ=env)
+    assert str(first) not in str(error.value)
+    assert str(second) not in str(error.value)
 
 
 def test_loader_returns_typed_sections_and_applies_runtime_overrides(tmp_path):

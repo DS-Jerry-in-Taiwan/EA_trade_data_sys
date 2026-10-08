@@ -65,6 +65,26 @@ def connection_manager(monkeypatch):
     return importlib.import_module('core.connection_manager')
 
 
+def test_connector_uses_injected_settings_without_loading_configuration(
+    connection_manager, monkeypatch
+):
+    from service.config.models import Settings
+
+    settings = Settings.from_mapping({"connection": {"port": 8123}}, environ={})
+
+    def forbidden_load(*args, **kwargs):
+        raise AssertionError("injected settings must not be reloaded")
+
+    monkeypatch.setattr(connection_manager, "load_settings", forbidden_load)
+    connector = connection_manager.MT5Connector(settings=settings)
+    assert connector.settings is settings
+    assert connector.connection.port == 8123
+    assert connector.mode == "terminal"
+    assert connector.accounts is None
+    with pytest.raises(ValueError, match="Supply settings or settings_path"):
+        connection_manager.MT5Connector(settings=settings, settings_path="unused")
+
+
 @pytest.fixture
 def config_files(tmp_path):
     settings_path = tmp_path / 'settings.yaml'

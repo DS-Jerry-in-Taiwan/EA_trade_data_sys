@@ -133,6 +133,22 @@ class ConnectorFactory:
         return connector
 
 
+def test_reconnect_retains_injected_settings_without_reloading():
+    settings = object()
+    received = []
+
+    def factory(*, settings):
+        received.append(settings)
+        return FakeConnector(FakeMT5())
+
+    client = MT5Client(factory, settings=settings)
+    assert client.ensure_connected()
+    client.reset()
+    assert client.ensure_connected()
+    assert received == [settings, settings]
+    client.shutdown()
+
+
 def test_concurrent_lazy_connect_creates_one_session():
     factory = ConnectorFactory([FakeMT5()])
     client = MT5Client(factory)

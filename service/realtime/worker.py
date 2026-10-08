@@ -14,7 +14,7 @@ from service.realtime.snapshot_store import TickSnapshotStore
 class TickService:
     """Poll MT5, normalize Tick events, and publish them to local consumers."""
 
-    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None,
+    def __init__(self, config_path=None, mt5_client=None,
                  publisher=None, snapshot_store=None, stop_event=None,
                  settings: Settings | None = None):
         settings = settings or load_settings(config_path)
@@ -27,7 +27,7 @@ class TickService:
         self.status_path = cfg.status_path
         self.mt5_client = (
             mt5_client if mt5_client is not None
-            else MT5Client(symbol_aliases=settings.symbol_aliases)
+            else MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
         )
         self.publisher = publisher if publisher is not None else TickPublisher(self.socket_path)
         self.snapshot_store = (
