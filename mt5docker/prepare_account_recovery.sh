@@ -4,8 +4,22 @@ set -Eeuo pipefail
 umask 077
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$SCRIPT_DIR/terminal_lifecycle.sh"
+. "$SCRIPT_DIR/terminal_config.sh"
+if [ "$#" -eq 3 ] && [ "$1" = --verify ]; then
+    state="$(mt5_native_account_state "$3" "$2")"
+    echo "native_account_state=$state"
+    if bootstrap_marker_valid "$3"; then
+        echo 'bootstrap_marker_valid=true'
+    else
+        echo 'bootstrap_marker_valid=false'
+        exit 1
+    fi
+    [ "$state" = native_present ] || exit 1
+    exit 0
+fi
 if [ "$#" -ne 4 ] || [ "$1" != --confirm-single-profile ]; then
     echo 'Usage: prepare_account_recovery.sh --confirm-single-profile PRIVATE_INI PORTABLE_ROOT BACKUP_PARENT' >&2
+    echo '       prepare_account_recovery.sh --verify PORTABLE_ROOT BOOTSTRAP_MARKER' >&2
     exit 2
 fi
 source_config="$2"; portable_root="$3"; backup_parent="$4"
@@ -29,7 +43,10 @@ if [ -f "$marker" ]; then
 fi
 cp "$source_config" "$recovery_dir/selected-profile.ini"
 chmod 600 "$recovery_dir/selected-profile.ini"
+find "$recovery_dir" -type d -exec chmod 700 {} +
+find "$recovery_dir" -type f -exec chmod 600 {} +
 echo 'Native settings backup and single-profile recovery config prepared.'
+printf 'recovery_directory=%s\n' "$recovery_dir"
 echo 'Use the selected-profile.ini in the newly created recovery directory as MT5_CONFIG_FILE, with MT5_BOOTSTRAP_REIMPORT=1 for one controlled restart.'
 echo 'Then restore MT5_BOOTSTRAP_REIMPORT=0. This imports one selected profile; it does not restore every account or change the active session until restart.'
 echo 'Recovery leaves the original native files untouched. Restore the backed-up native directory only while the terminal is stopped.'

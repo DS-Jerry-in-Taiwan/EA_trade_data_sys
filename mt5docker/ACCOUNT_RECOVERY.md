@@ -32,10 +32,25 @@ Never edit `accounts.dat`, print a private INI, or put credentials in commands.
    private `selected-profile.ini` in a new mode-700 recovery directory. Native
    originals remain untouched. Backup storage must be persistent and private.
    Set `MT5_BOOTSTRAP_MARKER` if the deployment stores its marker elsewhere.
+   The `recovery_directory=` output identifies the exact new directory; only a
+   path is printed. Every copied regular file has mode 600 and directory mode
+   700 regardless of the original permissions.
 3. Mount that newly staged INI using `MT5_CONFIG_FILE` and perform one controlled
    restart with `MT5_BOOTSTRAP_REIMPORT=1` in terminal mode. Startup retains
    `/portable /skipupdate` and imports only that selected profile.
-4. Confirm successful GUI authorization and native storage metadata, then
+4. Confirm successful GUI authorization, then verify persisted metadata using
+   the actual mounted portable root and marker paths:
+
+   ```bash
+   bash /mt5docker/prepare_account_recovery.sh --verify \
+     /persistent/MT5_Data /persistent/MT5_Data/.mt5-bootstrap-complete
+   ```
+
+   Verification prints only the native state and marker-valid boolean. It
+   requires nonempty native storage and a valid marker, never reads account
+   contents, and fails if either condition is missing. It does not prove saved
+   account count or credential validity; the authorized GUI session provides
+   session evidence. After verification,
    restore `MT5_BOOTSTRAP_REIMPORT=0` before the next restart. Subsequent starts
    restore the GUI-selected session without `/config`. If import fails, preserve
    the desktop for manual correction; do not try another profile automatically.
