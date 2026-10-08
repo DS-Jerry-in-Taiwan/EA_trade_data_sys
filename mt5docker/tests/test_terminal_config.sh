@@ -98,6 +98,15 @@ if bootstrap_config_required "$MARKER" 0; then
     echo 'FAIL: valid marker still required bootstrap import' >&2
     exit 1
 fi
+EMPTY_ROOT="$TMP/empty-native"
+mkdir -p "$EMPTY_ROOT/Config"
+status=0
+bootstrap_config_required "$MARKER" 0 "$EMPTY_ROOT" || status=$?
+[ "$status" -eq 2 ] || { echo 'FAIL: stale marker was not explicitly inconsistent' >&2; exit 1; }
+[ "$(mt5_native_account_state "$MARKER" "$EMPTY_ROOT")" = inconsistent_marker_native_missing ] || exit 1
+: > "$EMPTY_ROOT/Config/accounts.dat"
+[ "$(mt5_native_account_state "$MARKER" "$EMPTY_ROOT")" = inconsistent_marker_native_missing ] || exit 1
+[ "$(mt5_native_account_state "$TMP/no-marker" "$EMPTY_ROOT")" = uninitialized ] || exit 1
 if ! bootstrap_config_required "$MARKER" 1; then
     echo 'FAIL: explicit bootstrap re-import was not honored' >&2
     exit 1
@@ -113,6 +122,7 @@ fi
 PERSISTED_ROOT="$TMP/persisted-terminal"
 mkdir -p "$PERSISTED_ROOT/Config"
 printf 'opaque-synthetic-account-store\n' > "$PERSISTED_ROOT/Config/accounts.dat"
+[ "$(mt5_native_account_state "$MARKER" "$PERSISTED_ROOT")" = native_present ] || exit 1
 if bootstrap_config_required "$MARKER" 0 "$PERSISTED_ROOT"; then
     echo 'FAIL: second start selected private bootstrap instead of GUI session' >&2; exit 1
 fi

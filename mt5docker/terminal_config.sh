@@ -34,7 +34,16 @@ bootstrap_marker_valid() {
 bootstrap_config_required() {
     local marker="$1" reimport="${2:-0}" portable_root="${3:-}"
     bootstrap_reimport_requested "$reimport" && return 0
-    bootstrap_marker_valid "$marker" && return 1
+    if bootstrap_marker_valid "$marker"; then
+        # A marker cannot prove that the native account store survived.
+        # Return a distinct non-import status for operator recovery.
+        if [ -n "$portable_root" ] &&
+            [ ! -s "$portable_root/Config/accounts.dat" ] &&
+            [ ! -s "$portable_root/config/accounts.dat" ]; then
+            return 2
+        fi
+        return 1
+    fi
     # Existing GUI account state can predate our bootstrap marker. Its
     # presence is enough to preserve operator control; never inspect it.
     if [ -n "$portable_root" ]; then
@@ -42,6 +51,17 @@ bootstrap_config_required() {
             [ ! -s "$portable_root/config/accounts.dat" ] || return 1
     fi
     return 0
+}
+
+mt5_native_account_state() {
+    local marker="$1" portable_root="$2"
+    if [ -s "$portable_root/Config/accounts.dat" ] || [ -s "$portable_root/config/accounts.dat" ]; then
+        printf '%s\n' native_present
+    elif bootstrap_marker_valid "$marker"; then
+        printf '%s\n' inconsistent_marker_native_missing
+    else
+        printf '%s\n' uninitialized
+    fi
 }
 
 write_bootstrap_marker() {
