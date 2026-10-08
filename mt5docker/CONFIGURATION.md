@@ -28,6 +28,12 @@ publication and reads. Worker status includes an opaque storage identifier to
 detect a configured read/write-root mismatch without exposing paths. History
 availability is reported separately from the realtime path.
 
+API containers start once the MT5 container starts, so health and authenticated
+queries can return stable unavailable responses during manual login. Their
+healthchecks continue to require fresh session readiness; MT5 health requires
+authorization, one terminal, and a live RPyC listener. Desktop liveness alone
+does not grant API readiness.
+
 After changing YAML or process environment, restart the affected services so
 each process loads the same version. Configuration is not hot-reloaded.
 Preserve persistent MT5 state and execution idempotency storage when recreating

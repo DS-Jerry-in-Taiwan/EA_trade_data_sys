@@ -51,7 +51,9 @@ services:
     entrypoint: /app/mt5docker/start_runner.sh
     depends_on:
       mt5-server:
-        condition: service_healthy
+        # Start HTTP while the operator logs in; API readiness still fails
+        # closed until fresh MT5 authorization and RPyC are available.
+        condition: service_started
     healthcheck:
       test:
         - CMD
@@ -90,7 +92,7 @@ services:
     entrypoint: /app/mt5docker/start_execution.sh
     depends_on:
       mt5-server:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test:
         - CMD

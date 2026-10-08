@@ -70,7 +70,7 @@ def test_compose_keeps_execution_mutation_closed_and_state_durable():
     assert env["EXECUTION_IDEMPOTENCY_DB"] == "/app/runtime/execution/idempotency.sqlite3"
     mounts = service["volumes"]
     assert any("../runtime:/app/runtime" in mount for mount in mounts)
-    assert service["depends_on"]["mt5-server"]["condition"] == "service_healthy"
+    assert service["depends_on"]["mt5-server"]["condition"] == "service_started"
     health = " ".join(str(part) for part in service["healthcheck"]["test"])
     assert "/api/v1/health" in health
     assert "ready" in health
