@@ -28,6 +28,12 @@ BOOTSTRAP_ACTIVE=0
 TERMINAL_LAUNCHES=0
 MT5_CONFIG_WINDOWS=""
 remember_child() { CHILD_PIDS+=("$1"); }
+authorization_desktop_alive() {
+    local child_pid
+    for child_pid in "${DESKTOP_PIDS[@]}"; do
+        kill -0 "$child_pid" 2>/dev/null || return 1
+    done
+}
 cleanup() {
     local terminal_pids=()
     [ "$SHUTTING_DOWN" -eq 0 ] || return
@@ -43,6 +49,9 @@ cleanup_stale_runtime() {
     local stale=()
     mapfile -t stale < <(terminal_processes | cut -f1)
     stop_exact_pids 10 "${stale[@]}"
+    # Docker restart retains /run in the container writable layer. Old
+    # readiness must never authorize a new terminal while manual login waits.
+    rm -f /run/mt5-server/rpyc.pid /run/mt5-server/terminal-ready "$MT5_READY_SNAPSHOT"
     rm -f /tmp/.X100-lock
 }
 launch_terminal() {
@@ -71,6 +80,7 @@ tint2 -c /root/.config/tint2/tint2rc & TINT2_PID="$!"; remember_child "$TINT2_PI
 # replay stale CUT_BUFFER0 content over newer browser clipboard events.
 x11vnc -display :100 -forever -shared -dontdisconnect -rfbport 5901 -rfbauth /root/.vnc/passwd & remember_child "$!"
 websockify --web /usr/share/novnc 6081 localhost:5901 & remember_child "$!"
+DESKTOP_PIDS=("${CHILD_PIDS[@]}")
 sleep 1
 for desktop_pid in "$OPENBOX_PID" "$PCMANFM_PID" "$TINT2_PID"; do
     kill -0 "$desktop_pid" 2>/dev/null || {
@@ -96,7 +106,16 @@ if [ "$MT5_CONNECTION_MODE" = terminal ]; then
         echo '>>> Importing private MT5 bootstrap config for account setup.'
         BOOTSTRAP_ACTIVE=1
     else
-        echo '>>> Restoring the saved GUI-selected MT5 session without a startup config.'
+        bootstrap_status=$?
+        if [ "$bootstrap_status" -eq 2 ]; then
+            echo '>>> Native MT5 account state needs operator recovery; keeping the desktop available for manual login without importing private config.'
+            echo '>>> Use the documented explicit account recovery procedure if manual login is insufficient.'
+        elif [ "$bootstrap_status" -eq 1 ]; then
+            echo '>>> Restoring the saved GUI-selected MT5 session without a startup config.'
+        else
+            echo '>>> MT5 bootstrap policy could not be verified; refusing startup.' >&2
+            exit 1
+        fi
     fi
 fi
 if [ "$MT5_CONNECTION_MODE" = managed ] || [ "$BOOTSTRAP_ACTIVE" -eq 1 ]; then
@@ -119,7 +138,7 @@ if start_terminal_with_one_update_cycle "$launch_snapshot"; then
 else
     lifecycle_status=$?
     if [ "$lifecycle_status" -eq 21 ]; then
-        echo ">>> MT5 Journal authorization timed out; keeping the GUI available for ${MT5_AUTH_MAINTENANCE_TIMEOUT}s of manual login. Readiness remains closed."
+        echo '>>> Waiting for manual MT5 login; desktop remains available and API readiness remains closed.'
         if hold_for_terminal_authorization "$launch_snapshot"; then lifecycle_status=0; else lifecycle_status=$?; fi
     fi
     if [ "$lifecycle_status" -ne 0 ]; then
@@ -129,7 +148,7 @@ else
             11) echo '>>> MT5 terminal disappeared before authorization; readiness remains closed.' >&2 ;;
             12|13) echo '>>> MT5 lifecycle found conflicting terminal/update processes; readiness remains closed.' >&2 ;;
             14|15) echo '>>> MT5 mandatory update exceeded its one bounded maintenance cycle; readiness remains closed.' >&2 ;;
-            22) echo '>>> MT5 manual authorization maintenance window expired; readiness remains closed.' >&2 ;;
+            23) echo '>>> MT5 desktop supervision failed while waiting for login; readiness remains closed.' >&2 ;;
             *) echo '>>> MT5 readiness/update lifecycle failed; readiness remains closed.' >&2 ;;
         esac
         exit 1

@@ -303,6 +303,9 @@ await_terminal_authorized() {
     local snapshot="$1" timeout="${2:-$MT5_READY_TIMEOUT}" stage="${3:-authorization}" expected_normal_pids="${4:-}" deadline journal_update
     deadline=$((SECONDS + timeout))
     while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ "$stage" = authorization-maintenance ] && declare -F authorization_desktop_alive >/dev/null; then
+            authorization_desktop_alive || return 23
+        fi
         capture_terminal_process_state
         journal_update=0
         terminal_update_launch_pending "$snapshot" && journal_update=1
@@ -335,8 +338,8 @@ await_terminal_authorized() {
 }
 
 hold_for_terminal_authorization() {
-    local snapshot="$1" status
-    # Only an authorization timeout may enter this bounded operator window.
+    local snapshot="$1" status expected_normal_pids
+    # Repeat bounded probes for as long as the operator needs the desktop.
     # Keep the original process and baseline, with no RPyC/readiness marker.
     capture_terminal_process_state
     [ "$UPDATE_COUNT" -le 1 ] || return 12
@@ -344,13 +347,18 @@ hold_for_terminal_authorization() {
     [ "$UPDATE_COUNT" -eq 0 ] || return 10
     [ "$NORMAL_COUNT" -eq 1 ] || return 11
     terminal_update_pending "$snapshot" && return 10
-    if await_terminal_authorized "$snapshot" "$MT5_AUTH_MAINTENANCE_TIMEOUT" authorization-maintenance "$NORMAL_PIDS"; then
-        return 0
-    else
-        status=$?
-        [ "$status" -ne 21 ] || return 22
-        return "$status"
-    fi
+    expected_normal_pids="$NORMAL_PIDS"
+    while :; do
+        if declare -F authorization_desktop_alive >/dev/null; then
+            authorization_desktop_alive || return 23
+        fi
+        if await_terminal_authorized "$snapshot" "$MT5_AUTH_MAINTENANCE_TIMEOUT" authorization-maintenance "$expected_normal_pids"; then
+            return 0
+        else
+            status=$?
+            [ "$status" -eq 21 ] || return "$status"
+        fi
+    done
 }
 
 start_terminal_with_one_update_cycle() {

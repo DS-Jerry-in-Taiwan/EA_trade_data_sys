@@ -236,7 +236,8 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
 
     # Authorization maintenance preserves the live GUI-selected terminal and
     # original launch baseline. A new success opens readiness, while update,
-    # conflicts, process exit, and expiration stop the holding phase.
+    # conflicts and process exit stop the holding phase. Probe expiration
+    # keeps the same desktop alive until a later manual login succeeds.
     (
         MT5_AUTH_MAINTENANCE_TIMEOUT=4
         MAINTENANCE_SNAPSHOT="$TMP/maintenance.snapshot"
@@ -252,6 +253,7 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
             POLL=$((POLL + 1)); SECONDS=$((SECONDS + 1))
             case "$MAINTENANCE_ACTION:$POLL" in
                 authorize:2) printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log" ;;
+                delayed:10) printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log" ;;
                 update:1) POLL_CASE=updater ;;
                 conflict:1) POLL_CASE=duplicate ;;
                 exit:1) POLL_CASE=vanished ;;
@@ -262,9 +264,18 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
         reset_maintenance; MAINTENANCE_ACTION=authorize
         assert_status 0 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
         [ "$POLL" -eq 2 ] || fail 'maintenance did not accept fresh manual-login authorization'
+        reset_maintenance; MAINTENANCE_ACTION=delayed
+        assert_status 0 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 10 ] || fail 'manual-login hold did not survive repeated probe windows'
         reset_maintenance
-        assert_status 22 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
-        [ "$POLL" -eq 4 ] || fail 'manual-login hold was not bounded'
+        authorization_desktop_alive() { return 1; }
+        assert_status 23 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        unset -f authorization_desktop_alive
+        reset_maintenance
+        authorization_desktop_alive() { [ "$POLL" -lt 3 ]; }
+        assert_status 23 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 3 ] || fail 'desktop failure was not supervised during login polling'
+        unset -f authorization_desktop_alive
         reset_maintenance; MAINTENANCE_ACTION=update
         assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
         reset_maintenance; MAINTENANCE_ACTION=conflict
