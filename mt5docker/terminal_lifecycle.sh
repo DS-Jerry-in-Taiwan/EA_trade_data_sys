@@ -361,6 +361,28 @@ hold_for_terminal_authorization() {
     done
 }
 
+await_native_account_persistence() {
+    local snapshot="$1" marker="$2" portable_root="$3" expected_pids="$4" deadline
+    deadline=$((SECONDS + MT5_AUTH_MAINTENANCE_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if declare -F authorization_desktop_alive >/dev/null; then
+            authorization_desktop_alive || return 23
+        fi
+        capture_terminal_process_state
+        [ "$UPDATE_COUNT" -le 1 ] || return 12
+        [ "$NORMAL_COUNT" -le 1 ] || return 13
+        [ "$UPDATE_COUNT" -eq 0 ] || return 10
+        [ "$NORMAL_COUNT" -eq 1 ] && [ "$NORMAL_PIDS" = "$expected_pids" ] || return 11
+        terminal_update_pending "$snapshot" && return 10
+        if [ "$(mt5_native_account_state "$marker" "$portable_root")" = native_present ] &&
+            terminal_journal_authorized "$snapshot"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 24
+}
+
 start_terminal_with_one_update_cycle() {
     local snapshot="$1" status update_cycles=0 launch_required=1
     while :; do

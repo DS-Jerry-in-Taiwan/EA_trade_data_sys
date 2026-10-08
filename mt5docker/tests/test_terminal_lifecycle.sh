@@ -292,6 +292,47 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     )
 )
 
+# Native persistence must be observed before a bootstrap can be marked done.
+(
+    . "$ROOT/mt5docker/terminal_config.sh"
+    assert_status() {
+        local expected="$1" actual=0
+        shift
+        "$@" || actual=$?
+        [ "$actual" -eq "$expected" ] || fail "expected status $expected, got $actual"
+    }
+    NATIVE_ROOT="$TMP/native-persistence"
+    mkdir -p "$NATIVE_ROOT/Config"
+    NATIVE_MARKER="$NATIVE_ROOT/bootstrap.marker"
+    MT5_AUTH_MAINTENANCE_TIMEOUT=3
+    capture_terminal_process_state() { NORMAL_COUNT=1; NORMAL_PIDS=401; UPDATE_COUNT=0; }
+    terminal_update_pending() { [ "${NATIVE_UPDATE:-0}" -eq 1 ]; }
+    terminal_journal_authorized() { [ "${NATIVE_AUTH:-1}" -eq 1 ]; }
+    authorization_desktop_alive() { [ "${NATIVE_DESKTOP:-1}" -eq 1 ]; }
+    POLL=0
+    sleep() {
+        POLL=$((POLL + 1)); SECONDS=$((SECONDS + 1))
+        if [ "${NATIVE_DELAYED:-0}" -eq 1 ] && [ "$POLL" -eq 5 ]; then
+            printf 'synthetic-opaque-native-state' > "$NATIVE_ROOT/Config/accounts.dat"
+        fi
+    }
+    assert_status 24 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    [ ! -e "$NATIVE_MARKER" ] || fail 'missing native state created bootstrap marker'
+    NATIVE_DELAYED=1
+    assert_status 0 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    [ "$POLL" -eq 5 ] || fail 'delayed persistence was not verified across probe windows'
+    NATIVE_AUTH=0
+    assert_status 24 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    NATIVE_AUTH=1; NATIVE_UPDATE=1
+    assert_status 10 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    NATIVE_UPDATE=0; NATIVE_DESKTOP=0
+    assert_status 23 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    NATIVE_DESKTOP=1
+    assert_status 11 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 999
+    capture_terminal_process_state() { NORMAL_COUNT=2; NORMAL_PIDS=401,402; UPDATE_COUNT=0; }
+    assert_status 13 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+)
+
 # Daily rollover must compare all appended Journal events in date/line order.
 # Yesterday's authorization cannot authorize today's newly started terminal,
 # and today's disconnect/failure invalidates success from an earlier file.

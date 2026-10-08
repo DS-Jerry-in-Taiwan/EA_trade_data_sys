@@ -155,6 +155,23 @@ else
     fi
 fi
 
+if [ "$BOOTSTRAP_ACTIVE" -eq 1 ]; then
+    capture_terminal_process_state
+    bootstrap_terminal_pids="$NORMAL_PIDS"
+    echo '>>> Verifying native MT5 account persistence before completing bootstrap; API readiness remains closed.'
+    while :; do
+        if await_native_account_persistence "$launch_snapshot" "$MT5_BOOTSTRAP_MARKER" "$MT5_PORTABLE_ROOT" "$bootstrap_terminal_pids"; then
+            break
+        else
+            persistence_status=$?
+            if [ "$persistence_status" -ne 24 ]; then
+                echo '>>> MT5 bootstrap persistence supervision failed; readiness remains closed.' >&2
+                exit 1
+            fi
+        fi
+    done
+fi
+
 rm -f "$launch_snapshot"
 
 # Health must have an explicit post-update baseline.  A normal terminal
