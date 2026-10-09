@@ -322,7 +322,7 @@ def create_execution_app(context):
                 result = context.adapter.send_once(
                     mt5_request, expected_session=expected_session,
                     expected_empty_symbol=empty_symbol,
-                    before_send=lambda _mt5: context.authorization_store.validate_entry(authorization_id, session, payload),
+                    final_authorization=lambda _mt5: context.authorization_store.validate_entry(authorization_id, session, payload),
                 )
             result["preflight"] = check
             try:

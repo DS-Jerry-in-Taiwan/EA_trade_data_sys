@@ -27,9 +27,9 @@ class ScopedAdapter(FakeAdapter):
     def validate_mutation_session(self, expected):
         pass
 
-    def send_once(self, request, *, expected_session=None, expected_empty_symbol=None, before_send=None):
-        if before_send:
-            before_send(None)
+    def send_once(self, request, *, expected_session=None, expected_empty_symbol=None, final_authorization=None):
+        if final_authorization:
+            final_authorization(None)
         return super().send_once(request)
 
     def cancel_scope(self, client_id, order_id, symbol, volume):
