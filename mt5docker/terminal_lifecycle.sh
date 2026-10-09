@@ -305,12 +305,26 @@ terminal_journal_started() {
     terminal_journal_text "$1" | grep -Ei "$MT5_STARTUP_PATTERN" >/dev/null
 }
 
+terminal_blocking_update_lines() {
+    # Only recognized passive events are safe. Installation/required/failed
+    # and ambiguous LiveUpdate messages remain fail closed. Passive messages
+    # never clear an earlier blocking event; only normal Startup does that.
+    awk '{
+        line=tolower($0)
+        candidate=(line ~ /live[[:space:]]*update|update[[:space:]]+(required|failed|in[[:space:]]+progress)|updat(e|ing)[[:space:]].*terminal/)
+        if (!candidate) next
+        blocking=(line ~ /required|mandatory|install|updater|[-\/]update([[:space:]"\r]|$)|restart|reboot|prompt|failed|failure|error|launch|start(ing|ed)?[[:space:]].*terminal|in[[:space:]]+progress|updating[[:space:]].*terminal/)
+        passive=(line ~ /download|check(ing)?[[:space:]]+(for[[:space:]]+)?update|new[[:space:]]+version|version.*available|up[[:space:]]+to[[:space:]]+date|no[[:space:]]+(new[[:space:]]+)?updates/)
+        if (blocking || !passive) print NR
+    }'
+}
+
 terminal_update_pending() {
     local snapshot="$1" text update_line startup_line
     [ -r "$snapshot" ] || return 0
     [ "$(update_terminal_pids | count_lines)" -eq 0 ] || return 0
     text="$(terminal_journal_text "$snapshot")" || return 0
-    update_line="$(printf '%s\n' "$text" | grep -Ein 'live[[:space:]]*update|update[[:space:]]+(required|failed|in[[:space:]]+progress)|updat(e|ing)[[:space:]].*terminal' | tail -1 | cut -d: -f1 || true)"
+    update_line="$(printf '%s\n' "$text" | terminal_blocking_update_lines | tail -1)"
     [ -n "$update_line" ] || return 1
     startup_line="$(printf '%s\n' "$text" | grep -Ein "$MT5_STARTUP_PATTERN" | tail -1 | cut -d: -f1 || true)"
     [ -z "$startup_line" ] || [ "$startup_line" -le "$update_line" ]
@@ -327,21 +341,25 @@ terminal_update_launch_pending() {
 }
 
 log_has_new_authorized_marker() {
-    local snapshot="$1" log="$2" text success_line failure_line
+    local snapshot="$1" log="$2" text success_line failure_line update_line
     text="$(log_tail_utf8 "$snapshot" "$log")"
     success_line="$(printf '%s\n' "$text" | grep -Ein '(^|[[:space:]])authorized[[:space:]]+on([[:space:]]|$)|authorization[[:space:]]+(succeeded|successful)' | tail -1 | cut -d: -f1 || true)"
     [ -n "$success_line" ] || return 1
-    failure_line="$(printf '%s\n' "$text" | grep -Ein "authorization[[:space:]]+.*(failed|denied|invalid)|invalid[[:space:]]+account|not[[:space:]]+authorized|disconnected[[:space:]]+from|connection[[:space:]]+(lost|closed)|live[[:space:]]*update|$MT5_STARTUP_PATTERN" | tail -1 | cut -d: -f1 || true)"
+    failure_line="$(printf '%s\n' "$text" | grep -Ein "authorization[[:space:]]+.*(failed|denied|invalid)|invalid[[:space:]]+account|not[[:space:]]+authorized|disconnected[[:space:]]+from|connection[[:space:]]+(lost|closed)|$MT5_STARTUP_PATTERN" | tail -1 | cut -d: -f1 || true)"
+    update_line="$(printf '%s\n' "$text" | terminal_blocking_update_lines | tail -1)"
+    if [ -n "$update_line" ] && [ "$update_line" -gt "${failure_line:-0}" ]; then failure_line="$update_line"; fi
     [ -z "$failure_line" ] || [ "$success_line" -gt "$failure_line" ]
 }
 
 terminal_journal_authorized() {
-    local text success_line startup_line failure_line
+    local text success_line startup_line failure_line update_line
     text="$(terminal_journal_text "$1")" || return 1
     success_line="$(printf '%s\n' "$text" | grep -Ein '(^|[[:space:]])authorized[[:space:]]+on([[:space:]]|$)|authorization[[:space:]]+(succeeded|successful)' | tail -1 | cut -d: -f1 || true)"
     startup_line="$(printf '%s\n' "$text" | grep -Ein "$MT5_STARTUP_PATTERN" | tail -1 | cut -d: -f1 || true)"
     [ -n "$success_line" ] && [ -n "$startup_line" ] && [ "$success_line" -gt "$startup_line" ] || return 1
-    failure_line="$(printf '%s\n' "$text" | grep -Ein 'authorization[[:space:]]+.*(failed|denied|invalid)|invalid[[:space:]]+account|not[[:space:]]+authorized|disconnected[[:space:]]+from|connection[[:space:]]+(lost|closed)|live[[:space:]]*update' | tail -1 | cut -d: -f1 || true)"
+    failure_line="$(printf '%s\n' "$text" | grep -Ein 'authorization[[:space:]]+.*(failed|denied|invalid)|invalid[[:space:]]+account|not[[:space:]]+authorized|disconnected[[:space:]]+from|connection[[:space:]]+(lost|closed)' | tail -1 | cut -d: -f1 || true)"
+    update_line="$(printf '%s\n' "$text" | terminal_blocking_update_lines | tail -1)"
+    if [ -n "$update_line" ] && [ "$update_line" -gt "${failure_line:-0}" ]; then failure_line="$update_line"; fi
     [ -z "$failure_line" ] || [ "$success_line" -gt "$failure_line" ]
 }
 

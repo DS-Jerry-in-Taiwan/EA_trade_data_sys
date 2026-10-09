@@ -18,7 +18,7 @@ docker compose up -d
 The lifecycle is ordered as follows:
 
 1. `mt5-server` starts the persisted portable terminal with `/skipupdate`; normal startup restores its saved GUI session, while bootstrap/explicit re-import or managed mode uses a Windows-readable config path. A mandatory updater can still launch, and readiness remains closed during its bounded maintenance cycle.
-2. The RPyC bridge starts only after exactly one normal terminal confirms fresh Journal authorization. Its healthcheck fails if the terminal exits or enters LiveUpdate.
+2. The RPyC bridge starts only after exactly one normal terminal confirms fresh Journal authorization. Its healthcheck fails if the terminal exits, launches an updater, requires installation/restart, or has an ambiguous update event. Recognized background update availability/check/download events alone do not fail health.
 3. Compose starts `trade-data-service` and `execution-service` after `mt5-server` is healthy.
 4. `start_runner.sh` installs `/app/mt5docker/requirements.txt` from the bind-mounted checkout, then `exec`s `service.runtime.supervisor`. These packages are installed at service startup; they are not baked into the image.
 5. The supervisor starts Tick Service, History Worker and API Gateway. If any child exits unexpectedly, it terminates the others and exits non-zero so the container restart policy can act.
@@ -176,7 +176,12 @@ health requests from consuming RPyC client slots.
 
 `mt5-server` writes a post-startup readiness snapshot only after the normal
 startup marker is observed. Its healthcheck requires that marker, exactly one
-normal terminal, no updater process, and no uncompleted `LiveUpdate` log event.
+normal terminal, no updater process, and no unresolved blocking update event.
+Update availability/check/download and successful download completion are
+passive; they neither revoke authorization nor clear an earlier blocking event.
+Installation, mandatory updates, restart prompts, failures and unrecognized
+LiveUpdate messages remain fail closed until a subsequent normal startup.
+`/skipupdate` is retained but is not assumed to prevent background downloads.
 After an update event, a later confirmed normal startup marker clears the
 pending state; an old log event alone cannot permanently poison a new log
 stream.
