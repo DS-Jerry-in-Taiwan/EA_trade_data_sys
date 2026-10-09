@@ -633,6 +633,18 @@ class MT5ExecutionAdapter:
         self._call(discover)
         return scope
 
+    def cancel_scope(self, client_order_id, order_id, logical_symbol, volume):
+        scope = {"client_order_id": client_order_id, "order_id": str(order_id),
+                 "symbol": self._resolve(logical_symbol), "volume": decimal_wire(volume)}
+        self._call(lambda mt5: self._validate_exposure(mt5, scope, operation="cancel"))
+        return scope
+
+    def _exit_check(self, mt5, scope, operation, authorization_check):
+        if scope is not None:
+            self._validate_exposure(mt5, scope, operation=operation)
+        if authorization_check is not None:
+            authorization_check(mt5)
+
     def send_once(self, request, *, expected_session=None, before_send=None, expected_empty_symbol=None):
         invoked = False
 
@@ -688,7 +700,7 @@ class MT5ExecutionAdapter:
             raise ExecutionError(code, message, status=422, retcode=retcode)
         return payload
 
-    def cancel(self, order_id, *, expected_session=None, expected_exposure=None):
+    def cancel(self, order_id, *, expected_session=None, expected_exposure=None, authorization_check=None):
         order_id = parse_ticket_id(order_id, resource="order")
         if expected_exposure is not None and str(order_id) != str(expected_exposure.get("order_id")):
             raise self._scope_error()
@@ -698,15 +710,14 @@ class MT5ExecutionAdapter:
         self.send_once(
             {"action": constants, "order": order_id},
             expected_session=expected_session,
-            before_send=(lambda mt5: self._validate_exposure(mt5, expected_exposure, operation="cancel"))
-            if expected_exposure is not None else None,
+            before_send=lambda mt5: self._exit_check(mt5, expected_exposure, "cancel", authorization_check),
         )
         order = self.order(order_id)
         if order is None:
             raise AmbiguousMT5Result()
         return order
 
-    def close(self, position_id, *, expected_session=None, expected_exposure=None):
+    def close(self, position_id, *, expected_session=None, expected_exposure=None, authorization_check=None):
         position_id = parse_ticket_id(position_id, resource="position")
         positions = self._call(lambda mt5: mt5.positions_get(ticket=position_id)) or ()
         if not positions:
@@ -740,8 +751,7 @@ class MT5ExecutionAdapter:
             raise self._scope_error()
         result = self.send_once(
             request, expected_session=expected_session,
-            before_send=(lambda mt5: self._validate_exposure(mt5, expected_exposure, operation="close"))
-            if expected_exposure is not None else None,
+            before_send=lambda mt5: self._exit_check(mt5, expected_exposure, "close", authorization_check),
         )
         ticket = result.get("deal_id")
         order_ticket = result.get("order_id")

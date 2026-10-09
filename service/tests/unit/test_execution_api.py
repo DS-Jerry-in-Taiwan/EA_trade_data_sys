@@ -2,13 +2,58 @@ import os
 from copy import deepcopy
 from pathlib import Path
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from service.domain.trades.errors import DealMappingError
-from service.execution.app import ExecutionContext, create_execution_app
+from flask.testing import FlaskClient
+from service.execution.app import ExecutionContext, create_execution_app as production_execution_app
+from service.execution.authorization import AuthorizationStore
 from service.execution.errors import AmbiguousMT5Result, ExecutionError
 from service.execution.idempotency import IdempotencyStore, payload_fingerprint
+
+
+def create_execution_app(context):
+    """Legacy behavior tests receive strict local synthetic operator grants.
+
+    The production factory remains unchanged: a runtime boolean never grants
+    permission. Each fake request gets one immutable, identity-bound grant.
+    """
+    context.authorization_store = AuthorizationStore(context.store.path)
+    app = production_execution_app(context)
+    class AuthorizedFakeClient(FlaskClient):
+        def post(self, path, *args, **kwargs):
+            supplied = dict(kwargs.get("headers") or {})
+            if context.mutation_enabled and supplied.get("X-API-Key") == "secret-for-test":
+                payload = kwargs.get("json")
+                client_id = (payload or {}).get("intent", {}).get("client_order_id", "exit-test") if isinstance(payload, dict) else "exit-test"
+                auth_id = "synthetic-" + str(client_id)
+                status = context.adapter.session_status(refresh=True)
+                now = datetime.now(timezone.utc)
+                artifact = {
+                    "authorization_id": auth_id, "account_fingerprint": status["fingerprint"]["id"],
+                    "session_generation": status["generation"], "session_epoch": context.session_epoch,
+                    "symbol": "XAUUSDm", "minimum_volume": "0.01", "client_order_id": str(client_id),
+                    "permissions": ["place", "cancel", "close"], "abort_owner": "synthetic-test-owner",
+                    "entry_not_before": (now-timedelta(minutes=1)).isoformat(),
+                    "entry_expires_at": (now+timedelta(minutes=5)).isoformat(),
+                    "recovery_expires_at": (now+timedelta(minutes=10)).isoformat(),
+                }
+                import sqlite3
+                try:
+                    context.authorization_store.provision(artifact)
+                except sqlite3.IntegrityError:
+                    pass  # Immutable replay uses the original grant, never re-provisions.
+                if path.endswith(("/cancel", "/close")):
+                    session = dict(status, epoch=context.session_epoch)
+                    context.authorization_store.claim_entry(auth_id, session, submit_payload(str(client_id)))
+                    context.authorization_store.bind_exposure(auth_id, session, order_id="7", position_id="9", verified=True)
+                supplied["X-Execution-Authorization"] = auth_id
+                kwargs["headers"] = supplied
+            return super().post(path, *args, **kwargs)
+    app.test_client_class = AuthorizedFakeClient
+    return app
 
 
 def submit_payload(client_id="client-1", **intent_changes):
@@ -44,8 +89,28 @@ class FakeAdapter:
         if not self.demo:
             raise ExecutionError("demo_account_required", "Demo required", status=403)
 
+    def session_status(self, *, refresh=False):
+        return {"state": "ready", "ready": True, "generation": getattr(self, "generation", 1),
+                "fingerprint": {"id": "demo", "account_mode": "DEMO" if self.demo else "REAL"}}
+
+    def mutation_session(self):
+        self.require_demo()
+        return {"generation": getattr(self, "generation", 1), "fingerprint": "demo"}
+
+    def validate_mutation_session(self, expected):
+        self.require_demo()
+
+    def assert_entry_scope(self, symbol):
+        return symbol
+
+    def exposure_scope(self, client_order_id, order_id, symbol, volume):
+        return {"client_order_id": client_order_id, "order_id": order_id, "position_id": "9", "symbol": symbol, "volume": volume}
+
+    def cancel_scope(self, client_order_id, order_id, symbol, volume):
+        return self.exposure_scope(client_order_id, order_id, symbol, volume)
+
     def symbol(self, symbol):
-        return {"symbol": symbol, "stops_level": 10, "freeze_level": 5, "margin_per_lot": 100, "observed_at": "2026-01-01T00:00:00+00:00"}
+        return {"symbol": symbol, "minimum_volume": "0.01", "stops_level": 10, "freeze_level": 5, "margin_per_lot": 100, "observed_at": "2026-01-01T00:00:00+00:00"}
 
     def orders(self):
         return [fake_order()]
@@ -65,16 +130,16 @@ class FakeAdapter:
     def preflight(self, payload):
         return {"symbol": payload["symbol"]}, {"retcode": 0, "margin": 100}
 
-    def send_once(self, request):
+    def send_once(self, request, **kwargs):
         self.send_count += 1
         if self.ambiguous:
             raise AmbiguousMT5Result()
         return {"order_id": "7", "deal_id": "8", "retcode": 10009}
 
-    def cancel(self, order_id):
+    def cancel(self, order_id, **kwargs):
         return {"order_id": order_id, "retcode": 10009}
 
-    def close(self, position_id):
+    def close(self, position_id, **kwargs):
         return {"position_id": position_id, "retcode": 10009}
 
 
@@ -122,13 +187,13 @@ class MutationSessionAdapter(FakeAdapter):
             )
         assert expected_session["generation"] == self.generation
 
-    def cancel(self, order_id, *, expected_session=None):
+    def cancel(self, order_id, *, expected_session=None, expected_exposure=None, authorization_check=None):
         if expected_session is not None:
             self.validate_mutation_session(expected_session)
         self.cancel_count += 1
         return {"order_id": order_id, "retcode": 10009}
 
-    def close(self, position_id, *, expected_session=None):
+    def close(self, position_id, *, expected_session=None, expected_exposure=None, authorization_check=None):
         if expected_session is not None:
             self.validate_mutation_session(expected_session)
         self.close_count += 1
@@ -241,8 +306,8 @@ def test_malformed_ticket_does_not_reach_adapter(
 def test_malformed_mutation_ticket_preserves_closed_gate(api):
     client, _, adapter = api
     response = client.post("/api/v1/orders/malformed/cancel", headers=headers())
-    assert response.status_code == 403
-    assert response.json["error"]["code"] == "mutation_disabled"
+    assert response.status_code == 400
+    assert response.json["error"]["code"] == "invalid_order_id"
     assert adapter.send_count == 0
 
 
@@ -267,12 +332,12 @@ def test_unexpected_preflight_failure_cannot_retry_order(api, monkeypatch):
     payload = submit_payload("unexpected")
     first = client.post("/api/v1/orders", headers=request_headers, json=payload)
     replay = client.post("/api/v1/orders", headers=request_headers, json=payload)
-    assert first.status_code == 500
-    assert first.json["error"]["code"] == "internal_error"
+    assert first.status_code == 503
+    assert first.json["error"]["code"] == "execution_outcome_unknown"
     assert "private" not in first.get_data(as_text=True)
-    assert replay.status_code == 409
-    assert replay.json["error"]["code"] == "execution_in_progress"
-    assert context.store.get("unexpected").state == "pending"
+    assert replay.status_code == 503
+    assert replay.json["error"]["code"] == "execution_outcome_unknown"
+    assert context.store.get("unexpected").state == "indeterminate"
     assert adapter.send_count == 0
 
 
@@ -282,6 +347,31 @@ def test_mutation_defaults_closed(api):
     assert response.status_code == 403
     assert response.json["error"]["code"] == "mutation_disabled"
     assert adapter.send_count == 0
+
+
+def test_runtime_boolean_without_scoped_operator_grant_cannot_authorize(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_EXECUTION_KEY", "secret-for-test")
+    adapter = FakeAdapter()
+    context = ExecutionContext(adapter, IdempotencyStore(tmp_path / "bool.sqlite3"), "TEST_EXECUTION_KEY", True)
+    client = production_execution_app(context).test_client()
+    response = client.post("/api/v1/orders", headers=headers(**{"Idempotency-Key": "client-1"}), json=submit_payload())
+    assert response.status_code == 403
+    assert response.json["error"]["code"] == "authorization_required"
+    assert adapter.send_count == 0
+
+
+def test_old_grant_rejects_changed_server_epoch_while_get_recovery_remains_available(api):
+    client, context, adapter = api
+    context.mutation_enabled = True
+    request_headers = headers(**{"Idempotency-Key": "client-1"})
+    assert client.post("/api/v1/orders", headers=request_headers, json=submit_payload()).status_code == 201
+    context.session_epoch = "new-synthetic-boot"
+    rejected = client.post("/api/v1/orders", headers=request_headers, json=submit_payload())
+    assert rejected.status_code == 403
+    assert rejected.json["error"]["code"] == "authorization_session_changed"
+    adapter.order_by_client = lambda _client_id: fake_order()
+    assert client.get("/api/v1/orders/by-client/client-1", headers=headers()).status_code == 200
+    assert adapter.send_count == 1
 
 
 def test_non_demo_fails_closed(tmp_path, monkeypatch):
@@ -425,7 +515,7 @@ def test_malformed_acceptance_result_stays_indeterminate_and_cannot_resend(api, 
     client, context, adapter = api
     context.mutation_enabled = True
 
-    def bad_acceptance(_request):
+    def bad_acceptance(_request, **kwargs):
         adapter.send_count += 1
         return {"order_id": "0", "deal_id": "8", "retcode": 10009}
 
@@ -452,10 +542,21 @@ def test_ambiguous_mt5_retcode_is_durable_and_recovered_without_resend(api, monk
         return SimpleNamespace(retcode=retcode, order=0, deal=0, comment="private timeout details")
 
     class SenderClient:
+        def session_status(self, **kwargs):
+            return adapter.session_status(**kwargs)
+
         def call(self, callback):
-            return callback(SimpleNamespace(order_send=send))
+            return callback(SimpleNamespace(
+                order_send=send, ACCOUNT_TRADE_MODE_DEMO=0, ACCOUNT_TRADE_MODE_REAL=2,
+                account_info=lambda: SimpleNamespace(login=123, server="synthetic", trade_mode=0),
+                positions_get=lambda **kwargs: [], orders_get=lambda **kwargs: [],
+            ))
 
     sender = MT5ExecutionAdapter(SenderClient())
+    from service.infrastructure.mt5.session import AccountSessionGuard
+    fingerprint = AccountSessionGuard().observe_account_info(SimpleNamespace(login=123, server="synthetic", trade_mode=0))["fingerprint"]
+    monkeypatch.setattr(adapter, "session_status", lambda **kw: {"ready": True, "state": "ready", "generation": 1, "fingerprint": fingerprint})
+    monkeypatch.setattr(adapter, "mutation_session", lambda: {"generation": 1, "fingerprint": fingerprint["id"]})
     monkeypatch.setattr(adapter, "send_once", sender.send_once)
     request_headers = headers(**{"Idempotency-Key": "client-1"})
     payload = submit_payload()
