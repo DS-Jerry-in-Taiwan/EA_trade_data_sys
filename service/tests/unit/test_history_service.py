@@ -229,6 +229,83 @@ def test_history_writer_contention_preserves_other_writer_publication(tmp_path):
     assert Path(f'{path}.ready').exists()
 
 
+def test_many_broker_closures_make_progress_without_partial_publication(tmp_path):
+    rows = [_bar(pd.Timestamp('2026-09-01T00:00:00Z') + pd.Timedelta(hours=i))
+            for i in range(20)]
+    config = tmp_path / 'settings.yaml'
+    _write_config(config, tmp_path / 'history', timeframes=['M15'],
+                  minimum_bars={'M15': 20}, retention_margin_bars=0)
+    client = FakeMT5Client(rows)
+    worker = HistoryService(config_path=config, mt5_client=client)
+    calls = []
+    original = client.mt5.copy_rates_range
+    client.mt5.copy_rates_range = lambda *args: (calls.append(args), original(*args))[1]
+    now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+    path = tmp_path / 'history' / 'BTC_M15.csv'
+    worker.fetch_incremental(now=now)
+    assert len(calls) == 8
+    assert not path.exists()
+    first_ttl = worker._verified_gaps[('BTC', 'M15')][2]
+    worker.fetch_incremental(now=now)
+    assert len(calls) == 16
+    assert not path.exists()
+    assert worker._verified_gaps[('BTC', 'M15')][2] == first_ttl
+    worker.fetch_incremental(now=now)
+    assert len(calls) == 19
+    assert worker.get_sync_status()['BTC:M15']['state'] == 'ready'
+    assert len(pd.read_csv(path)) == 20
+    worker.fetch_incremental(now=now)
+    assert len(calls) == 19
+
+
+@pytest.mark.parametrize('reset', [None, 'session', 'expiry'])
+def test_many_real_gaps_stage_bounded_authoritative_rows(tmp_path, reset):
+    full = [_bar(pd.Timestamp('2026-09-01T00:00:00Z') + pd.Timedelta(minutes=15*i))
+            for i in range(39)]
+    sparse = full[::2]
+    config = tmp_path / 'settings.yaml'
+    _write_config(config, tmp_path / 'history', timeframes=['M15'],
+                  minimum_bars={'M15': 20}, retention_margin_bars=20)
+    client = FakeMT5Client(sparse)
+    client.session_guard = SimpleNamespace(generation=1)
+    worker = HistoryService(config_path=config, mt5_client=client)
+    calls = []
+    def read_range(symbol, timeframe, start, end):
+        calls.append((start, end))
+        return [row for row in full if start.timestamp() <= row['time'] <= end.timestamp()]
+    client.mt5.copy_rates_range = read_range
+    now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+    path = tmp_path / 'history' / 'BTC_M15.csv'
+    worker.fetch_incremental(now=now)
+    assert len(calls) == 8
+    assert not path.exists()
+    identity, staged, stamp = worker._staged_gaps[('BTC', 'M15')]
+    assert sum(map(len, staged.values())) == 24
+    if reset == 'session':
+        client.session_guard.generation += 1
+    elif reset == 'expiry':
+        worker._staged_gaps[('BTC', 'M15')] = (identity, staged, time.monotonic()-3601)
+    worker.fetch_incremental(now=now)
+    assert len(calls) == 16
+    assert not path.exists()
+    if reset:
+        assert len(worker._staged_gaps[('BTC', 'M15')][1]) == 8
+        worker.fetch_incremental(now=now)
+    worker.fetch_incremental(now=now)
+    assert worker.get_sync_status()['BTC:M15']['state'] == 'ready'
+    assert len(pd.read_csv(path)) == 39
+    assert sum(len(rows) for rows in worker._staged_gaps[('BTC', 'M15')][1].values()) <= 40*32
+
+
+def test_d1_accepts_broker_timezone_phase(tmp_path):
+    config = tmp_path / 'settings.yaml'
+    _write_config(config, tmp_path / 'history', timeframes=['D1'], minimum_bars={'D1': 2})
+    client = FakeMT5Client([_bar('2026-09-01T21:00:00Z'), _bar('2026-09-02T21:00:00Z')])
+    worker = HistoryService(config_path=config, mt5_client=client)
+    worker.fetch_incremental(now=datetime(2026, 9, 8, tzinfo=timezone.utc))
+    assert worker.get_sync_status()['BTC:D1']['state'] == 'ready'
+
+
 def test_default_minimums_include_d1_and_fetch_margin(tmp_path):
     config_path = tmp_path / 'settings.yaml'
     _write_config(config_path, tmp_path / 'history')

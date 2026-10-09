@@ -82,6 +82,7 @@ class HistoryService:
         self._closed = False
         self.sync_status = {}
         self._verified_gaps = {}
+        self._staged_gaps = {}
         os.makedirs(self.data_path, exist_ok=True)
 
     def _get_timeframe_attr(self, tf_str):
@@ -147,7 +148,10 @@ class HistoryService:
         offset = 0
         source_exhausted = False
         source_identity = None
+        deadline = time.monotonic() + self.fetch_timeout_seconds
         while offset < target_count:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('MT5 positional history budget exhausted')
             requested = min(self.fetch_page_size, target_count - offset)
             if self._inflight_future is not None:
                 if not self._inflight_future.done():
@@ -180,7 +184,7 @@ class HistoryService:
             future = self._executor.submit(self.mt5_client.call, read_page)
             self._inflight_future = future
             try:
-                rates, identity = future.result(timeout=self.fetch_timeout_seconds)
+                rates, identity = future.result(timeout=max(0.001, deadline - time.monotonic()))
             except FutureTimeoutError as exc:
                 raise TimeoutError(
                     f'MT5 history page timed out after {self.fetch_timeout_seconds:g}s'
@@ -217,9 +221,22 @@ class HistoryService:
         per refresh; unfinished verification must not publish readiness.
         """
         key = (symbol, timeframe)
+        staged_identity, staged, staged_at = self._staged_gaps.get(key, (None, {}, 0))
+        if staged_identity != identity or time.monotonic() - staged_at >= 3600:
+            staged, staged_at = {}, time.monotonic()
+        current_signatures = set()
+        for i in range(1, len(frame)):
+            a, b = frame.iloc[i - 1], frame.iloc[i]
+            if b['time'] - a['time'] > self.SUPPORTED_TIMEFRAMES[timeframe]:
+                current_signatures.add(tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
+                                             for row in (a, b)))
+        staged = {signature: rows for signature, rows in staged.items()
+                  if signature in current_signatures}
+        self._staged_gaps[key] = (identity, staged, staged_at)
         remembered_identity, remembered, verified_at = self._verified_gaps.get(key, (None, set(), 0))
         if remembered_identity != identity or time.monotonic() - verified_at >= 3600:
             remembered = set()
+            verified_at = time.monotonic()
         active = set()
         additions = []
         duration = self.SUPPORTED_TIMEFRAMES[timeframe]
@@ -232,6 +249,9 @@ class HistoryService:
             signature = tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
                               for row in (left, right))
             active.add(signature)
+            if signature in staged:
+                additions.append(staged[signature])
+                continue
             if signature in remembered:
                 continue
             if calls >= 8 or time.monotonic() >= deadline:
@@ -264,6 +284,30 @@ class HistoryService:
             # authoritative and replace the older positional/cache snapshot.
             verified['source_symbol'] = identity[0]
             additions.append(verified)
+            # Stage actual authoritative bars, never just a filled-hole
+            # certificate. This lets the next bounded cycle apply them while
+            # leaving the published CSV untouched until all gaps are checked.
+            if len(verified) > 2 or any(
+                    actual[c] != expected[c]
+                    for actual, expected in ((verified.iloc[0], left), (verified.iloc[-1], right))
+                    for c in ('open', 'high', 'low', 'close')):
+                max_rows = self._retention_count(timeframe) * 32
+                if sum(len(rows) for rows in staged.values()) + len(verified) > max_rows:
+                    raise ValueError('history gap staging row budget exhausted')
+                staged[signature] = verified
+                self._staged_gaps[key] = (identity, staged, staged_at)
+            # Persist progress between bounded refreshes without publishing an
+            # unverified CSV. A failed range never receives a certificate.
+            if len(verified) == 2 and all(
+                    verified.iloc[i][c] == frame.iloc[index - 1 + i][c]
+                    for i in range(2) for c in ('open', 'high', 'low', 'close')):
+                remembered.add(signature)
+            for i in range(1, len(verified)):
+                a, b = verified.iloc[i - 1], verified.iloc[i]
+                if b['time'] - a['time'] > duration:
+                    remembered.add(tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
+                                         for row in (a, b)))
+            self._verified_gaps[key] = (identity, remembered, verified_at)
             # Remember each actual remaining broker closure, not a filled hole.
             for i in range(1, len(verified)):
                 a, b = verified.iloc[i - 1], verified.iloc[i]
@@ -289,7 +333,7 @@ class HistoryService:
         if parsed.isna().any() or parsed.duplicated().any():
             raise ValueError('invalid or duplicate MT5 history timestamps')
         seconds = int(cls.SUPPORTED_TIMEFRAMES[timeframe].total_seconds())
-        if (pd.to_numeric(frame['time'], errors='coerce') % seconds != 0).any():
+        if timeframe != 'D1' and (pd.to_numeric(frame['time'], errors='coerce') % seconds != 0).any():
             raise ValueError('MT5 history timestamps are off grid')
         values = frame[required[1:]].apply(pd.to_numeric, errors='coerce')
         import numpy as np
