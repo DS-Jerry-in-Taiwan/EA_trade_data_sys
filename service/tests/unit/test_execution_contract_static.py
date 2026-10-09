@@ -42,9 +42,17 @@ def test_execution_openapi_covers_client_lifecycle_and_health_contract():
     assert "never automatically retry" in create["description"].lower()
     parameter_names = {item["$ref"].split("/")[-1] for item in create["parameters"]}
     assert {"IdempotencyKey", "RequestId"} <= parameter_names
+    assert "ExecutionAuthorization" in parameter_names
+    for path in ("/orders/{id}/cancel", "/positions/{id}/close"):
+        assert any(item["$ref"].endswith("/ExecutionAuthorization")
+                   for item in paths[path]["post"]["parameters"])
+        assert paths[path]["post"]["requestBody"]["content"]["application/json"]["schema"]["additionalProperties"] is False
     health_required = set(spec["components"]["schemas"]["ExecutionHealth"]["required"])
     assert {"ready", "account_session", "mutation_enabled", "account_policy", "mutation_ready"} <= health_required
     schemas = spec["components"]["schemas"]
+    assert schemas["LocalDemoAuthorization"]["additionalProperties"] is False
+    assert "session_epoch" in schemas["LocalDemoAuthorization"]["required"]
+    assert "execution_authorization" in health_required
     for name in ("SuccessEnvelope", "ErrorEnvelope"):
         assert schemas[name]["properties"]["schema_version"] == {"type": "integer", "enum": [1]}
     health_unavailable = paths["/health"]["get"]["responses"]["503"]["content"]["application/json"]["schema"]
@@ -68,6 +76,7 @@ def test_compose_keeps_execution_mutation_closed_and_state_durable():
     assert env["EXECUTION_MUTATION_ENABLED"] == "false"
     assert env["EXECUTION_ACCOUNT_POLICY"] == "DEMO"
     assert env["EXECUTION_IDEMPOTENCY_DB"] == "/app/runtime/execution/idempotency.sqlite3"
+    assert env["EXECUTION_AUTHORIZATION_DB"] == "/app/runtime/execution/authorization.sqlite3"
     mounts = service["volumes"]
     assert any("../runtime:/app/runtime" in mount for mount in mounts)
     assert service["depends_on"]["mt5-server"]["condition"] == "service_started"

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
 import sqlite3
+import re
 from pathlib import Path
 
 from .errors import ExecutionError
@@ -54,6 +55,8 @@ class AuthorizationStore:
         if not isinstance(permissions, list) or not permissions or any(not isinstance(p, str) for p in permissions) or len(set(permissions)) != len(permissions) or any(p not in {"place", "cancel", "close"} for p in permissions):
             raise ValueError("invalid permissions")
         try:
+            if not isinstance(artifact["minimum_volume"], str) or len(artifact["minimum_volume"]) > 64 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", artifact["minimum_volume"]):
+                raise ValueError("minimum volume must be a bounded decimal string")
             volume = Decimal(str(artifact["minimum_volume"]))
             if isinstance(artifact["minimum_volume"], bool) or not volume.is_finite() or volume <= 0:
                 raise ValueError("positive finite minimum volume required")
@@ -71,6 +74,8 @@ class AuthorizationStore:
             _deny("authorization_required", "Scoped operator authorization is required")
         artifact = json.loads(row["artifact"])
         session = session or {}
+        if session.get("ready") is not True:
+            _deny("authorization_session_not_ready", "Verified ready session is required")
         fp = session.get("fingerprint")
         mode = session.get("account_mode")
         if isinstance(fp, dict):
@@ -119,6 +124,18 @@ class AuthorizationStore:
                         _deny("authorization_exposure_conflict", "Exposure binding is invalid or immutable")
                     c.execute(f"UPDATE demo_authorization SET {field}=? WHERE id=?", (str(value), auth_id))
 
+    def authorize_entry(self, auth_id, session, payload, now=None):
+        """Recheck immediately inside the guarded send lock; replay is not send permission."""
+        now = now or datetime.now(timezone.utc)
+        with self._connect() as c:
+            row, artifact = self._verified(c, auth_id, session)
+            if not row["claim"] or row["claim"] != payload_fingerprint(payload):
+                _deny("authorization_payload_conflict", "Matching durable entry claim is required")
+            if row["killed"] or "place" not in artifact["permissions"] or not _utc(artifact["entry_not_before"]) <= now < _utc(artifact["entry_expires_at"]):
+                _deny("authorization_entry_closed", "New-entry authorization is closed")
+
+    validate_entry = authorize_entry
+
     def _exit(self, c, auth_id, session, operation, target_id, now):
         row, a = self._verified(c, auth_id, session)
         field = {"cancel": "order_id", "close": "position_id"}.get(operation)
@@ -140,6 +157,12 @@ class AuthorizationStore:
                 return {"state": row["state"], "result": json.loads(row["result"]) if row["result"] else None}, False
             c.execute("INSERT INTO demo_authorization_exit VALUES(?,?,?,'pending',NULL)", (auth_id, operation, str(target_id)))
             return {"state": "pending", "result": None}, True
+
+    def exit_record(self, auth_id, operation, target_id):
+        """Internal lookup only; caller must independently authorize current identity."""
+        with self._connect() as c:
+            row = c.execute("SELECT state,result FROM demo_authorization_exit WHERE authorization_id=? AND operation=? AND target_id=?", (auth_id, operation, str(target_id))).fetchone()
+            return {"state": row["state"], "result": json.loads(row["result"]) if row["result"] else None} if row else None
 
     def finish_exit(self, auth_id, operation, target_id, state, result):
         if state not in {"succeeded", "failed", "indeterminate"}:

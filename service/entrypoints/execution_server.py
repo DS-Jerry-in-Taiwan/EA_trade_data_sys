@@ -6,6 +6,7 @@ import os
 from service.config import load_settings
 from service.execution.app import ExecutionContext, create_execution_app
 from service.execution.idempotency import IdempotencyStore
+from service.execution.authorization import AuthorizationStore
 from service.execution.mt5_adapter import MT5ExecutionAdapter
 from service.infrastructure.mt5.client import MT5Client
 
@@ -28,6 +29,9 @@ def build_execution_server():
         api_key_env=os.getenv("EXECUTION_API_KEY_ENV", "READONLY_API_KEY"),
         mutation_enabled=_enabled(os.getenv("EXECUTION_MUTATION_ENABLED", "false")),
         account_policy=os.getenv("EXECUTION_ACCOUNT_POLICY", "DEMO"),
+        authorization_store=AuthorizationStore(
+            os.getenv("EXECUTION_AUTHORIZATION_DB", "/app/runtime/execution/authorization.sqlite3")
+        ),
     )
     return create_execution_app(context), client
 

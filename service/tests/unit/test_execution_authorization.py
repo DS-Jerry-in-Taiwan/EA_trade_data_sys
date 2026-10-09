@@ -5,9 +5,9 @@ from service.execution.errors import ExecutionError
 
 
 NOW = datetime(2030, 1, 1, 12, tzinfo=timezone.utc)
-SESSION = {"fingerprint": "opaque-demo", "generation": 1, "epoch": "boot-a", "account_mode": "DEMO"}
+SESSION = {"fingerprint": "opaque-demo", "generation": 1, "epoch": "boot-a", "account_mode": "DEMO", "ready": True}
 ARTIFACT = {"authorization_id": "test-grant", "account_fingerprint": "opaque-demo", "session_generation": 1,
-            "session_epoch": "boot-a", "symbol": "BTC", "minimum_volume": 0.01, "client_order_id": "one-entry",
+            "session_epoch": "boot-a", "symbol": "BTC", "minimum_volume": "0.01", "client_order_id": "one-entry",
             "permissions": ["place", "cancel", "close"], "entry_not_before": "2030-01-01T11:00:00Z",
             "entry_expires_at": "2030-01-01T13:00:00Z", "recovery_expires_at": "2030-01-01T14:00:00Z", "abort_owner": "operator"}
 PAYLOAD = {"intent": {"symbol": "BTC", "volume": 0.01, "client_order_id": "one-entry"}}
@@ -71,3 +71,52 @@ def test_unverified_binding_rejected(store):
 def test_empty_policy_closed(tmp_path):
     policy = AuthorizationStore(tmp_path / "empty.sqlite").policy(SESSION, NOW)
     assert not policy["entry"]["enabled"] and not policy["exit"]["enabled"]
+
+
+def test_pre_send_kill_rejects_previously_claimed_entry(store):
+    store.claim_entry("test-grant", SESSION, PAYLOAD, NOW)
+    store.authorize_entry("test-grant", SESSION, PAYLOAD, NOW)
+    store.disable_entry("test-grant")
+    assert not store.claim_entry("test-grant", SESSION, PAYLOAD, NOW)
+    with pytest.raises(ExecutionError):
+        store.authorize_entry("test-grant", SESSION, PAYLOAD, NOW)
+
+
+def test_pre_send_expiry_rejects_previously_claimed_entry(store):
+    store.claim_entry("test-grant", SESSION, PAYLOAD, NOW)
+    with pytest.raises(ExecutionError):
+        store.authorize_entry("test-grant", SESSION, PAYLOAD, datetime(2030, 1, 1, 13, tzinfo=timezone.utc))
+
+
+def test_pre_send_requires_matching_claim_and_ready(store):
+    with pytest.raises(ExecutionError):
+        store.authorize_entry("test-grant", SESSION, PAYLOAD, NOW)
+    store.claim_entry("test-grant", SESSION, PAYLOAD, NOW)
+    with pytest.raises(ExecutionError):
+        store.authorize_entry("test-grant", dict(SESSION, ready=False), PAYLOAD, NOW)
+    with pytest.raises(ExecutionError):
+        store.authorize_entry("test-grant", SESSION, dict(PAYLOAD, request_id="changed"), NOW)
+
+
+@pytest.mark.parametrize("value", [0.01, 1, True, "", "1e-2", ".01", "NaN", "Infinity", "0", "1" * 65])
+def test_minimum_volume_strict_decimal_string(store, value):
+    with pytest.raises(ValueError):
+        store.provision(dict(ARTIFACT, authorization_id="other", minimum_volume=value))
+
+
+@pytest.mark.parametrize("ready", [None, False, 1, "true"])
+def test_readiness_mandatory_boolean_true(store, ready):
+    with pytest.raises(ExecutionError):
+        store.claim_entry("test-grant", dict(SESSION, ready=ready), PAYLOAD, NOW)
+
+
+def test_missing_readiness_rejected(store):
+    session = {key: value for key, value in SESSION.items() if key != "ready"}
+    with pytest.raises(ExecutionError):
+        store.claim_entry("test-grant", session, PAYLOAD, NOW)
+
+
+@pytest.mark.parametrize("permissions", [[{}], [[]], [1], [True]])
+def test_unhashable_permissions_rejected(store, permissions):
+    with pytest.raises(ValueError):
+        store.provision(dict(ARTIFACT, authorization_id="other", permissions=permissions))
