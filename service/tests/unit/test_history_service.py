@@ -1,5 +1,6 @@
 import time
 import threading
+import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,10 @@ class FakeMT5:
     def copy_rates_from_pos(self, symbol, timeframe, position, count):
         self.requests.append((symbol, timeframe, position, count))
         return self.rates[position:position + count]
+
+    def copy_rates_range(self, symbol, timeframe, start, end):
+        return [row for row in self.rates
+                if start.timestamp() <= row['time'] <= end.timestamp()]
 
 
 class FakeMT5Client:
@@ -109,6 +114,119 @@ def _write_config(path, data_path, timeframes=None, **history_overrides):
 
 def _temporary_csv_files(directory):
     return [path for path in directory.iterdir() if path.name.endswith('.tmp')]
+
+
+@pytest.mark.parametrize('mode', ['filled', 'closure', 'corrected', 'partial', 'none', 'duplicate'])
+def test_bounded_gap_verification_repairs_or_fails_closed(tmp_path, mode):
+    start = pd.Timestamp('2026-09-01T00:00:00Z')
+    full = [_bar(start + pd.Timedelta(minutes=15 * i)) for i in range(196)]
+    boundaries = [full[0], full[-1]]
+
+    class GapMT5(FakeMT5):
+        def __init__(self):
+            super().__init__(boundaries)
+            self.range_calls = 0
+
+        def copy_rates_range(self, symbol, timeframe, left, right):
+            self.range_calls += 1
+            return {'filled': full, 'closure': boundaries, 'partial': full[:-1],
+                    'corrected': [dict(full[0], close=100.5), *full[1:]],
+                    'none': None, 'duplicate': full + [full[-1]]}[mode]
+
+    config = tmp_path / 'settings.yaml'
+    _write_config(config, tmp_path / 'history', timeframes=['M15'],
+                  minimum_bars={'M15': 2}, retention_margin_bars=220)
+    client = FakeMT5Client([])
+    client.mt5 = GapMT5()
+    worker = HistoryService(config_path=config, mt5_client=client)
+    now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    path = tmp_path / 'history' / 'BTC_M15.csv'
+    worker.fetch_incremental(now=now)
+    if mode in ('filled', 'closure', 'corrected'):
+        assert worker.get_sync_status()['BTC:M15']['state'] == 'ready'
+        saved = pd.read_csv(path)
+        assert len(saved) == (2 if mode == 'closure' else 196)
+        assert saved['time'].is_unique
+        if mode in ('filled', 'corrected'):
+            # Subsequent positional pages can be sparse; the repaired cache
+            # retains the >99 downtime bars without any additional range call.
+            client.mt5.rates = full
+            if mode == 'corrected':
+                assert saved.iloc[0]['close'] == 100.5
+                client.mt5.rates = [dict(full[0], close=100.5), *full[1:]]
+        worker.fetch_incremental(now=now)
+        assert client.mt5.range_calls == 1
+        pd.testing.assert_frame_equal(saved, pd.read_csv(path))
+    else:
+        assert worker.get_sync_status()['BTC:M15']['state'] == 'error'
+        assert not path.exists()
+        assert not Path(f'{path}.ready').exists()
+
+
+@pytest.mark.parametrize('change', ['session', 'timeout', 'invalid', 'expired'])
+def test_gap_verification_guard_and_memo_expiry(tmp_path, change):
+    rows = [_bar('2026-09-08T10:00:00Z'), _bar('2026-09-08T11:00:00Z')]
+    config = tmp_path / 'settings.yaml'
+    _write_config(config, tmp_path / 'history', timeframes=['M15'],
+                  minimum_bars={'M15': 2}, fetch_timeout_seconds=0.03)
+    client = FakeMT5Client(rows)
+    client.session_guard = SimpleNamespace(generation=1)
+    worker = HistoryService(config_path=config, mt5_client=client)
+    now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+    worker.fetch_incremental(now=now)
+    path = tmp_path / 'history' / 'BTC_M15.csv'
+    original = path.read_bytes()
+    release = threading.Event()
+    calls = []
+
+    def read_range(*args):
+        calls.append(args)
+        if change == 'session':
+            client.session_guard.generation += 1
+        elif change == 'timeout':
+            release.wait(1)
+        elif change == 'invalid':
+            return [dict(rows[0], close=float('nan')), rows[1]]
+        return rows
+
+    client.mt5.copy_rates_range = read_range
+    # New session identities and expired certificates both force revalidation.
+    identity, gaps, _ = worker._verified_gaps[('BTC', 'M15')]
+    worker._verified_gaps[('BTC', 'M15')] = (identity, gaps, time.monotonic() - 3601)
+    try:
+        worker.fetch_incremental(now=now)
+        assert len(calls) == 1
+        if change == 'expired':
+            assert worker.get_sync_status()['BTC:M15']['state'] == 'ready'
+        else:
+            assert worker.get_sync_status()['BTC:M15']['state'] == 'error'
+            assert not Path(f'{path}.ready').exists()
+            assert path.read_bytes() == original
+        if change == 'timeout':
+            worker.fetch_incremental(now=now)
+            assert len(calls) == 1
+    finally:
+        release.set()
+        worker._executor.shutdown(wait=True)
+
+
+def test_history_writer_contention_preserves_other_writer_publication(tmp_path):
+    config = tmp_path / 'settings.yaml'
+    _write_config(config, tmp_path / 'history', timeframes=['M15'], minimum_bars={'M15': 1})
+    client = FakeMT5Client([_bar('2026-09-08T10:00:00Z')])
+    worker = HistoryService(config_path=config, mt5_client=client)
+    now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+    worker.fetch_incremental(now=now)
+    path = tmp_path / 'history' / 'BTC_M15.csv'
+    before = path.read_bytes()
+    requests = len(client.mt5.requests)
+    with open(f'{path}.writer.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        worker.fetch_incremental(now=now)
+    assert worker.get_sync_status()['BTC:M15']['state'] == 'error'
+    assert len(client.mt5.requests) == requests
+    assert path.read_bytes() == before
+    assert Path(f'{path}.ready').exists()
 
 
 def test_default_minimums_include_d1_and_fetch_margin(tmp_path):
@@ -393,7 +511,8 @@ def test_incremental_merge_preserves_iso_cache_and_new_epoch_bar(tmp_path):
         pd.Timestamp('2026-09-08T10:00:00Z'),
         pd.Timestamp('2026-09-08T10:05:00Z'),
     ]
-    assert service.get_sync_status()['BTC:M5']['state'] == 'ready'
+    # A short exhausted source must not borrow cached rows to certify readiness.
+    assert service.get_sync_status()['BTC:M5']['state'] == 'insufficient'
 
 
 def test_changed_source_identity_rebuilds_without_mixing_instruments(tmp_path):
@@ -589,7 +708,7 @@ def test_changed_identity_with_empty_fetch_revokes_ready_marker(tmp_path):
 
     assert path.exists()
     assert not (data_path / 'BTC_M5.csv.ready').exists()
-    assert service.get_sync_status()['BTC:M5']['state'] == 'insufficient'
+    assert service.get_sync_status()['BTC:M5']['state'] == 'error'
 
 
 def test_unresolved_symbol_revokes_existing_ready_marker(tmp_path):

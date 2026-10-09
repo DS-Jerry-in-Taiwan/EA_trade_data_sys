@@ -2,6 +2,7 @@ import os
 import tempfile
 import time
 import signal
+import fcntl
 import pandas as pd
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -80,6 +81,7 @@ class HistoryService:
         self._inflight_future = None
         self._closed = False
         self.sync_status = {}
+        self._verified_gaps = {}
         os.makedirs(self.data_path, exist_ok=True)
 
     def _get_timeframe_attr(self, tf_str):
@@ -188,7 +190,11 @@ class HistoryService:
                     self._inflight_future = None
 
             source_identity = identity
-            page = pd.DataFrame(rates) if rates is not None else pd.DataFrame()
+            if rates is None:
+                raise ValueError('MT5 history returned None')
+            page = pd.DataFrame(rates)
+            if len(page) > requested:
+                raise ValueError('MT5 history page exceeds requested count')
             if page.empty:
                 source_exhausted = True
                 break
@@ -203,6 +209,97 @@ class HistoryService:
             source_identity,
         )
 
+    def _verify_gaps(self, symbol, timeframe_attr, timeframe, frame, identity, now):
+        """Verify only interior holes, including both closed broker boundaries.
+
+        A range response is authoritative only if its boundaries match the
+        positional snapshot. No synthetic bars are ever inserted. Bound work
+        per refresh; unfinished verification must not publish readiness.
+        """
+        key = (symbol, timeframe)
+        remembered_identity, remembered, verified_at = self._verified_gaps.get(key, (None, set(), 0))
+        if remembered_identity != identity or time.monotonic() - verified_at >= 3600:
+            remembered = set()
+        active = set()
+        additions = []
+        duration = self.SUPPORTED_TIMEFRAMES[timeframe]
+        deadline = time.monotonic() + self.fetch_timeout_seconds
+        calls = 0
+        for index in range(1, len(frame)):
+            left, right = frame.iloc[index - 1], frame.iloc[index]
+            if right['time'] - left['time'] <= duration:
+                continue
+            signature = tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
+                              for row in (left, right))
+            active.add(signature)
+            if signature in remembered:
+                continue
+            if calls >= 8 or time.monotonic() >= deadline:
+                raise ValueError('history gap verification budget exhausted')
+            if right['time'] - left['time'] > duration * self._retention_count(timeframe) * 32:
+                raise ValueError('history gap exceeds bounded verification span')
+            def read_range(mt5):
+                current = (self.mt5_client.resolve(symbol), self._session_generation())
+                if current != identity:
+                    raise AccountSessionTransition('MT5 account session changed during gap verification')
+                return mt5.copy_rates_range(current[0], timeframe_attr,
+                                           left['time'].to_pydatetime(), right['time'].to_pydatetime())
+            future = self._executor.submit(self.mt5_client.call, read_range)
+            self._inflight_future = future
+            try:
+                rates = future.result(timeout=max(0.001, deadline - time.monotonic()))
+            except FutureTimeoutError as exc:
+                raise TimeoutError('MT5 history gap verification timed out') from exc
+            finally:
+                if future.done():
+                    self._inflight_future = None
+            calls += 1
+            if rates is None:
+                raise ValueError('MT5 gap verification returned None')
+            raw = pd.DataFrame(rates)
+            verified = self._validate_bars(raw, timeframe, now)
+            if len(verified) != len(raw) or verified.empty or verified.iloc[0]['time'] != left['time'] or verified.iloc[-1]['time'] != right['time']:
+                raise ValueError('MT5 gap verification missing closed boundaries')
+            # Boundary timestamps must match. Valid broker OHLC revisions are
+            # authoritative and replace the older positional/cache snapshot.
+            verified['source_symbol'] = identity[0]
+            additions.append(verified)
+            # Remember each actual remaining broker closure, not a filled hole.
+            for i in range(1, len(verified)):
+                a, b = verified.iloc[i - 1], verified.iloc[i]
+                if b['time'] - a['time'] > duration:
+                    active.add(tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
+                                     for row in (a, b)))
+        self._verified_gaps[key] = (identity, active, verified_at if remembered else time.monotonic())
+        if not additions:
+            return frame
+        return self._merge_bars(frame, pd.concat(additions, ignore_index=True), timeframe, now)
+
+    @classmethod
+    def _validate_bars(cls, frame, timeframe, now):
+        if frame.empty:
+            return frame
+        required = ['time', 'open', 'high', 'low', 'close', 'tick_volume']
+        if any(c not in frame for c in required):
+            raise ValueError('invalid MT5 history columns')
+        normalized = cls._keep_closed_bars(frame, timeframe, now)
+        # Forming bars are permitted; invalid timestamps and duplicate source
+        # rows are not silently repaired by merge/deduplication.
+        parsed = pd.to_datetime(pd.to_numeric(frame['time'], errors='coerce'), unit='s', utc=True, errors='coerce')
+        if parsed.isna().any() or parsed.duplicated().any():
+            raise ValueError('invalid or duplicate MT5 history timestamps')
+        seconds = int(cls.SUPPORTED_TIMEFRAMES[timeframe].total_seconds())
+        if (pd.to_numeric(frame['time'], errors='coerce') % seconds != 0).any():
+            raise ValueError('MT5 history timestamps are off grid')
+        values = frame[required[1:]].apply(pd.to_numeric, errors='coerce')
+        import numpy as np
+        if not np.isfinite(values.to_numpy()).all() or (values['tick_volume'] < 0).any():
+            raise ValueError('invalid MT5 history values')
+        if ((values['high'] < values[['open', 'close', 'low']].max(axis=1)) |
+                (values['low'] > values[['open', 'close', 'high']].min(axis=1))).any():
+            raise ValueError('invalid MT5 history OHLC')
+        return normalized.sort_values('time').reset_index(drop=True)
+
     @classmethod
     def _keep_closed_bars(cls, dataframe, timeframe, now=None):
         if timeframe not in cls.SUPPORTED_TIMEFRAMES:
@@ -211,7 +308,9 @@ class HistoryService:
             return dataframe.copy()
 
         result = dataframe.copy()
-        numeric_times = pd.to_numeric(result['time'], errors='coerce')
+        numeric_times = (pd.Series(float('nan'), index=result.index)
+                         if pd.api.types.is_datetime64_any_dtype(result['time'])
+                         else pd.to_numeric(result['time'], errors='coerce'))
         parsed_times = pd.to_datetime(result['time'], utc=True, errors='coerce')
         numeric_mask = numeric_times.notna()
         if numeric_mask.any():
@@ -316,6 +415,9 @@ class HistoryService:
                 for timeframe in sym_conf['timeframes']:
                     normalized = str(timeframe).upper()
                     if normalized in self.minimum_bars:
+                        self._invalidate_cache(os.path.join(
+                            self.data_path, f"{sym_conf['name']}_{normalized}.csv"
+                        ))
                         self._set_status(
                             sym_conf['name'], normalized, 'error',
                             detail='MT5 connection failed',
@@ -369,8 +471,12 @@ class HistoryService:
                     f'(latest {fetch_count} bars)...'
                 )
 
+                writer_lock = None
+                filepath = None
                 try:
                     filepath = os.path.join(self.data_path, f'{symbol}_{tf_str}.csv')
+                    writer_lock = open(f'{filepath}.writer.lock', 'a')
+                    fcntl.flock(writer_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     old_df = pd.read_csv(filepath) if os.path.exists(filepath) else None
                     cached_source = None
                     if old_df is not None:
@@ -386,6 +492,9 @@ class HistoryService:
                         symbol, tf, fetch_count, filepath, cached_source
                     )
                     broker_symbol, generation = source_identity
+                    if rates.empty:
+                        raise ValueError('MT5 returned no history bars')
+                    self._validate_bars(rates, tf_str, now)
                     if self._session_generation() != generation:
                         raise AccountSessionTransition(
                             'MT5 account session changed before history publication'
@@ -400,8 +509,15 @@ class HistoryService:
                     final_df = final_df.tail(
                         self._retention_count(tf_str)
                     ).reset_index(drop=True)
+                    final_df = self._verify_gaps(symbol, tf, tf_str, final_df, source_identity, now)
+                    final_df = final_df.tail(self._retention_count(tf_str)).reset_index(drop=True)
+                    if self._session_generation() != generation:
+                        raise AccountSessionTransition('MT5 account session changed before history publication')
                     minimum = self.minimum_bars[tf_str]
-                    status = 'ready' if len(final_df) >= minimum else 'insufficient'
+                    source_closed = self._keep_closed_bars(rates, tf_str, now=now)
+                    source_sufficient = not source_exhausted or len(source_closed) >= minimum
+                    status = ('ready' if len(final_df) >= minimum and source_sufficient
+                              else 'insufficient')
                     if not final_df.empty:
                         self._atomic_write_csv(final_df, filepath)
                         if self._session_generation() != generation:
@@ -429,12 +545,15 @@ class HistoryService:
                         f'for {symbol} {tf_str} ({status}, minimum={minimum})'
                     )
                 except Exception as e:
-                    if isinstance(e, AccountSessionTransition):
+                    if filepath is not None and not isinstance(e, BlockingIOError):
                         self._invalidate_cache(filepath)
                     self._set_status(
                         symbol, tf_str, 'error', detail=str(e)
                     )
                     print(f'[{datetime.now()}] Error fetching {symbol} {tf_str}: {e}')
+                finally:
+                    if writer_lock is not None:
+                        writer_lock.close()
 
         states = [item['state'] for item in self.sync_status.values()]
         state = 'healthy' if states and all(item == 'ready' for item in states) else 'degraded'
