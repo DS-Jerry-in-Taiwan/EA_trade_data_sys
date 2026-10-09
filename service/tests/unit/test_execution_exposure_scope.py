@@ -80,3 +80,38 @@ def test_entry_rejects_nonempty_or_unknown_baseline(positions, orders):
     module = NS(positions_get=lambda **kw: positions, orders_get=lambda **kw: orders)
     with pytest.raises(ExecutionError):
         MT5ExecutionAdapter(Client(module)).assert_entry_scope("TEST")
+
+
+def test_final_authorization_runs_after_baseline_and_scope_reads():
+    events, sends = [], []
+    def positions(**kwargs):
+        events.append("positions")
+        return []
+    module = NS(positions_get=positions, orders_get=lambda **kw: [],
+                symbol_info=lambda symbol: NS(volume_min=.1), order_send=lambda request: sends.append(request))
+    def authorization(mt5):
+        assert events == ["positions", "scope"]
+        raise ExecutionError("authorization_entry_closed", "Expired during broker reads", status=403)
+    with pytest.raises(ExecutionError):
+        MT5ExecutionAdapter(Client(module)).send_once({"symbol": "TEST", "volume": .1},
+            expected_empty_symbol="TEST", before_send=lambda mt5: events.append("scope"), final_authorization=authorization)
+    assert sends == []
+
+
+def test_fresh_minimum_volume_change_rejects_send():
+    sends = []
+    module = NS(positions_get=lambda **kw: [], orders_get=lambda **kw: [],
+                symbol_info=lambda symbol: NS(volume_min=.2), order_send=lambda request: sends.append(request))
+    with pytest.raises(ExecutionError) as error:
+        MT5ExecutionAdapter(Client(module)).send_once({"symbol": "TEST", "volume": .1}, expected_empty_symbol="TEST")
+    assert error.value.code == "authorization_volume_denied"
+    assert sends == []
+
+
+@pytest.mark.parametrize("changes", [{"volume": .2}, {"type": 0}, {"symbol": "OTHER"}, {"position": 10}])
+def test_stale_close_request_cannot_use_current_valid_scope(changes):
+    module, _, _, scope = book()
+    request = dict(position=9, symbol="TEST", volume=.1, type=1, **{})
+    request.update(changes)
+    with pytest.raises(ExecutionError):
+        MT5ExecutionAdapter(Client(module))._exit_check(module, scope, "close", None, request)

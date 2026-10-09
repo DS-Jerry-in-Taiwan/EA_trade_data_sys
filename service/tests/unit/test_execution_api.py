@@ -128,7 +128,7 @@ class FakeAdapter:
         return []
 
     def preflight(self, payload):
-        return {"symbol": payload["symbol"]}, {"retcode": 0, "margin": 100}
+        return {"symbol": payload["symbol"], "volume": float(payload["volume"])}, {"retcode": 0, "margin": 100}
 
     def send_once(self, request, **kwargs):
         self.send_count += 1
@@ -550,6 +550,7 @@ def test_ambiguous_mt5_retcode_is_durable_and_recovered_without_resend(api, monk
                 order_send=send, ACCOUNT_TRADE_MODE_DEMO=0, ACCOUNT_TRADE_MODE_REAL=2,
                 account_info=lambda: SimpleNamespace(login=123, server="synthetic", trade_mode=0),
                 positions_get=lambda **kwargs: [], orders_get=lambda **kwargs: [],
+                symbol_info=lambda symbol: SimpleNamespace(volume_min=.01),
             ))
 
     sender = MT5ExecutionAdapter(SenderClient())
