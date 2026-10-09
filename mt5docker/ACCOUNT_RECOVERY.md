@@ -17,6 +17,26 @@ An operator must authorize the selected profile import. This procedure is not a
 bulk import and does not guarantee restoration of the entire GUI login list.
 Never edit `accounts.dat`, print a private INI, or put credentials in commands.
 
+Before importing the explicitly authorized profile, stage a separate private
+INI with password persistence enabled, supplying paths only:
+
+```bash
+bash /mt5docker/stage_persistent_profile.sh \
+  /private/authorized-selected-profile.ini /private/new-persistent-profile.ini
+```
+
+Use the staged output as the selected profile below. The output must not already
+exist; the helper atomically publishes a mode-600 file and leaves the input
+unchanged. It preserves unrelated sections and credential bytes, handles UTF-8
+(including BOM) and CRLF, and refuses UTF-16/binary input, duplicate Common
+sections, duplicate KeepPrivate options, and existing/symlink output targets.
+Keep the parent directory private. No credentials or paths are printed.
+The official [MT5 advanced startup documentation](https://www.metatrader5.com/en/terminal/help/start_advanced/start)
+defines `[Common] KeepPrivate=1` as saving the password between connections;
+`0` does not save it. Enabling this setting is a persistence prerequisite to
+test, not proof of why previous native metadata disappeared or of restart
+survival. The controlled evidence checklist below still applies.
+
 1. Stop `mt5-server` before making a backup. Use a one-off container with the
    same persistent portable mount and private config mount, with its normal
    startup overridden. Do not run a second terminal against the same storage.
