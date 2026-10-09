@@ -41,6 +41,30 @@ restart changes boot epoch and invalidates previously provisioned mutation
 grants: fetch fresh health and obtain fresh operator approval afterwards.
 Do not restart a service merely to toggle entry during an unresolved exposure.
 
+For a **future separately authorized** bounded test, an operator-reviewed
+Compose override must explicitly contain:
+
+```yaml
+services:
+  execution-service:
+    environment:
+      EXECUTION_MUTATION_ENABLED: "true"
+```
+
+Apply only execution-service with the normal private runtime overrides and
+approved key injection already configured:
+
+```sh
+docker compose -f compose.yaml -f compose.runtime.override.yaml -f approved-entry.override.yaml up -d --no-deps --no-build --force-recreate execution-service
+```
+
+After health recovers, fetch the new epoch and provision the approved grant.
+Neither the override nor provisioning is executed in this handoff. To stop
+new entry **without a restart**, use `kill-entry` first; this preserves the
+same-session scoped exit. After proving zero exposure, recreate only
+execution-service without the approved-entry override to return to the base
+`false` configuration. Never remove the persistent runtime volume/database.
+
 ## Bounded entry and recovery
 
 1. Obtain explicit approval for symbol, exact minimum volume, client order,
