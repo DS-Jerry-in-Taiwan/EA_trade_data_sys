@@ -1,0 +1,10 @@
+# Opt in only after copying the complete stopped-container prefix.
+# Compose merges volumes by target, preserving the existing nested MT5 mount.
+services:
+  mt5-server:
+    volumes:
+      - type: bind
+        source: ${MT5_WINE_PREFIX_DIR:?MT5_WINE_PREFIX_DIR must name an initialized private Wine prefix}
+        target: /opt/wineprefix
+        bind:
+          create_host_path: false
