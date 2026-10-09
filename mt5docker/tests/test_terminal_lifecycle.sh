@@ -366,6 +366,81 @@ assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.lo
     assert_success terminal_update_pending "$DAILY_SNAPSHOT"
 )
 
+(
+    EVENTS="$TMP/shutdown-events"
+    launch_terminal() { fail 'shutdown launched another terminal'; }
+    request_terminal_close() { printf 'close:%s\n' "$1" >> "$EVENTS"; }
+    signal_pids() { local signal="$1"; shift; printf '%s:%s\n' "$signal" "$*" >> "$EVENTS"; }
+    wait_for_pids_exit() {
+        printf 'wait:%s:%s\n' "$1" "${*:2}" >> "$EVENTS"
+        if [ "$CLOSE_CASE" = success ]; then clear_processes; return 0; fi
+        return 1
+    }
+    # Removing /proc records after KILL models forced termination.
+    stop_exact_pids() {
+        local timeout="$1"; shift
+        [ "$#" -gt 0 ] || return 0
+        signal_pids TERM "$@"
+        if ! wait_for_pids_exit "$timeout" "$@"; then
+            signal_pids KILL "$@"
+            clear_processes
+        fi
+    }
+    clear_processes; add_process 901 'C:\MT5\terminal64.exe' /portable
+    : > "$EVENTS"; CLOSE_CASE=success
+    shutdown_mt5_runtime 901 902 >/dev/null
+    [ "$(head -1 "$EVENTS")" = close:901 ] || fail 'desktop stopped before normal close'
+    grep -q '^TERM:902$' "$EVENTS" || fail 'desktop child cleanup missing'
+    if grep -Eq '^(TERM|KILL):.*901' "$EVENTS"; then fail 'successful close still signalled terminal'; fi
+
+    clear_processes; add_process 901 'C:\MT5\terminal64.exe' /portable
+    : > "$EVENTS"; CLOSE_CASE=timeout
+    shutdown_mt5_runtime 901 902 >/dev/null
+    expected=$'close:901\nwait:8:901\nTERM:901\nwait:3:901\nKILL:901\nTERM:902\nwait:3:902\nKILL:902'
+    [ "$(< "$EVENTS")" = "$expected" ] || fail 'close timeout fallback ordering changed'
+
+    for conflict in duplicate updater; do
+        clear_processes; add_process 901 'C:\MT5\terminal64.exe' /portable
+        if [ "$conflict" = duplicate ]; then add_process 903 'C:\MT5\terminal64.exe' /portable
+        else add_process 903 'C:\MT5\terminal64.exe' /update; fi
+        : > "$EVENTS"
+        shutdown_mt5_runtime 901 902 >/dev/null
+        if grep -q '^close:' "$EVENTS"; then fail 'conflicting terminals received broad normal close'; fi
+        [ "$(head -1 "$EVENTS")" = 'TERM:901 903' ] || fail 'conflict cleanup did not stop exact terminal PIDs first'
+    done
+)
+(
+    clear_processes; add_process 911 'C:\MT5\terminal64.exe' /portable
+    timeout() {
+        [ "$*" = '--kill-after=1s 3s wine taskkill /IM terminal64.exe' ] || fail 'Windows close was forced or unbounded'
+        printf 'bounded\n' > "$TMP/close-command"
+        return 124
+    }
+    assert_failure request_terminal_close 911
+    [ -f "$TMP/close-command" ] || fail 'bounded close command missing'
+    rm "$TMP/close-command"
+    add_process 912 'C:\MT5\terminal64.exe' /update
+    assert_failure request_terminal_close 911
+    [ ! -f "$TMP/close-command" ] || fail 'close guard allowed updater conflict'
+)
+(
+    # Exercise the real bounded waits with a fake clock, including a native
+    # replacement after the first forced stop and a desktop that needs KILL.
+    unset SECONDS; SECONDS=0
+    capture_terminal_process_state() { NORMAL_COUNT=1; UPDATE_COUNT=0; NORMAL_PIDS=921; }
+    terminal_processes() {
+        if [ "$SECONDS" -eq 0 ]; then printf '921\tterminal\n'
+        else printf '923\tterminal\n'; fi
+    }
+    request_terminal_close() { SECONDS=$((SECONDS + 4)); return 124; }
+    kill() { return 0; }
+    signal_pids() { :; }
+    sleep() { SECONDS=$((SECONDS + 1)); }
+    shutdown_mt5_runtime 921 922 >/dev/null
+    [ "$SECONDS" -eq 21 ] || fail "worst-case shutdown budget changed: ${SECONDS}s"
+    [ "$SECONDS" -lt 30 ] || fail 'shutdown exceeds Docker stop grace period'
+)
+grep -q 'shutdown_mt5_runtime "${CHILD_PIDS\[@\]}"' "$ROOT/mt5docker/start_server.sh" || fail 'cleanup does not use terminal-first shutdown'
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'
 grep -q '/skipupdate' "$ROOT/mt5docker/start_server.sh" || fail 'skip-update switch missing'
 if grep -Eq 'pkill.*(python|terminal64)' "$ROOT/mt5docker/start_server.sh"; then

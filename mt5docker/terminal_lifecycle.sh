@@ -108,6 +108,52 @@ stop_exact_pids() {
     signal_pids TERM "$@"
     wait_for_pids_exit "$timeout" "$@" || signal_pids KILL "$@"
 }
+request_terminal_close() {
+    local expected_pid="$1"
+    # An image-name close is only safe while the sole terminal is the same
+    # normal instance. Never use /F: request Windows' normal close path.
+    exactly_one_normal_terminal && [ "$NORMAL_PIDS" = "$expected_pid" ] || return 1
+    command -v timeout >/dev/null 2>&1 || return 1
+    timeout --kill-after=1s 3s wine taskkill /IM terminal64.exe >/dev/null 2>&1
+}
+shutdown_mt5_runtime() {
+    local terminal_pids=() remaining_children=() pid terminal_pid matched
+    local graceful_pid=''
+    capture_terminal_process_state
+    if [ "$NORMAL_COUNT" -eq 1 ] && [ "$UPDATE_COUNT" -eq 0 ]; then
+        graceful_pid="$NORMAL_PIDS"
+    fi
+    mapfile -t terminal_pids < <(terminal_processes | cut -f1)
+    if [ -n "$graceful_pid" ]; then
+        echo '>>> Requesting normal MT5 close before stopping the desktop.'
+        # A successful taskkill request alone does not prove that MT5 exited
+        # or saved state. Wait for exit even if the request reports failure.
+        request_terminal_close "$graceful_pid" || true
+        if wait_for_pids_exit 8 "${terminal_pids[@]}"; then
+            echo '>>> MT5 terminal exited after the close request.'
+        else
+            echo '>>> MT5 close wait expired; using bounded process cleanup.'
+            stop_exact_pids 3 "${terminal_pids[@]}"
+        fi
+    else
+        # Conflicts/updaters must never receive a broad image-name request.
+        stop_exact_pids 3 "${terminal_pids[@]}"
+    fi
+    # Exclude terminal PIDs from child cleanup, including a Wine launch PID
+    # that became terminal64.exe. Do not send TERM after a successful close.
+    for pid in "$@"; do
+        matched=0
+        for terminal_pid in "${terminal_pids[@]}"; do
+            [ "$pid" != "$terminal_pid" ] || matched=1
+        done
+        [ "$matched" -eq 1 ] || remaining_children+=("$pid")
+    done
+    # A native handoff during shutdown can leave another terminal. Resolve
+    # exact PIDs again; never launch a replacement or broadly taskkill it.
+    mapfile -t terminal_pids < <(terminal_processes | cut -f1)
+    stop_exact_pids 3 "${terminal_pids[@]}"
+    stop_exact_pids 3 "${remaining_children[@]}"
+}
 rpyc_is_listening() {
     if command -v ss >/dev/null 2>&1; then
         ss -H -ltn 2>/dev/null | awk '$4 ~ /:8001$/ { found=1 } END { exit !found }'

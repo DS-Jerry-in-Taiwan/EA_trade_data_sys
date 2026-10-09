@@ -21,6 +21,11 @@ services:
       # Mount the already-generated config; do not regenerate secrets here.
       - "${MT5_CONFIG_FILE:-./mt5cfg.ini}:/run/mt5/mt5cfg.ini:ro"
     entrypoint: /mt5docker/start_server.sh
+    # Keep Wine's desktop alive while MT5 handles its normal close request.
+    # Bounded shutdown can take 21s (4s request + 8s close wait + three 3s
+    # fallback waits); 30s avoids Docker's default 10s forced termination.
+    # Normal close requests do not themselves guarantee native state saved.
+    stop_grace_period: 30s
     ports:
       - 5901:5901
       - 6081:6081

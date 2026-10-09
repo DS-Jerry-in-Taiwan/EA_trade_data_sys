@@ -35,11 +35,9 @@ authorization_desktop_alive() {
     done
 }
 cleanup() {
-    local terminal_pids=()
     [ "$SHUTTING_DOWN" -eq 0 ] || return
     SHUTTING_DOWN=1; trap - EXIT INT TERM
-    mapfile -t terminal_pids < <(terminal_processes | cut -f1)
-    stop_exact_pids 10 "${CHILD_PIDS[@]}" "${terminal_pids[@]}"
+    shutdown_mt5_runtime "${CHILD_PIDS[@]}"
     rm -f /run/mt5-server/rpyc.pid /run/mt5-server/terminal-ready \
         "${MT5_READY_SNAPSHOT:-/run/mt5-server/terminal-ready.snapshot}" \
         "${launch_snapshot:-}"
