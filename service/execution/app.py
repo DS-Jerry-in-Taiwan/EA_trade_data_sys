@@ -5,7 +5,8 @@ from __future__ import annotations
 import hmac
 import os
 import uuid
-from dataclasses import dataclass
+from decimal import Decimal
+from dataclasses import dataclass, field
 
 from flask import Flask, g, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
@@ -29,6 +30,8 @@ class ExecutionContext:
     mutation_enabled: bool = False
     openapi_path: str = "/app/service/execution_openapi.yaml"
     account_policy: str = "DEMO"
+    authorization_store: object | None = None
+    session_epoch: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 def _request_id():
@@ -137,9 +140,15 @@ def create_execution_app(context):
                 "state": "unknown", "ready": False, "generation": 0,
                 "fingerprint": None, "error": "account_session_unavailable",
             }
+        session = dict(session, epoch=context.session_epoch)
         ready = connected and demo and (
             session.get("ready", False) if session_supported else True
         )
+        policy = {"authorization_required": True, "entry": {"enabled": False}, "exit": {"enabled": False}}
+        if context.authorization_store is not None:
+            policy = context.authorization_store.policy(session)
+        if not context.mutation_enabled:
+            policy["entry"]["enabled"] = False
         return _success({
             "status": "healthy" if ready else "unhealthy",
             "ready": ready,
@@ -148,8 +157,9 @@ def create_execution_app(context):
             "account_session": session,
             "mutation_enabled": bool(context.mutation_enabled),
             "account_policy": str(context.account_policy).strip().upper(),
+            "execution_authorization": policy,
             "mutation_ready": bool(
-                context.mutation_enabled and demo
+                context.mutation_enabled and policy["entry"]["enabled"] and demo
                 and str(context.account_policy).strip().upper() == "DEMO"
                 and (session.get("ready", False) if session_supported else True)
             ),
@@ -215,8 +225,8 @@ def create_execution_app(context):
     def deals():
         return _success(context.adapter.deals())
 
-    def require_mutation():
-        if not context.mutation_enabled:
+    def require_mutation(*, entry=True):
+        if entry and not context.mutation_enabled:
             raise ExecutionError(
                 "mutation_disabled", "Execution mutation is disabled", status=403
             )
@@ -226,15 +236,27 @@ def create_execution_app(context):
                 "Execution mutation account policy must be Demo",
                 status=403,
             )
+        if context.authorization_store is None:
+            raise ExecutionError("authorization_required", "Scoped execution authorization is required", status=403)
         capture = getattr(context.adapter, "mutation_session", None)
-        if callable(capture):
-            return capture()
-        context.adapter.require_demo()
-        return None
+        status = getattr(context.adapter, "session_status", None)
+        if not callable(capture) or not callable(status):
+            raise ExecutionError("authorization_session_unknown", "Verified session identity is required", status=403)
+        expected = capture()
+        session = dict(status(refresh=True), epoch=context.session_epoch)
+        fingerprint = session.get("fingerprint") or {}
+        if (not session.get("ready") or fingerprint.get("account_mode") != "DEMO"
+                or expected.get("generation") != session.get("generation")
+                or expected.get("fingerprint") != fingerprint.get("id")):
+            raise ExecutionError("authorization_session_changed", "Verified Demo session is required", status=403)
+        authorization_id = request.headers.get("X-Execution-Authorization")
+        if not authorization_id:
+            raise ExecutionError("authorization_required", "X-Execution-Authorization is required", status=403)
+        return expected, session, authorization_id
 
     @app.post("/api/v1/orders")
     def create_order():
-        expected_session = require_mutation()
+        expected_session, session, authorization_id = require_mutation()
         payload = normalize_order_request(request.get_json(silent=True))
         client_order_id = request.headers.get("Idempotency-Key")
         if not client_order_id:
@@ -249,10 +271,19 @@ def create_execution_app(context):
         if request.headers.get("X-Request-ID", request_id) != request_id:
             raise ExecutionError("request_id_mismatch", "X-Request-ID must equal request_id")
         g.execution_request_id = request_id
+        previous = context.store.get(client_order_id)
+        if previous is not None and previous.fingerprint != payload_fingerprint(payload):
+            raise ExecutionError("idempotency_conflict", "Idempotency-Key was already used with a different payload", status=409)
+        specification = context.adapter.symbol(payload["intent"]["symbol"])
+        if Decimal(payload["intent"]["volume"]) != Decimal(str(specification["minimum_volume"])):
+            raise ExecutionError("authorization_volume_denied", "Only exact broker minimum volume is authorized", status=403)
+        claimed = context.authorization_store.claim_entry(authorization_id, session, payload)
         record, created = context.store.reserve(
             client_order_id, payload_fingerprint(payload), request_id,
             payload=payload, session=expected_session,
         )
+        if created and not claimed:
+            raise ExecutionError("execution_outcome_unknown", "Authorization already consumed; reconciliation is required", status=409)
         if not created:
             validate_recovery = getattr(context.adapter, "validate_recovery_session", None)
             if callable(validate_recovery):
@@ -274,6 +305,7 @@ def create_execution_app(context):
             raise ExecutionError("execution_outcome_unknown", "Use client_order_id lookup; automatic resend is forbidden", status=503)
         try:
             intent = payload["intent"]
+            empty_symbol = context.adapter.assert_entry_scope(intent["symbol"])
             if intent["order_type"] != "market" or intent["time_in_force"] != "gtc":
                 raise ExecutionError("unsupported_order_type", "This MT5 adapter supports only GTC market orders", status=422)
             mt5_request, check = context.adapter.preflight({
@@ -288,7 +320,9 @@ def create_execution_app(context):
                 result = context.adapter.send_once(mt5_request)
             else:
                 result = context.adapter.send_once(
-                    mt5_request, expected_session=expected_session
+                    mt5_request, expected_session=expected_session,
+                    expected_empty_symbol=empty_symbol,
+                    before_send=lambda _mt5: context.authorization_store.validate_entry(authorization_id, session, payload),
                 )
             result["preflight"] = check
             try:
@@ -298,33 +332,83 @@ def create_execution_app(context):
                 # unknown outcome, never proof that no order was accepted.
                 raise AmbiguousMT5Result() from exc
             context.store.finish(client_order_id, "succeeded", dict(result, response=response))
+            context.authorization_store.bind_exposure(authorization_id, session, order_id=result["order_id"], verified=True)
             return _success(response, 201)
         except AmbiguousMT5Result as exc:
+            context.authorization_store.disable_entry(authorization_id, "entry_outcome_unknown")
             context.store.finish(client_order_id, "indeterminate", {
                 "code": exc.code, "message": exc.message, "retcode": exc.retcode,
             })
             raise
         except ExecutionError as exc:
+            context.authorization_store.disable_entry(authorization_id, "entry_failed")
             context.store.finish(client_order_id, "failed", {
                 "code": exc.code, "message": exc.message, "retcode": exc.retcode, "status": exc.status,
             })
             raise
+        except Exception as exc:
+            context.store.finish(client_order_id, "indeterminate", {"code": "execution_outcome_unknown"})
+            context.authorization_store.disable_entry(authorization_id, "entry_outcome_unknown")
+            raise AmbiguousMT5Result() from exc
 
     @app.post("/api/v1/orders/<order_id>/cancel")
     def cancel_order(order_id):
-        expected_session = require_mutation()
         order_id = str(parse_ticket_id(order_id, resource="order"))
-        if expected_session is None:
-            return _success(context.adapter.cancel(order_id))
-        return _success(context.adapter.cancel(order_id, expected_session=expected_session))
+        return scoped_exit("cancel", order_id)
 
     @app.post("/api/v1/positions/<position_id>/close")
     def close_position(position_id):
-        expected_session = require_mutation()
         position_id = str(parse_ticket_id(position_id, resource="position"))
-        if expected_session is None:
-            return _success(context.adapter.close(position_id))
-        return _success(context.adapter.close(position_id, expected_session=expected_session))
+        return scoped_exit("close", position_id)
+
+    def scoped_exit(operation, target):
+        if request.get_data() and request.get_json(silent=True) != {}:
+            raise ExecutionError("invalid_request", "Exit body must be empty or an empty object")
+        expected, session, authorization_id = require_mutation(entry=False)
+        scope = context.authorization_store.scope(authorization_id, session)
+        bound_target = scope.get("order_id" if operation == "cancel" else "position_id")
+        if bound_target == target:
+            existing = context.authorization_store.exit_record(authorization_id, operation, target)
+            if existing is not None:
+                context.authorization_store.authorize_exit(authorization_id, session, operation, target)
+                if existing.get("state") == "succeeded":
+                    return _success(existing["result"])
+                raise ExecutionError("exit_outcome_unknown", "Exit may have been accepted; reconcile without resending", status=409)
+        order_record = context.store.get(scope["client_order_id"])
+        order_id = scope.get("order_id")
+        if not order_id and order_record is not None:
+            if not scope["entry_claimed"] or order_record.session != expected:
+                raise ExecutionError("authorization_exposure_unverified", "Original authorized session must match", status=403)
+            context.adapter.validate_recovery_session(order_record)
+            recovered = context.adapter.order_by_client(scope["client_order_id"])
+            if recovered is not None:
+                recovered = restore_order_intent(recovered, order_record)
+                if recovered["intent"]["symbol"] != scope["symbol"] or Decimal(recovered["intent"]["volume"]) != Decimal(scope["minimum_volume"]):
+                    raise ExecutionError("authorization_exposure_unverified", "Recovered order is outside authorized scope", status=403)
+                order_id = recovered.get("broker_order_id")
+                context.authorization_store.bind_exposure(authorization_id, session, order_id=order_id, verified=True)
+        if not order_id:
+            raise ExecutionError("authorization_exposure_unverified", "Accepted exposure must be reconciled", status=403)
+        if operation == "close":
+            expected_exposure = context.adapter.exposure_scope(scope["client_order_id"], order_id, scope["symbol"], scope["minimum_volume"])
+            context.authorization_store.bind_exposure(authorization_id, session, position_id=expected_exposure["position_id"], verified=True)
+        else:
+            expected_exposure = context.adapter.cancel_scope(scope["client_order_id"], order_id, scope["symbol"], scope["minimum_volume"])
+        context.authorization_store.authorize_exit(authorization_id, session, operation, target)
+        record, created = context.authorization_store.reserve_exit(authorization_id, session, operation, target)
+        if not created:
+            if record.get("state") == "succeeded":
+                return _success(record["result"])
+            raise ExecutionError("exit_outcome_unknown", "Exit may have been accepted; reconcile without resending", status=409)
+        try:
+            result = getattr(context.adapter, operation)(target, expected_session=expected, expected_exposure=expected_exposure,
+                authorization_check=lambda _mt5: context.authorization_store.authorize_exit(authorization_id, session, operation, target))
+            context.authorization_store.finish_exit(authorization_id, operation, target, "succeeded", result)
+            return _success(result)
+        except Exception:
+            context.authorization_store.finish_exit(authorization_id, operation, target, "indeterminate", {})
+            context.authorization_store.disable_entry(authorization_id, "exit_failed_operator_escalation")
+            raise
 
     @app.get("/api/v1/openapi.yaml")
     def openapi():
