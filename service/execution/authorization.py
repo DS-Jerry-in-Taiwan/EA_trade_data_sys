@@ -33,6 +33,7 @@ class AuthorizationStore:
         with self._connect() as c:
             c.execute("CREATE TABLE IF NOT EXISTS demo_authorization (id TEXT PRIMARY KEY, artifact TEXT NOT NULL, killed INTEGER NOT NULL DEFAULT 0, claim TEXT, order_id TEXT, position_id TEXT)")
             c.execute("CREATE TABLE IF NOT EXISTS demo_authorization_exit (authorization_id TEXT, operation TEXT, target_id TEXT, state TEXT NOT NULL, result TEXT, PRIMARY KEY(authorization_id, operation, target_id))")
+            c.execute("CREATE TABLE IF NOT EXISTS demo_authorization_abort (id INTEGER PRIMARY KEY, authorization_id TEXT NOT NULL, abort_owner TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL)")
 
     def _connect(self):
         c = sqlite3.connect(self.path, timeout=10)
@@ -50,7 +51,7 @@ class AuthorizationStore:
         if type(artifact["session_generation"]) is not int or artifact["session_generation"] < 1:
             raise ValueError("verified positive generation required")
         permissions = artifact["permissions"]
-        if not isinstance(permissions, list) or not permissions or len(set(permissions)) != len(permissions) or any(p not in {"place", "cancel", "close"} for p in permissions):
+        if not isinstance(permissions, list) or not permissions or any(not isinstance(p, str) for p in permissions) or len(set(permissions)) != len(permissions) or any(p not in {"place", "cancel", "close"} for p in permissions):
             raise ValueError("invalid permissions")
         try:
             volume = Decimal(str(artifact["minimum_volume"]))
@@ -147,10 +148,23 @@ class AuthorizationStore:
             c.execute("UPDATE demo_authorization_exit SET state=?,result=? WHERE authorization_id=? AND operation=? AND target_id=? AND state='pending'", (state, json.dumps(result), auth_id, operation, str(target_id)))
             if state != "succeeded":
                 c.execute("UPDATE demo_authorization SET killed=1 WHERE id=?", (auth_id,))
+                self._abort(c, auth_id, "exit_" + state)
 
     def disable_entry(self, auth_id, reason="operator"):
         with self._connect() as c:
             c.execute("UPDATE demo_authorization SET killed=1 WHERE id=?", (auth_id,))
+            self._abort(c, auth_id, reason)
+
+    def _abort(self, connection, auth_id, reason):
+        row = connection.execute("SELECT artifact FROM demo_authorization WHERE id=?", (auth_id,)).fetchone()
+        if row:
+            owner = json.loads(row["artifact"])["abort_owner"]
+            connection.execute("INSERT INTO demo_authorization_abort(authorization_id,abort_owner,reason,created_at) VALUES(?,?,?,?)", (auth_id, owner, str(reason), datetime.now(timezone.utc).isoformat()))
+
+    def abort_events(self):
+        """Local operator outbox. External notification delivery remains operator-owned."""
+        with self._connect() as c:
+            return [dict(row) for row in c.execute("SELECT * FROM demo_authorization_abort ORDER BY id")]
 
     def scope(self, auth_id, session):
         """Internal verified scope; never serialize as a public health response."""
@@ -181,3 +195,31 @@ class AuthorizationStore:
                 entry |= not record["killed"] and not record["claim"] and "place" in a["permissions"] and _utc(a["entry_not_before"]) <= now < _utc(a["entry_expires_at"])
                 exit_enabled |= bool(record["order_id"] or record["position_id"]) and now < _utc(a["recovery_expires_at"]) and bool(set(a["permissions"]) & {"cancel", "close"})
         return {"authorization_required": True, "entry": {"enabled": bool(entry), "default": "closed"}, "exit": {"enabled": bool(exit_enabled), "scope": "verified_authorized_exposure", "session_change": "operator_escalation"}}
+
+
+def main():
+    """Local operator commands; not a network endpoint. Never prints artifacts."""
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database", required=True)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("provision", help="Read one strict authorization JSON from stdin")
+    kill = sub.add_parser("kill-entry")
+    kill.add_argument("authorization_id")
+    kill.add_argument("--reason", default="operator")
+    sub.add_parser("abort-status", help="Print pending local abort notifications, no account identity")
+    args = parser.parse_args()
+    store = AuthorizationStore(args.database)
+    if args.command == "provision":
+        store.provision(json.load(sys.stdin))
+        print(json.dumps({"provisioned": True}))
+    elif args.command == "kill-entry":
+        store.disable_entry(args.authorization_id, args.reason)
+        print(json.dumps({"entry_disabled": True}))
+    else:
+        print(json.dumps({"events": store.abort_events()}))
+
+
+if __name__ == "__main__":
+    main()
