@@ -12,15 +12,25 @@ paths:
     get:
       operationId: getExecutionHealth
       responses:
-        '200': {description: Ready, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
-        '503': {$ref: '#/components/responses/Error'}
+        '200': {description: Ready, content: {application/json: {schema: {$ref: '#/components/schemas/ExecutionHealthEnvelope'}}}}
+        '503':
+          description: MT5 or Demo session is not ready, or authentication is not configured.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ExecutionHealthEnvelope'
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+        '401': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /account:
     get:
       operationId: getExecutionAccount
       responses:
-        '200': {description: Account facts with Demo eligibility, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Opaque account identity and decimal balance facts, content: {application/json: {schema: {$ref: '#/components/schemas/AccountEnvelope'}}}}
         '401': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /symbols/{symbol}:
     get:
       operationId: getSymbolSpecification
@@ -28,15 +38,22 @@ paths:
         - $ref: '#/components/parameters/Symbol'
       responses:
         '200': {description: Fresh symbol and risk facts, content: {application/json: {schema: {$ref: '#/components/schemas/SymbolEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /orders:
     get:
       operationId: listOrders
       responses:
-        '200': {description: Active and recent orders, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Active and recent orders, content: {application/json: {schema: {$ref: '#/components/schemas/OrdersEnvelope'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
     post:
       operationId: createOrder
-      description: Performs one order_check and at most one order_send. Never automatically retry after timeout.
+      description: Accepts the bot OrderRequest and performs one order_check and at most one order_send. Only GTC market orders are supported; other order types or time-in-force values fail with 422 before send. MT5 timeout 10012 and connection loss 10031 remain indeterminate and require by-client recovery. Never automatically retry after timeout.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/RequestId'
@@ -46,31 +63,43 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateOrder'}
       responses:
-        '201': {description: Accepted by MT5, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Original accepted result replay, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResultEnvelope'}}}}
+        '201': {description: Accepted by MT5, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResultEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /orders/{id}:
     get:
       operationId: getOrder
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
-        '200': {description: Order, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Order, content: {application/json: {schema: {$ref: '#/components/schemas/OrderEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /orders/by-client/{client_order_id}:
     get:
       operationId: getOrderByClientId
-      description: Durable timeout-after-acceptance recovery lookup.
+      description: Durable timeout-after-acceptance recovery lookup. Returns an Order only after MT5 acceptance is observed on the original account and order facts match the original intent; 404 means acceptance is not yet known or rejection was observed. Legacy records lacking original account identity fail closed with 503. The durable record is retained and this endpoint never sends an order.
       parameters:
         - name: client_order_id
           in: path
           required: true
           schema: {type: string, minLength: 1}
       responses:
-        '200': {description: Durable idempotency record, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Reconciled MT5 Order, content: {application/json: {schema: {$ref: '#/components/schemas/OrderEnvelope'}}}}
+        '401': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /orders/{id}/cancel:
     post:
       operationId: cancelOrder
@@ -78,14 +107,22 @@ paths:
         - $ref: '#/components/parameters/Id'
         - $ref: '#/components/parameters/RequestId'
       responses:
-        '200': {description: Cancel result including MT5 retcode, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Order observed after a single cancel attempt, content: {application/json: {schema: {$ref: '#/components/schemas/OrderEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /positions:
     get:
       operationId: listPositions
       responses:
-        '200': {description: Open positions, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Open positions, content: {application/json: {schema: {$ref: '#/components/schemas/PositionsEnvelope'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /positions/{id}/close:
     post:
       operationId: closePosition
@@ -93,48 +130,82 @@ paths:
         - $ref: '#/components/parameters/Id'
         - $ref: '#/components/parameters/RequestId'
       responses:
-        '200': {description: Close result including MT5 retcode, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Deal observed after a single close attempt, content: {application/json: {schema: {$ref: '#/components/schemas/DealEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
   /deals:
     get:
       operationId: listDeals
       responses:
-        '200': {description: Recent normalized deals, content: {application/json: {schema: {$ref: '#/components/schemas/SuccessEnvelope'}}}}
+        '200': {description: Recent trading deals; balance and other non-trading operations are excluded, content: {application/json: {schema: {$ref: '#/components/schemas/DealsEnvelope'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     ApiKeyAuth: {type: apiKey, in: header, name: X-API-Key}
   parameters:
     Symbol: {name: symbol, in: path, required: true, schema: {type: string, minLength: 1}}
-    Id: {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    Id: {name: id, in: path, required: true, description: Positive MT5 ticket ID in unsigned 64-bit range., schema: {type: string, minLength: 1, maxLength: 20, pattern: '^[0-9]+$'}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Must equal client_order_id., schema: {type: string, minLength: 1}}
-    RequestId: {name: X-Request-ID, in: header, required: true, schema: {type: string, minLength: 1}}
+    RequestId: {name: X-Request-ID, in: header, required: false, description: If present on submit, must equal OrderRequest.request_id., schema: {type: string, minLength: 1}}
   responses:
     Error:
       description: Stable versioned error
+      headers:
+        X-Request-ID: {schema: {type: string}, description: Correlates this response with the request.}
+        X-MT5-Retcode: {schema: {type: integer}, description: Original MT5 retcode when available; kept outside the strict bot error DTO.}
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
     SuccessEnvelope:
       type: object
+      additionalProperties: false
       required: [schema_version, data]
       properties:
-        schema_version: {type: string, enum: [1.0.0]}
+        schema_version: {type: integer, enum: [1]}
         data: {}
     ErrorEnvelope:
       type: object
+      additionalProperties: false
       required: [schema_version, error]
       properties:
-        schema_version: {type: string, enum: [1.0.0]}
+        schema_version: {type: integer, enum: [1]}
         error:
           type: object
+          additionalProperties: false
           required: [code, message, request_id]
           properties:
             code: {type: string}
             message: {type: string}
             request_id: {type: string}
-            retcode: {type: integer, description: Original MT5 retcode when available.}
+    ExecutionHealthEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExecutionHealth'
+    ExecutionHealth:
+      type: object
+      required: [status, ready, mt5_connected, account_mode, account_session, mutation_enabled, account_policy, mutation_ready]
+      properties:
+        status: {type: string, enum: [healthy, unhealthy]}
+        ready: {type: boolean}
+        mt5_connected: {type: boolean}
+        account_mode: {type: string, enum: [DEMO, NON_DEMO_OR_UNKNOWN]}
+        account_session: {type: object}
+        mutation_enabled: {type: boolean}
+        account_policy: {type: string}
+        mutation_ready: {type: boolean}
     SymbolEnvelope:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
@@ -143,33 +214,149 @@ components:
             data: {$ref: '#/components/schemas/SymbolSpecification'}
     SymbolSpecification:
       type: object
+      additionalProperties: false
       required: [symbol, digits, point, minimum_volume, maximum_volume, volume_step, tick_size, tick_value, contract_size, observed_at, stops_level, freeze_level, margin_per_lot]
       properties:
         symbol: {type: string, minLength: 1}
         digits: {type: integer}
-        point: {type: number, exclusiveMinimum: true, minimum: 0}
-        minimum_volume: {type: number, exclusiveMinimum: true, minimum: 0}
-        maximum_volume: {type: number, exclusiveMinimum: true, minimum: 0}
-        volume_step: {type: number, exclusiveMinimum: true, minimum: 0}
-        tick_size: {type: number, exclusiveMinimum: true, minimum: 0}
-        tick_value: {type: number}
-        contract_size: {type: number, exclusiveMinimum: true, minimum: 0}
+        point: {$ref: '#/components/schemas/PositiveDecimal'}
+        minimum_volume: {$ref: '#/components/schemas/PositiveDecimal'}
+        maximum_volume: {$ref: '#/components/schemas/PositiveDecimal'}
+        volume_step: {$ref: '#/components/schemas/PositiveDecimal'}
+        tick_size: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
+        tick_value: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
+        contract_size: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
         observed_at: {type: string, format: date-time}
-        stops_level: {type: integer, minimum: 0}
-        freeze_level: {type: integer, minimum: 0}
-        margin_per_lot: {type: number, exclusiveMinimum: true, minimum: 0}
-        bid: {type: number}
-        ask: {type: number}
+        stops_level: {type: string, nullable: true, description: Non-negative decimal points; null means broker fact unavailable.}
+        freeze_level: {type: string, nullable: true, description: Non-negative decimal points; null means broker fact unavailable.}
+        margin_per_lot: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
     CreateOrder:
       type: object
-      required: [client_order_id, symbol, side, volume]
+      additionalProperties: false
+      required: [request_id, intent, submitted_at]
+      properties:
+        request_id: {type: string, minLength: 1, maxLength: 128}
+        intent: {$ref: '#/components/schemas/OrderIntent'}
+        submitted_at: {type: string, format: date-time}
+    PositiveDecimal:
+      type: string
+      pattern: '^[0-9]+(\.[0-9]+)?$'
+      description: Finite positive decimal encoded as a JSON string.
+    OptionalPositiveDecimal:
+      type: string
+      nullable: true
+      pattern: '^[0-9]+(\.[0-9]+)?$'
+      description: Finite positive decimal encoded as a JSON string, or null when unavailable.
+    NonNegativeDecimal:
+      type: string
+      pattern: '^[0-9]+(\.[0-9]+)?$'
+      description: Finite non-negative decimal encoded as a JSON string.
+    Direction: {type: integer, enum: [1, -1], description: Bot Direction.LONG is 1 and Direction.SHORT is -1.}
+    OrderIntent:
+      type: object
+      additionalProperties: false
+      required: [client_order_id, symbol, direction, order_type, volume]
       properties:
         client_order_id: {type: string, minLength: 1}
         symbol: {type: string, minLength: 1}
-        side: {type: string, enum: [BUY, SELL]}
-        volume: {type: number, exclusiveMinimum: true, minimum: 0}
-        price: {type: number}
-        sl: {type: number}
-        tp: {type: number}
-        stop_loss: {type: number}
-        take_profit: {type: number}
+        direction: {$ref: '#/components/schemas/Direction'}
+        order_type: {type: string, enum: [market, limit, stop]}
+        volume: {$ref: '#/components/schemas/PositiveDecimal'}
+        limit_price: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
+        stop_loss: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
+        take_profit: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
+        time_in_force: {type: string, enum: [gtc, day, ioc, fok], default: gtc}
+    AccountSnapshot:
+      type: object
+      additionalProperties: false
+      required: [account_id, currency, balance, equity, margin, free_margin, observed_at]
+      properties:
+        account_id: {type: string, description: Stable opaque hash of the terminal account identity.}
+        currency: {type: string, minLength: 1}
+        balance: {$ref: '#/components/schemas/NonNegativeDecimal'}
+        equity: {$ref: '#/components/schemas/NonNegativeDecimal'}
+        margin: {$ref: '#/components/schemas/NonNegativeDecimal'}
+        free_margin: {$ref: '#/components/schemas/NonNegativeDecimal'}
+        observed_at: {type: string, format: date-time}
+    OrderStatus: {type: string, enum: [pending, accepted, partially_filled, filled, rejected, cancelled]}
+    Order:
+      type: object
+      additionalProperties: false
+      required: [broker_order_id, request_id, intent, status, filled_volume, average_fill_price, created_at, updated_at]
+      properties:
+        broker_order_id: {type: string, minLength: 1}
+        request_id: {type: string, minLength: 1}
+        intent: {$ref: '#/components/schemas/OrderIntent'}
+        status: {$ref: '#/components/schemas/OrderStatus'}
+        filled_volume: {$ref: '#/components/schemas/NonNegativeDecimal'}
+        average_fill_price: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    OrderResult:
+      type: object
+      additionalProperties: false
+      required: [request_id, status, occurred_at, broker_order_id, reason, broker_retcode]
+      properties:
+        request_id: {type: string, minLength: 1}
+        status: {$ref: '#/components/schemas/OrderStatus'}
+        occurred_at: {type: string, format: date-time}
+        broker_order_id: {type: string, nullable: true}
+        reason: {type: string, nullable: true}
+        broker_retcode: {type: string, nullable: true, description: Original MT5 retcode.}
+    Position:
+      type: object
+      additionalProperties: false
+      required: [position_id, symbol, direction, status, volume, entry_price, current_price, opened_at, closed_at, stop_loss]
+      properties:
+        position_id: {type: string, minLength: 1}
+        symbol: {type: string, minLength: 1}
+        direction: {$ref: '#/components/schemas/Direction'}
+        status: {type: string, enum: [open, closed]}
+        volume: {$ref: '#/components/schemas/PositiveDecimal'}
+        entry_price: {$ref: '#/components/schemas/PositiveDecimal'}
+        current_price: {$ref: '#/components/schemas/PositiveDecimal'}
+        opened_at: {type: string, format: date-time}
+        closed_at: {type: string, format: date-time, nullable: true}
+        stop_loss: {$ref: '#/components/schemas/OptionalPositiveDecimal'}
+    Deal:
+      type: object
+      additionalProperties: false
+      required: [deal_id, broker_order_id, position_id, deal_type, symbol, direction, volume, price, executed_at]
+      properties:
+        deal_id: {type: string, minLength: 1}
+        broker_order_id: {type: string, minLength: 1}
+        position_id: {type: string, minLength: 1}
+        deal_type: {type: string, enum: [open, close]}
+        symbol: {type: string, minLength: 1}
+        direction: {$ref: '#/components/schemas/Direction'}
+        volume: {$ref: '#/components/schemas/PositiveDecimal'}
+        price: {$ref: '#/components/schemas/PositiveDecimal'}
+        executed_at: {type: string, format: date-time}
+    AccountEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/SuccessEnvelope'}
+        - {type: object, properties: {data: {$ref: '#/components/schemas/AccountSnapshot'}}}
+    OrdersEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/SuccessEnvelope'}
+        - {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Order'}}}}
+    OrderEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/SuccessEnvelope'}
+        - {type: object, properties: {data: {$ref: '#/components/schemas/Order'}}}
+    OrderResultEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/SuccessEnvelope'}
+        - {type: object, properties: {data: {$ref: '#/components/schemas/OrderResult'}}}
+    PositionsEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/SuccessEnvelope'}
+        - {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Position'}}}}
+    DealsEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/SuccessEnvelope'}
+        - {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Deal'}}}}
+    DealEnvelope:
+      allOf:
+        - {$ref: '#/components/schemas/SuccessEnvelope'}
+        - {type: object, properties: {data: {$ref: '#/components/schemas/Deal'}}}

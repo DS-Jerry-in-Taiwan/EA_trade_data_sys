@@ -18,6 +18,18 @@ add_process() {
 }
 clear_processes() { rm -rf "$PROC_ROOT"; mkdir -p "$PROC_ROOT"; }
 
+# Portable mode must always use the persisted root terminal, even when Wine
+# also contains installer/update payloads. It must not fall back to them if
+# the root terminal is missing.
+PORTABLE_ROOT="$TMP/persisted/MetaTrader 5"
+mkdir -p "$PORTABLE_ROOT/liveupdate" "$TMP/Program Files/MetaTrader 5"
+: > "$PORTABLE_ROOT/terminal64.exe"
+: > "$PORTABLE_ROOT/liveupdate/terminal64.exe"
+: > "$TMP/Program Files/MetaTrader 5/terminal64.exe"
+[ "$(find_mt5_exe "$PORTABLE_ROOT")" = "$PORTABLE_ROOT/terminal64.exe" ] || fail 'portable executable escaped persistent data directory'
+rm "$PORTABLE_ROOT/terminal64.exe"
+assert_failure find_mt5_exe "$PORTABLE_ROOT"
+
 add_process 101 'C:\Program Files\MetaTrader 5\terminal64.exe' /portable /skipupdate
 assert_success exactly_one_normal_terminal
 
@@ -26,6 +38,19 @@ assert_failure exactly_one_normal_terminal
 [ "$(update_terminal_pids)" = 102 ] || fail 'update terminal was not classified'
 # This is the same fail-closed predicate used by startup and healthcheck.
 [ "$(update_terminal_pids | count_lines)" -gt 0 ] || fail 'LiveUpdate did not fail closed'
+capture_terminal_process_state
+[ "$NORMAL_COUNT" -eq 1 ] && [ "$UPDATE_COUNT" -eq 1 ] || fail 'single-scan process classification disagreed'
+diagnostic="$(log_terminal_lifecycle_state startup 1)"
+if printf '%s\n' "$diagnostic" | grep -Eq 'Program Files|terminal64\.exe|portable|skipupdate'; then
+    fail 'lifecycle diagnostics included raw command-line contents'
+fi
+
+clear_processes
+add_process 103 'C:\synthetic\liveupdate\terminal64.exe' /portable
+[ "$(update_terminal_pids)" = 103 ] || fail 'updater payload path was classified as normal'
+add_process 104 'C:\synthetic\liveupdate\terminal64.exe /update'
+printf 'terminal64.exe\n' > "$PROC_ROOT/104/comm"
+[ "$(update_terminal_pids | count_lines)" -eq 2 ] || fail 'Wine combined argv updater was not classified by comm'
 
 clear_processes
 add_process 201 'C:\Program Files\MetaTrader 5\terminal64.exe' /portable
@@ -57,6 +82,18 @@ LOG="$LOG_ROOT/terminal.log"
 SNAPSHOT="$TMP/log.snapshot"
 printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG"
 snapshot_terminal_logs "$LOG_ROOT" "$SNAPSHOT"
+UNCHANGED_LOG="$LOG_ROOT/old-terminal.log"
+printf 'old synthetic Journal\r\n' | iconv -f UTF-8 -t UTF-16LE > "$UNCHANGED_LOG"
+touch -d '2000-01-01 UTC' "$UNCHANGED_LOG"
+for day in $(seq 1 72); do
+    printf 'synthetic historic Journal\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG_ROOT/history-$day.log"
+    touch -d '2000-01-01 UTC' "$LOG_ROOT/history-$day.log"
+done
+MT5_LOG_ROOT="$LOG_ROOT"
+if changed_terminal_logs "$SNAPSHOT" | tr '\0' '\n' | grep -Fq "$UNCHANGED_LOG"; then
+    fail 'unchanged historical Journal was scanned'
+fi
+[ "$(changed_terminal_logs "$SNAPSHOT" | tr '\0' '\n' | count_lines)" -eq 1 ] || fail 'historic Journal scan did not stay limited to changed files'
 assert_failure log_has_new_startup_marker "$SNAPSHOT" "$LOG"
 printf 'network scan completed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
 assert_failure log_has_new_startup_marker "$SNAPSHOT" "$LOG"
@@ -70,7 +107,340 @@ assert_success log_has_new_startup_marker "$SNAPSHOT" "$LOG"
 NEW_LOG="$LOG_ROOT/new-terminal.log"
 printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE > "$NEW_LOG"
 assert_success log_has_new_startup_marker "$SNAPSHOT" "$NEW_LOG"
+# Native saved-session starts have no Startup-from-config line.
+NATIVE_LOG="$LOG_ROOT/native-terminal.log"
+printf 'Terminal\tMetaTrader 5 x64 build 5320 started for synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$NATIVE_LOG"
+assert_success log_has_new_startup_marker "$SNAPSHOT" "$NATIVE_LOG"
+snapshot_terminal_logs "$LOG_ROOT" "$TMP/native.snapshot"
+assert_failure log_has_new_startup_marker "$TMP/native.snapshot" "$NATIVE_LOG"
+# A large new log must not lose its marker through an early grep exit/SIGPIPE.
+awk 'BEGIN { for (i = 0; i < 10000; i++) print "synthetic terminal status line" }' |
+    iconv -f UTF-8 -t UTF-16LE >> "$NEW_LOG"
+assert_success log_has_new_startup_marker "$SNAPSHOT" "$NEW_LOG"
 
+# A terminal left behind after LiveUpdate must fail health until a later
+# confirmed normal startup marker is observed.  The failure must not become
+# permanent once the normal marker arrives.
+READY_SNAPSHOT="$TMP/ready.snapshot"
+LOG_ROOT="$TMP/update-logs"; mkdir -p "$LOG_ROOT"
+LOG="$LOG_ROOT/terminal.log"
+printf 'Terminal MetaTrader 5 build 5320 started\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG"
+MT5_LOG_ROOT="$LOG_ROOT"
+snapshot_terminal_logs "$LOG_ROOT" "$READY_SNAPSHOT"
+printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_success terminal_update_pending "$READY_SNAPSHOT"
+printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_failure terminal_update_pending "$READY_SNAPSHOT"
+printf 'LiveUpdate started native updater\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_success terminal_update_pending "$READY_SNAPSHOT"
+printf 'Terminal\tMetaTrader 5 x64 build 5320 started for synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG"
+assert_failure terminal_update_pending "$READY_SNAPSHOT"
+
+# Authorization must be a successful marker appended after the launch
+# snapshot. Invalid/failed authorization and old success lines are rejected.
+AUTH_SNAPSHOT="$TMP/auth.snapshot"
+printf 'authorized on old-account\r\n' | iconv -f UTF-8 -t UTF-16LE > "$LOG_ROOT/auth.log"
+snapshot_terminal_logs "$LOG_ROOT" "$AUTH_SNAPSHOT"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'invalid account authorization failed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_success log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'authorization failed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+printf 'authorization on broker failed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+printf 'disconnected from broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+printf 'Startup successfully initialized from start config\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+printf 'Terminal\tMetaTrader 5 x64 build 5320 started for synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'account authorized on broker\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_success log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+printf 'LiveUpdate starting native updater\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$LOG_ROOT/auth.log"
+assert_failure log_has_new_authorized_marker "$AUTH_SNAPSHOT" "$LOG_ROOT/auth.log"
+
+# Exercise the actual authorization poll with a synthetic post-launch Journal
+# line. The success marker alone cannot authorize a vanished/duplicate/updating
+# terminal. A fake clock makes timeout behavior deterministic and fast.
+(
+    unset SECONDS
+    SECONDS=0
+    POLL_CASE=normal; POLL=0
+    MT5_READY_TIMEOUT=3; MT5_UPDATE_TIMEOUT=3
+    POLL_LOG_ROOT="$TMP/poll-logs"; mkdir -p "$POLL_LOG_ROOT"
+    MT5_LOG_ROOT="$POLL_LOG_ROOT"
+    POLL_SNAPSHOT="$TMP/poll.snapshot"
+    snapshot_terminal_logs "$POLL_LOG_ROOT" "$POLL_SNAPSHOT"
+    printf 'Terminal MetaTrader 5 build 5320 started\r\naccount authorized on synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$POLL_LOG_ROOT/journal.log"
+    normal_terminal_pids() {
+        case "$POLL_CASE" in
+            normal|normal-and-update) printf '401\n' ;;
+            replacement) printf '403\n' ;;
+            duplicate) printf '401\n402\n' ;;
+        esac
+    }
+    update_terminal_pids() {
+        case "$POLL_CASE" in
+            updater|normal-and-update) printf '501\n' ;;
+            duplicate-update) printf '501\n502\n' ;;
+        esac
+    }
+    capture_terminal_process_state() {
+        NORMAL_PIDS="$(normal_terminal_pids | paste -sd, -)"
+        UPDATE_PIDS="$(update_terminal_pids | paste -sd, -)"
+        NORMAL_COUNT="$(normal_terminal_pids | count_lines)"
+        UPDATE_COUNT="$(update_terminal_pids | count_lines)"
+    }
+    sleep() { POLL=$((POLL + 1)); SECONDS=$((SECONDS + 1)); }
+    assert_status() {
+        local expected="$1" actual; shift
+        if "$@"; then actual=0; else actual=$?; fi
+        [ "$actual" -eq "$expected" ] || fail "expected status $expected, got $actual: $*"
+    }
+    assert_status 0 await_terminal_authorized "$POLL_SNAPSHOT"
+    POLL_CASE=vanished; assert_status 11 await_terminal_authorized "$POLL_SNAPSHOT"
+    POLL_CASE=duplicate; assert_status 13 await_terminal_authorized "$POLL_SNAPSHOT"
+    POLL_CASE=updater; assert_status 10 await_terminal_authorized "$POLL_SNAPSHOT"
+    POLL_CASE=duplicate-update; assert_status 12 await_terminal_authorized "$POLL_SNAPSHOT"
+    POLL_CASE=normal-and-update; POLL=0
+    assert_status 10 await_terminal_authorized "$POLL_SNAPSHOT"
+    MT5_UPDATE_OBSERVED=1
+    POLL_CASE=updater; POLL=0
+    assert_status 15 await_single_update
+    [ "$POLL" -eq 3 ] || fail 'mandatory update timeout was not bounded'
+    POLL_CASE=vanished; assert_status 0 await_single_update
+    POLL_CASE=normal; assert_status 20 await_single_update
+    POLL_CASE=duplicate; assert_status 13 await_single_update
+    POLL_CASE=normal-and-update; POLL=0
+    assert_status 15 await_single_update
+    [ "$POLL" -eq 3 ] || fail 'native update/restart overlap was not bounded'
+    POLL_CASE=normal; POLL=0
+    printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
+    assert_status 21 await_terminal_authorized "$POLL_SNAPSHOT"
+    [ "$POLL" -eq 3 ] || fail 'Journal-only update prompt bypassed authorization'
+    printf 'LiveUpdate start synthetic/liveupdate/terminal64.exe /update\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
+    assert_status 10 await_terminal_ready "$POLL_SNAPSHOT"
+    [ "$MT5_UPDATE_OBSERVED" -eq 0 ] || fail 'Journal-only launch was mistaken for an observed updater process'
+    POLL_CASE=vanished; POLL=0
+    assert_status 15 await_single_update "$POLL_SNAPSHOT"
+    [ "$POLL" -eq 3 ] || fail 'Journal updater visibility gap triggered an immediate duplicate launch'
+    POLL_CASE=normal
+    printf 'Terminal MetaTrader 5 build 5321 started\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
+    assert_status 20 await_single_update "$POLL_SNAPSHOT"
+
+    # Authorization maintenance preserves the live GUI-selected terminal and
+    # original launch baseline. A new success opens readiness, while update,
+    # conflicts and process exit stop the holding phase. Probe expiration
+    # keeps the same desktop alive until a later manual login succeeds.
+    (
+        MT5_AUTH_MAINTENANCE_TIMEOUT=4
+        MAINTENANCE_SNAPSHOT="$TMP/maintenance.snapshot"
+        launch_terminal() { fail 'authorization maintenance relaunched a terminal'; }
+        stop_exact_pids() { fail 'authorization maintenance stopped the live GUI'; }
+        reset_maintenance() {
+            printf 'account authorized on stale-prior-launch\r\n' | iconv -f UTF-8 -t UTF-16LE > "$POLL_LOG_ROOT/journal.log"
+            snapshot_terminal_logs "$POLL_LOG_ROOT" "$MAINTENANCE_SNAPSHOT"
+            printf 'Terminal MetaTrader 5 build 5321 started\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log"
+            POLL_CASE=normal; POLL=0; MAINTENANCE_ACTION=none
+        }
+        sleep() {
+            POLL=$((POLL + 1)); SECONDS=$((SECONDS + 1))
+            case "$MAINTENANCE_ACTION:$POLL" in
+                authorize:2) printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log" ;;
+                delayed:10) printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log" ;;
+                update:1) POLL_CASE=updater ;;
+                conflict:1) POLL_CASE=duplicate ;;
+                exit:1) POLL_CASE=vanished ;;
+                replace:1) POLL_CASE=replacement ;;
+                prompt:1) printf 'LiveUpdate entered update prompt\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$POLL_LOG_ROOT/journal.log" ;;
+            esac
+        }
+        reset_maintenance; MAINTENANCE_ACTION=authorize
+        assert_status 0 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 2 ] || fail 'maintenance did not accept fresh manual-login authorization'
+        reset_maintenance; MAINTENANCE_ACTION=delayed
+        assert_status 0 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 10 ] || fail 'manual-login hold did not survive repeated probe windows'
+        reset_maintenance
+        authorization_desktop_alive() { return 1; }
+        assert_status 23 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        unset -f authorization_desktop_alive
+        reset_maintenance
+        authorization_desktop_alive() { [ "$POLL" -lt 3 ]; }
+        assert_status 23 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 3 ] || fail 'desktop failure was not supervised during login polling'
+        unset -f authorization_desktop_alive
+        reset_maintenance; MAINTENANCE_ACTION=update
+        assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION=conflict
+        assert_status 13 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION='exit'
+        assert_status 11 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION=replace
+        assert_status 11 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; MAINTENANCE_ACTION=prompt
+        assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        reset_maintenance; POLL_CASE=updater
+        assert_status 10 hold_for_terminal_authorization "$MAINTENANCE_SNAPSHOT"
+        [ "$POLL" -eq 0 ] || fail 'maintenance entered while an updater was active'
+    )
+)
+
+# Native persistence must be observed before a bootstrap can be marked done.
+(
+    . "$ROOT/mt5docker/terminal_config.sh"
+    assert_status() {
+        local expected="$1" actual=0
+        shift
+        "$@" || actual=$?
+        [ "$actual" -eq "$expected" ] || fail "expected status $expected, got $actual"
+    }
+    NATIVE_ROOT="$TMP/native-persistence"
+    mkdir -p "$NATIVE_ROOT/Config"
+    NATIVE_MARKER="$NATIVE_ROOT/bootstrap.marker"
+    MT5_AUTH_MAINTENANCE_TIMEOUT=3
+    capture_terminal_process_state() { NORMAL_COUNT=1; NORMAL_PIDS=401; UPDATE_COUNT=0; }
+    terminal_update_pending() { [ "${NATIVE_UPDATE:-0}" -eq 1 ]; }
+    terminal_journal_authorized() { [ "${NATIVE_AUTH:-1}" -eq 1 ]; }
+    authorization_desktop_alive() { [ "${NATIVE_DESKTOP:-1}" -eq 1 ]; }
+    POLL=0
+    sleep() {
+        POLL=$((POLL + 1)); SECONDS=$((SECONDS + 1))
+        if [ "${NATIVE_DELAYED:-0}" -eq 1 ] && [ "$POLL" -eq 5 ]; then
+            printf 'synthetic-opaque-native-state' > "$NATIVE_ROOT/Config/accounts.dat"
+        fi
+    }
+    assert_status 24 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    [ ! -e "$NATIVE_MARKER" ] || fail 'missing native state created bootstrap marker'
+    NATIVE_DELAYED=1
+    assert_status 0 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    [ "$POLL" -eq 5 ] || fail 'delayed persistence was not verified across probe windows'
+    NATIVE_AUTH=0
+    assert_status 24 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    NATIVE_AUTH=1; NATIVE_UPDATE=1
+    assert_status 10 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    NATIVE_UPDATE=0; NATIVE_DESKTOP=0
+    assert_status 23 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+    NATIVE_DESKTOP=1
+    assert_status 11 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 999
+    capture_terminal_process_state() { NORMAL_COUNT=2; NORMAL_PIDS=401,402; UPDATE_COUNT=0; }
+    assert_status 13 await_native_account_persistence unused "$NATIVE_MARKER" "$NATIVE_ROOT" 401
+)
+
+# Daily rollover must compare all appended Journal events in date/line order.
+# Yesterday's authorization cannot authorize today's newly started terminal,
+# and today's disconnect/failure invalidates success from an earlier file.
+(
+    DAILY_ROOT="$TMP/daily-logs"; mkdir -p "$DAILY_ROOT"
+    MT5_LOG_ROOT="$DAILY_ROOT"
+    DAILY_SNAPSHOT="$TMP/daily.snapshot"
+    snapshot_terminal_logs "$DAILY_ROOT" "$DAILY_SNAPSHOT"
+    printf 'Terminal MetaTrader5 build 5320 started\r\naccount authorized on synthetic-old-session\r\nLiveUpdate start synthetic/liveupdate/terminal64.exe /update\r\n' |
+        iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/20261006.log"
+    printf 'Terminal MetaTrader5 build 5321 started\r\n' | iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/20261007.log"
+    assert_success terminal_journal_started "$DAILY_SNAPSHOT"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    update_terminal_pids() { return 0; }
+    assert_failure terminal_update_pending "$DAILY_SNAPSHOT"
+    assert_failure terminal_update_launch_pending "$DAILY_SNAPSHOT"
+    printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261007.log"
+    assert_success terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'authorization on synthetic-broker failed\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261007.log"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'account authorized on synthetic-GUI-session\r\n' | iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261007.log"
+    assert_success terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'disconnected from synthetic-broker\r\n' | iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/20261008.log"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'Terminal MetaTrader5 build 5322 started\r\naccount authorized on synthetic-GUI-session\r\n' |
+        iconv -f UTF-8 -t UTF-16LE >> "$DAILY_ROOT/20261008.log"
+    assert_success terminal_journal_authorized "$DAILY_SNAPSHOT"
+    printf 'Terminal MetaTrader5 build 5323 started\r\naccount authorized on ambiguous-other-stream\r\n' |
+        iconv -f UTF-8 -t UTF-16LE > "$DAILY_ROOT/unknown-stream.log"
+    assert_failure terminal_journal_authorized "$DAILY_SNAPSHOT"
+    assert_success terminal_update_pending "$DAILY_SNAPSHOT"
+)
+
+(
+    EVENTS="$TMP/shutdown-events"
+    launch_terminal() { fail 'shutdown launched another terminal'; }
+    request_terminal_close() { printf 'close:%s\n' "$1" >> "$EVENTS"; }
+    signal_pids() { local signal="$1"; shift; printf '%s:%s\n' "$signal" "$*" >> "$EVENTS"; }
+    wait_for_pids_exit() {
+        printf 'wait:%s:%s\n' "$1" "${*:2}" >> "$EVENTS"
+        if [ "$CLOSE_CASE" = success ]; then clear_processes; return 0; fi
+        return 1
+    }
+    # Removing /proc records after KILL models forced termination.
+    stop_exact_pids() {
+        local timeout="$1"; shift
+        [ "$#" -gt 0 ] || return 0
+        signal_pids TERM "$@"
+        if ! wait_for_pids_exit "$timeout" "$@"; then
+            signal_pids KILL "$@"
+            clear_processes
+        fi
+    }
+    clear_processes; add_process 901 'C:\MT5\terminal64.exe' /portable
+    : > "$EVENTS"; CLOSE_CASE=success
+    shutdown_mt5_runtime 901 902 >/dev/null
+    [ "$(head -1 "$EVENTS")" = close:901 ] || fail 'desktop stopped before normal close'
+    grep -q '^TERM:902$' "$EVENTS" || fail 'desktop child cleanup missing'
+    if grep -Eq '^(TERM|KILL):.*901' "$EVENTS"; then fail 'successful close still signalled terminal'; fi
+
+    clear_processes; add_process 901 'C:\MT5\terminal64.exe' /portable
+    : > "$EVENTS"; CLOSE_CASE=timeout
+    shutdown_mt5_runtime 901 902 >/dev/null
+    expected=$'close:901\nwait:8:901\nTERM:901\nwait:3:901\nKILL:901\nTERM:902\nwait:3:902\nKILL:902'
+    [ "$(< "$EVENTS")" = "$expected" ] || fail 'close timeout fallback ordering changed'
+
+    for conflict in duplicate updater; do
+        clear_processes; add_process 901 'C:\MT5\terminal64.exe' /portable
+        if [ "$conflict" = duplicate ]; then add_process 903 'C:\MT5\terminal64.exe' /portable
+        else add_process 903 'C:\MT5\terminal64.exe' /update; fi
+        : > "$EVENTS"
+        shutdown_mt5_runtime 901 902 >/dev/null
+        if grep -q '^close:' "$EVENTS"; then fail 'conflicting terminals received broad normal close'; fi
+        [ "$(head -1 "$EVENTS")" = 'TERM:901 903' ] || fail 'conflict cleanup did not stop exact terminal PIDs first'
+    done
+)
+(
+    clear_processes; add_process 911 'C:\MT5\terminal64.exe' /portable
+    timeout() {
+        [ "$*" = '--kill-after=1s 3s wine taskkill /IM terminal64.exe' ] || fail 'Windows close was forced or unbounded'
+        printf 'bounded\n' > "$TMP/close-command"
+        return 124
+    }
+    assert_failure request_terminal_close 911
+    [ -f "$TMP/close-command" ] || fail 'bounded close command missing'
+    rm "$TMP/close-command"
+    add_process 912 'C:\MT5\terminal64.exe' /update
+    assert_failure request_terminal_close 911
+    [ ! -f "$TMP/close-command" ] || fail 'close guard allowed updater conflict'
+)
+(
+    # Exercise the real bounded waits with a fake clock, including a native
+    # replacement after the first forced stop and a desktop that needs KILL.
+    unset SECONDS; SECONDS=0
+    capture_terminal_process_state() { NORMAL_COUNT=1; UPDATE_COUNT=0; NORMAL_PIDS=921; }
+    terminal_processes() {
+        if [ "$SECONDS" -eq 0 ]; then printf '921\tterminal\n'
+        else printf '923\tterminal\n'; fi
+    }
+    request_terminal_close() { SECONDS=$((SECONDS + 4)); return 124; }
+    kill() { return 0; }
+    signal_pids() { :; }
+    sleep() { SECONDS=$((SECONDS + 1)); }
+    shutdown_mt5_runtime 921 922 >/dev/null
+    [ "$SECONDS" -eq 21 ] || fail "worst-case shutdown budget changed: ${SECONDS}s"
+    [ "$SECONDS" -lt 30 ] || fail 'shutdown exceeds Docker stop grace period'
+)
+grep -q 'shutdown_mt5_runtime "${CHILD_PIDS\[@\]}"' "$ROOT/mt5docker/start_server.sh" || fail 'cleanup does not use terminal-first shutdown'
 grep -q 'winepath -w' "$ROOT/mt5docker/start_server.sh" || fail 'config is not converted by winepath'
 grep -q '/skipupdate' "$ROOT/mt5docker/start_server.sh" || fail 'skip-update switch missing'
 if grep -Eq 'pkill.*(python|terminal64)' "$ROOT/mt5docker/start_server.sh"; then

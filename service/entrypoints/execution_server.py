@@ -16,7 +16,7 @@ def _enabled(value):
 
 def build_execution_server():
     settings = load_settings()
-    client = MT5Client()
+    client = MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
     symbols = [item.name for item in settings.history_service.symbols]
     adapter = MT5ExecutionAdapter(client, symbols)
     store = IdempotencyStore(
@@ -27,6 +27,7 @@ def build_execution_server():
         store=store,
         api_key_env=os.getenv("EXECUTION_API_KEY_ENV", "READONLY_API_KEY"),
         mutation_enabled=_enabled(os.getenv("EXECUTION_MUTATION_ENABLED", "false")),
+        account_policy=os.getenv("EXECUTION_ACCOUNT_POLICY", "DEMO"),
     )
     return create_execution_app(context), client
 

@@ -8,6 +8,8 @@ import json
 import pytest
 import pandas as pd
 from datetime import datetime, timezone
+from pathlib import Path
+from service.config import load_settings
 
 
 SERVICES = ["tick_service", "history_service", "api_gateway"]
@@ -85,30 +87,19 @@ def test_tick_data_freshness(docker_exec):
         f"Symbol={first_key}, time={ts_str}"
 
 
-def test_history_data_freshness(docker_exec):
+def test_history_data_freshness():
     """Latest history CSV entry must be within the last 900 seconds.
     
     M5 bars complete 5 min after their timestamp + cycle timing,
     so data up to 10-12 min old is expected during normal operation.
     """
-    r = docker_exec("ls /app/service/data/history/*_M5.csv 2>/dev/null | head -1")
-    csv_file = r.stdout.strip()
-    if not csv_file:
-        pytest.skip("No history CSV files found")
-    r = docker_exec(f"tail -1 '{csv_file}'")
-    last_line = r.stdout.strip()
-    if not last_line:
-        pytest.skip(f"CSV {csv_file} appears empty")
-    try:
-        df = pd.read_csv(csv_file)
-    except Exception:
-        pytest.skip(f"Cannot read CSV {csv_file}")
-    if df.empty:
-        pytest.skip("CSV is empty")
-    last_time = pd.to_datetime(df["time"].iloc[-1])
-    if last_time.tz is None:
-        last_time = last_time.tz_localize("UTC")
-    delta = (datetime.now(timezone.utc) - last_time).total_seconds()
-    assert delta < 900, \
-        f"History data is {delta:.0f}s old (threshold: 900s). " \
-        f"Last time: {last_time}"
+    history = load_settings().history_service
+    paths = [Path(history.data_path) / f"{item.name}_M5.csv"
+             for item in history.symbols if "M5" in item.timeframes]
+    assert paths, "No M5 history caches configured"
+    for path in paths:
+        df = pd.read_csv(path)
+        assert not df.empty, f"Configured cache is empty: {path.name}"
+        last_time = pd.to_datetime(df["time"].iloc[-1], utc=True)
+        delta = (datetime.now(timezone.utc) - last_time).total_seconds()
+        assert delta < 900, f"Configured history {path.name} is {delta:.0f}s old"

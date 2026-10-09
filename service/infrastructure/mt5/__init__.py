@@ -1,3 +1,18 @@
 """MT5 connection and symbol infrastructure."""
 
-__all__ = ["client", "symbol_resolver"]
+from .session import (
+    AccountFingerprint,
+    AccountSessionGuard,
+    AccountSessionStatus,
+    AccountSessionTransition,
+)
+
+__all__ = [
+    "client",
+    "symbol_resolver",
+    "session",
+    "AccountFingerprint",
+    "AccountSessionGuard",
+    "AccountSessionStatus",
+    "AccountSessionTransition",
+]

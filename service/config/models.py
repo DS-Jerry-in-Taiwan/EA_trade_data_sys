@@ -45,14 +45,48 @@ def _strings(value: Any, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     return tuple(item for item in value if isinstance(item, str))
 
 
+def _symbol_aliases(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping) or any(
+        not isinstance(logical, str) or not logical or logical != logical.strip()
+        or not isinstance(broker, str) or not broker or broker != broker.strip()
+        for logical, broker in value.items()
+    ):
+        raise ValueError("symbol_aliases must map logical names to non-empty exact broker names")
+    return dict(value)
+
+
 @dataclass(frozen=True)
 class ConnectionSettings:
+    # ``terminal`` attaches to the account already selected in the MT5 GUI.
+    # ``managed`` is intentionally opt-in because it reads the private
+    # accounts file and can change the terminal's account during initialize.
+    mode: str = "terminal"
     default_host: str = "mt5-server"
     port: int = 8001
     timeout: float = 10.0
 
+    @property
+    def connection_mode(self) -> str:
+        """Compatibility alias for callers that use the full field name."""
+        return self.mode
+
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "ConnectionSettings":
+    def from_mapping(
+        cls,
+        raw: Mapping[str, Any],
+        *,
+        environ: Mapping[str, str] | None = None,
+    ) -> "ConnectionSettings":
+        env = {} if environ is None else environ
+        configured_mode = raw.get("mode", raw.get("connection_mode", cls.mode))
+        # The environment override is useful for deployments because it does
+        # not require putting a credential-bearing profile path in YAML.
+        mode = env["MT5_CONNECTION_MODE"] if "MT5_CONNECTION_MODE" in env else configured_mode
+        if not isinstance(mode, str):
+            raise ValueError("connection.mode must be 'terminal' or 'managed'")
+        mode = mode.strip().lower()
+        if mode not in {"terminal", "managed"}:
+            raise ValueError("connection.mode must be 'terminal' or 'managed'")
         timeout = raw.get("timeout", cls.timeout)
         try:
             timeout = float(timeout)
@@ -61,6 +95,7 @@ class ConnectionSettings:
         if timeout <= 0:
             raise ValueError("connection.timeout must be a positive number")
         return cls(
+            mode=mode,
             default_host=_str(raw.get("default_host"), cls.default_host),
             port=_int(raw.get("port"), cls.port),
             timeout=timeout,
@@ -231,13 +266,16 @@ class Settings:
     history_service: HistoryServiceSettings = field(default_factory=HistoryServiceSettings)
     api_gateway: ApiGatewaySettings = field(default_factory=ApiGatewaySettings)
     trade_query: TradeQuerySettings = field(default_factory=TradeQuerySettings)
+    symbol_aliases: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(
         cls, raw: Mapping[str, Any], *, environ: Mapping[str, str]
     ) -> "Settings":
         return cls(
-            connection=ConnectionSettings.from_mapping(_section(raw, "connection")),
+            connection=ConnectionSettings.from_mapping(
+                _section(raw, "connection"), environ=environ
+            ),
             tick_service=TickServiceSettings.from_mapping(
                 _section(raw, "tick_service"), environ=environ
             ),
@@ -250,6 +288,7 @@ class Settings:
             trade_query=TradeQuerySettings.from_mapping(
                 _section(raw, "trade_query")
             ),
+            symbol_aliases=_symbol_aliases(raw.get("symbol_aliases", {})),
         )
 
     def as_dict(self) -> dict[str, Any]:

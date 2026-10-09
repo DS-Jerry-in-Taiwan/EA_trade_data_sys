@@ -65,6 +65,26 @@ def connection_manager(monkeypatch):
     return importlib.import_module('core.connection_manager')
 
 
+def test_connector_uses_injected_settings_without_loading_configuration(
+    connection_manager, monkeypatch
+):
+    from service.config.models import Settings
+
+    settings = Settings.from_mapping({"connection": {"port": 8123}}, environ={})
+
+    def forbidden_load(*args, **kwargs):
+        raise AssertionError("injected settings must not be reloaded")
+
+    monkeypatch.setattr(connection_manager, "load_settings", forbidden_load)
+    connector = connection_manager.MT5Connector(settings=settings)
+    assert connector.settings is settings
+    assert connector.connection.port == 8123
+    assert connector.mode == "terminal"
+    assert connector.accounts is None
+    with pytest.raises(ValueError, match="Supply settings or settings_path"):
+        connection_manager.MT5Connector(settings=settings, settings_path="unused")
+
+
 @pytest.fixture
 def config_files(tmp_path):
     settings_path = tmp_path / 'settings.yaml'
@@ -125,6 +145,88 @@ def test_connect_uses_only_configured_docker_dns_host(
     assert constructor_calls == [{'host': 'mt5-server', 'port': 8001}]
     assert mt5.shutdown_calls == 0
     assert mt5.transport._config['sync_request_timeout'] == 10
+
+
+def test_terminal_mode_does_not_read_accounts_file_or_pass_credentials(
+    connection_manager, config_files, monkeypatch
+):
+    settings_path, accounts_path = config_files
+    accounts_path.unlink()
+    constructor_calls = []
+    mt5 = RealisticPymt5linuxMT5()
+
+    monkeypatch.setattr(
+        connection_manager.socket,
+        'getaddrinfo',
+        lambda *args, **kwargs: [(object(),)],
+    )
+    monkeypatch.setattr(
+        connection_manager,
+        'MetaTrader5',
+        lambda **kwargs: constructor_calls.append(kwargs) or mt5,
+    )
+
+    connector = connection_manager.MT5Connector(
+        settings_path=str(settings_path), accounts_path=str(accounts_path)
+    )
+    assert connector.mode == 'terminal'
+    assert connector.connect() is mt5
+    assert mt5.initialize_calls == [{}]
+    assert constructor_calls == [{'host': 'mt5-server', 'port': 8001}]
+
+
+def test_managed_mode_is_explicit_and_initializes_with_private_profile(
+    connection_manager, config_files, monkeypatch
+):
+    settings_path, accounts_path = config_files
+    settings = yaml.safe_load(settings_path.read_text())
+    settings['connection']['mode'] = 'managed'
+    settings_path.write_text(yaml.safe_dump(settings))
+    mt5 = RealisticPymt5linuxMT5()
+
+    monkeypatch.setattr(
+        connection_manager.socket,
+        'getaddrinfo',
+        lambda *args, **kwargs: [(object(),)],
+    )
+    monkeypatch.setattr(connection_manager, 'MetaTrader5', lambda **kwargs: mt5)
+
+    connector = connection_manager.MT5Connector(
+        settings_path=str(settings_path), accounts_path=str(accounts_path)
+    )
+    assert connector.mode == 'managed'
+    assert connector.connect() is mt5
+    assert mt5.initialize_calls == [
+        {'login': 123, 'password': 'test-password', 'server': 'test-server'}
+    ]
+
+
+def test_managed_mode_missing_profile_fails_closed(
+    connection_manager, config_files
+):
+    settings_path, accounts_path = config_files
+    settings = yaml.safe_load(settings_path.read_text())
+    settings['connection']['mode'] = 'managed'
+    settings_path.write_text(yaml.safe_dump(settings))
+    accounts_path.unlink()
+
+    with pytest.raises(FileNotFoundError, match='Accounts file not found'):
+        connection_manager.MT5Connector(
+            settings_path=str(settings_path), accounts_path=str(accounts_path)
+        )
+
+
+@pytest.mark.parametrize('mode', ['invalid', '', None, 1])
+def test_invalid_connection_mode_fails_closed(
+    connection_manager, config_files, mode
+):
+    settings_path, _ = config_files
+    settings = yaml.safe_load(settings_path.read_text())
+    settings['connection']['mode'] = mode
+    settings_path.write_text(yaml.safe_dump(settings))
+
+    with pytest.raises(ValueError, match="connection.mode"):
+        connection_manager.MT5Connector(settings_path=str(settings_path))
 
 
 @pytest.mark.parametrize('timeout', [0, -1, 'invalid', None])

@@ -21,11 +21,17 @@ def resolve_config_path(
     environ: Mapping[str, str] | None = None,
 ) -> Path:
     env = os.environ if environ is None else environ
-    if path is not None:
-        return Path(path)
-    configured = env.get("TRADE_DATA_CONFIG")
-    if configured:
-        return Path(configured)
+    selectors = [value for value in (
+        path, env.get("TRADE_DATA_CONFIG"), env.get("MT5_SETTINGS_PATH")
+    ) if value is not None and str(value).strip()]
+    if selectors:
+        normalized = [Path(value).expanduser().resolve() for value in selectors]
+        if any(value != normalized[0] for value in normalized[1:]):
+            raise ValueError(
+                "Conflicting configuration selectors: explicit path, "
+                "TRADE_DATA_CONFIG and MT5_SETTINGS_PATH must agree"
+            )
+        return normalized[0]
     if DEFAULT_CONFIG_PATH.exists():
         return DEFAULT_CONFIG_PATH
     return _REPOSITORY_CONFIG_PATH

@@ -8,42 +8,33 @@ import pandas as pd
 import numpy as np
 import pytest
 from datetime import datetime, timezone
+from pathlib import Path
+from service.config import load_settings
 
 
 REQUIRED_COLUMNS = {"time", "open", "high", "low", "close", "tick_volume"}
 
-# Dynamically read symbols from settings.yaml
-import yaml
-try:
-    with open("/app/service/config/settings.yaml") as f:
-        _cfg = yaml.safe_load(f)
-    EXPECTED_SYMBOLS = {
-        item["name"] for item in _cfg.get("history_service", {}).get("symbols", [])
-    }
-except Exception:
-    EXPECTED_SYMBOLS = {"XAUUSDm", "BTC", "EURUSDm", "GBPUSDm"}  # fallback
-EXPECTED_TIMEFRAMES = {"M5", "M15", "H1", "D1"}
+_history_settings = load_settings().history_service
+EXPECTED_SYMBOLS = {item.name for item in _history_settings.symbols}
+EXPECTED_CACHES = {
+    f"{item.name}_{timeframe}"
+    for item in _history_settings.symbols for timeframe in item.timeframes
+}
 TIMEFRAME_SECONDS = {"M5": 300, "M15": 900, "H1": 3600, "D1": 86400}
 MAX_OPEN_AGE_SECONDS = {"M5": 900, "M15": 2700, "H1": 10800, "D1": 259200}
 
 
 @pytest.fixture(scope="module")
-def history_data(csv_paths):
-    """Load all history CSVs into a {name: DataFrame} dict."""
-    if not csv_paths:
-        pytest.skip("No history CSV files found")
+def history_data():
+    """Read configured logical caches; historical broker artifacts are unrelated."""
+    assert EXPECTED_CACHES, "No history caches configured"
     dataframes = {}
-    for sym, paths in csv_paths.items():
-        for p in paths:
-            try:
-                df = pd.read_csv(p)
-                df["time"] = pd.to_datetime(df["time"])
-                key = f"{sym}_{p.split('_')[-1].replace('.csv', '')}"
-                dataframes[key] = df
-            except Exception:
-                pass
-    if not dataframes:
-        pytest.skip("Could not read any history CSVs")
+    for name in sorted(EXPECTED_CACHES):
+        path = Path(_history_settings.data_path) / f"{name}.csv"
+        assert path.is_file(), f"Missing configured cache: {name}"
+        df = pd.read_csv(path)
+        df["time"] = pd.to_datetime(df["time"], utc=True)
+        dataframes[name] = df
     return dataframes
 
 
@@ -59,12 +50,7 @@ class TestDataShape:
 
     def test_all_expected_timeframes_present(self, history_data):
         """The set of known timeframes must be present in the data"""
-        expected = {
-            f"{symbol}_{timeframe}"
-            for symbol in EXPECTED_SYMBOLS
-            for timeframe in EXPECTED_TIMEFRAMES
-        }
-        missing = expected - set(history_data)
+        missing = EXPECTED_CACHES - set(history_data)
         assert not missing, f"Missing timeframes: {missing}"
 
     def test_required_columns_present(self, history_data):
@@ -105,8 +91,17 @@ class TestChronology:
                 bad[name] = "non-monotonic time"
         assert not bad, f"Non-monotonic time: {bad}"
 
-    def test_timeframe_cadence_and_crypto_continuity(self, history_data):
+    def test_timeframe_cadence_and_broker_crypto_schedule(self, history_data):
+        """Crypto is not promised 24/7: gaps must agree with live broker history.
+
+        The HTTP range endpoint reads this same cache, so it cannot independently
+        establish a broker closure. Sample the latest gap per timeframe using
+        MT5 read-only; older gaps retain grid/order validation but are not
+        independently checked against the broker. Retain boundary bars
+        to reject failed/empty queries rather than accepting them as closures.
+        """
         bad = {}
+        client = None
         for name, df in history_data.items():
             symbol, timeframe = name.rsplit("_", 1)
             interval = TIMEFRAME_SECONDS[timeframe]
@@ -116,7 +111,33 @@ class TestChronology:
             elif symbol.upper().startswith(("BTC", "ETH", "CRYPTO")) and (
                 deltas != interval
             ).any():
-                bad[name] = "continuous-market gap"
+                from service.infrastructure.mt5.client import MT5Client
+                if client is None:
+                    assert load_settings().connection.mode == "terminal"
+                    client = MT5Client()
+                    assert client.ensure_connected(), "Broker comparison unavailable"
+                    client.init_resolver(sorted(EXPECTED_SYMBOLS))
+                broker_symbol = client.resolve(symbol)
+                gap_index = int(np.flatnonzero(
+                    df["time"].diff().dt.total_seconds().to_numpy() > interval
+                )[-1])
+                start = df["time"].iloc[gap_index - 1]
+                end = df["time"].iloc[gap_index]
+                rates = client.call(lambda mt5: mt5.copy_rates_range(
+                    broker_symbol, getattr(mt5, f"TIMEFRAME_{timeframe}"),
+                    start.to_pydatetime(), end.to_pydatetime(),
+                ))
+                assert rates is not None and len(rates), "Broker comparison unavailable"
+                broker_times = set(pd.to_datetime(
+                    [bar["time"] for bar in rates], unit="s", utc=True
+                ))
+                cache_times = set(df.loc[
+                    df["time"].between(start, end), "time"
+                ])
+                if start not in broker_times or end not in broker_times:
+                    bad[name] = "broker range did not include cache boundary bars"
+                elif broker_times != cache_times:
+                    bad[name] = "cache timestamps differ from broker history"
         assert not bad, f"Invalid cadence: {bad}"
 
     def test_recent_data(self, history_data):

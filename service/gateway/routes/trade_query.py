@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 
 from service.gateway.auth import require_readonly_api_key
 from service.domain.trades.errors import DealMappingError
+from service.trade_query.contracts import TradeQueryError
 
 
 def _parse_date(value):
@@ -47,7 +48,10 @@ def parse_trade_query_range(config_loader):
 
 
 def _response(result):
-    if isinstance(result, dict) and result.get("error") == "MT5 not connected":
+    if isinstance(result, dict) and (
+        result.get("error") == "MT5 not connected"
+        or result.get("code") == "account_session_transition"
+    ):
         return jsonify(result), 503
     if isinstance(result, dict) and result.get("error"):
         return jsonify(result), 500
@@ -64,7 +68,12 @@ def create_blueprint(account_service, config_loader, mapping_error_counter=None)
     @bp.get("/api/v1/positions")
     def get_positions():
         error = require_readonly_api_key(config_loader)
-        return error or _response(account_service.get_positions(symbol=request.args.get("symbol")))
+        if error:
+            return error
+        try:
+            return _response(account_service.get_positions(symbol=request.args.get("symbol")))
+        except TradeQueryError as exc:
+            return jsonify(exc.as_response()), exc.status
 
     @bp.get("/api/v1/history/deals")
     def get_history_deals():

@@ -8,6 +8,9 @@ services:
     environment:
       - VNC_PWD=jerry1234
       - MT5_CONFIG_LINUX=/run/mt5/mt5cfg.ini
+      - MT5_CONNECTION_MODE=${MT5_CONNECTION_MODE:-terminal}
+      - MT5_BOOTSTRAP_REIMPORT=${MT5_BOOTSTRAP_REIMPORT:-0}
+      - MT5_BOOTSTRAP_MARKER=/mt5docker/MT5_Data/.mt5-bootstrap-complete
     volumes:
       # 配置與腳本目錄
       - .:/mt5docker
@@ -18,6 +21,11 @@ services:
       # Mount the already-generated config; do not regenerate secrets here.
       - "${MT5_CONFIG_FILE:-./mt5cfg.ini}:/run/mt5/mt5cfg.ini:ro"
     entrypoint: /mt5docker/start_server.sh
+    # Keep Wine's desktop alive while MT5 handles its normal close request.
+    # Bounded shutdown can take 21s (4s request + 8s close wait + three 3s
+    # fallback waits); 30s avoids Docker's default 10s forced termination.
+    # Normal close requests do not themselves guarantee native state saved.
+    stop_grace_period: 30s
     ports:
       - 5901:5901
       - 6081:6081
@@ -37,6 +45,9 @@ services:
     container_name: trade-data-service
     environment:
       READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
+      MT5_CONNECTION_MODE: ${MT5_CONNECTION_MODE:-terminal}
+      TRADE_DATA_CONFIG: ${TRADE_DATA_CONFIG:-}
+      MT5_SETTINGS_PATH: ${MT5_SETTINGS_PATH:-}
     volumes:
       # 將整個專案代碼映射到 /app
       - ..:/app
@@ -45,7 +56,9 @@ services:
     entrypoint: /app/mt5docker/start_runner.sh
     depends_on:
       mt5-server:
-        condition: service_healthy
+        # Start HTTP while the operator logs in; API readiness still fails
+        # closed until fresh MT5 authorization and RPyC are available.
+        condition: service_started
     healthcheck:
       test:
         - CMD
@@ -69,15 +82,22 @@ services:
     environment:
       READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
       EXECUTION_MUTATION_ENABLED: "false"
+      EXECUTION_ACCOUNT_POLICY: "DEMO"
+      MT5_CONNECTION_MODE: ${MT5_CONNECTION_MODE:-terminal}
+      TRADE_DATA_CONFIG: ${TRADE_DATA_CONFIG:-}
+      MT5_SETTINGS_PATH: ${MT5_SETTINGS_PATH:-}
       EXECUTION_IDEMPOTENCY_DB: /app/runtime/execution/idempotency.sqlite3
     volumes:
       - ..:/app
+      # Keep durable idempotency records on the deployment worktree across
+      # execution-service container recreation.
+      - ../runtime:/app/runtime
     ports:
       - "0.0.0.0:8091:8091"
     entrypoint: /app/mt5docker/start_execution.sh
     depends_on:
       mt5-server:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test:
         - CMD

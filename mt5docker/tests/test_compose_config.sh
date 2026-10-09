@@ -47,6 +47,8 @@ config_json="$(
 printf '%s' "$config_json" | python3 -c '
 import json, sys
 service = json.load(sys.stdin)["services"]["mt5-server"]
+if service.get("stop_grace_period") != "30s":
+    raise SystemExit("FAIL: MT5 shutdown requires the 30s container stop grace period")
 matches = [v for v in service["volumes"] if v["target"] == "/run/mt5/mt5cfg.ini"]
 if len(matches) != 1 or matches[0]["source"] != "/tmp/mt5-config-compose-fixture.ini" or not matches[0]["read_only"]:
     raise SystemExit("FAIL: config mount is not exact and read-only")

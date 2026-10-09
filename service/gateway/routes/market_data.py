@@ -5,6 +5,7 @@ import os
 from flask import Blueprint, jsonify, request, send_file
 
 from service.gateway.websocket import public_tick
+from service.trade_query.contracts import TradeQueryError
 
 
 def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
@@ -54,9 +55,16 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
     @bp.get("/api/v1/symbols")
     def list_symbols():
         try:
-            return jsonify(account_service.get_symbols(symbol_names))
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+            result = account_service.get_symbols(symbol_names)
+            if isinstance(result, dict) and result.get("code") == "account_session_transition":
+                return jsonify(result), 503
+            if isinstance(result, dict) and result.get("error") == "MT5 not connected":
+                return jsonify({"error": "MT5 is unavailable", "code": "mt5_unavailable"}), 503
+            return jsonify(result)
+        except TradeQueryError as exc:
+            return jsonify(exc.as_response()), exc.status
+        except Exception:
+            return jsonify({"error": "Internal server error", "code": "internal_error"}), 500
 
     @bp.get("/api/v1/openapi.yaml")
     def openapi_spec():

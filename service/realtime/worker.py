@@ -14,7 +14,7 @@ from service.realtime.snapshot_store import TickSnapshotStore
 class TickService:
     """Poll MT5, normalize Tick events, and publish them to local consumers."""
 
-    def __init__(self, config_path='/app/service/config/settings.yaml', mt5_client=None,
+    def __init__(self, config_path=None, mt5_client=None,
                  publisher=None, snapshot_store=None, stop_event=None,
                  settings: Settings | None = None):
         settings = settings or load_settings(config_path)
@@ -25,7 +25,10 @@ class TickService:
         self.socket_path = cfg.socket_path or DEFAULT_SOCKET_PATH
         self.max_retry_seconds = cfg.max_retry_seconds
         self.status_path = cfg.status_path
-        self.mt5_client = mt5_client if mt5_client is not None else MT5Client()
+        self.mt5_client = (
+            mt5_client if mt5_client is not None
+            else MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
+        )
         self.publisher = publisher if publisher is not None else TickPublisher(self.socket_path)
         self.snapshot_store = (
             snapshot_store if snapshot_store is not None
@@ -57,8 +60,12 @@ class TickService:
         result = {}
         for symbol in self.symbols:
             try:
-                broker_symbol = self.mt5_client.resolve(symbol)
-                tick = self.mt5_client.call(lambda mt5: mt5.symbol_info_tick(broker_symbol))
+                # Resolve after the account guard runs and under the same
+                # client lock as the read, so a reconciled account cannot use
+                # the previous account's broker alias.
+                tick = self.mt5_client.call(
+                    lambda mt5: mt5.symbol_info_tick(self.mt5_client.resolve(symbol))
+                )
                 if tick:
                     source_timestamp = getattr(tick, 'time_msc', None)
                     if source_timestamp:

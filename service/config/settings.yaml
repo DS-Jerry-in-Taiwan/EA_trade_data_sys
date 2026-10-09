@@ -1,7 +1,17 @@
 connection:
+  # terminal attaches to the account currently selected in MT5/noVNC.
+  # managed is an explicit opt-in and reads MT5_ACCOUNTS_PATH.
+  mode: "terminal"
   default_host: "mt5-server"
   port: 8001
   timeout: 10
+
+# Keep public API/cache names in the service sections below. Configure exact
+# broker names here only when the catalog has ambiguous/other naming schemes.
+# Each alias is checked against the connected account's catalog; missing aliases
+# fail closed after reconnect/account changes. BTC infers USD, never USDT.
+# Example, once verified against the broker: {"XAUUSDm": "XAU_USD"}
+symbol_aliases: {}
 
 tick_service:
   enabled: true

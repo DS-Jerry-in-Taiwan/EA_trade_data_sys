@@ -116,6 +116,41 @@ def test_tick_failure_resets_transport_and_resolver_without_event(tmp_path):
     assert service._resolver_initialized is False
 
 
+def test_tick_resolves_alias_inside_guarded_read_after_reconciliation(tmp_path):
+    class ReconciledClient(FakeMT5Client):
+        alias = 'XAUUSDm'
+
+        def __init__(self):
+            super().__init__()
+            self.requests = []
+
+        def resolve(self, symbol):
+            return self.alias
+
+        def call(self, operation):
+            # Simulate a monitor completing account reconciliation between
+            # fetch_ticks starting and the guarded operation acquiring a lock.
+            self.alias = 'XAU_USD'
+
+            def read(symbol):
+                self.requests.append(symbol)
+                return SimpleNamespace(
+                    bid=200 if symbol == self.alias else 999,
+                    ask=201, last=200, volume=1,
+                )
+
+            return operation(SimpleNamespace(symbol_info_tick=read))
+
+    client = ReconciledClient()
+    service = TickService(config_path=_config(tmp_path), mt5_client=client)
+
+    ticks, healthy = service.fetch_ticks()
+
+    assert healthy is True
+    assert client.requests == ['XAU_USD']
+    assert ticks['XAUUSDm']['bid'] == 200
+
+
 def test_tick_without_mt5_time_falls_back_to_received_at_utc(tmp_path):
     tick = SimpleNamespace(bid=1.1, ask=1.2, last=1.15, volume=3)
     service = TickService(
