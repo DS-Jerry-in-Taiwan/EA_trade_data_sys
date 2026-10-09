@@ -8,6 +8,22 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 if [ "$#" -eq 3 ] && [ "$1" = --verify ]; then
     state="$(mt5_native_account_state "$3" "$2")"
     echo "native_account_state=$state"
+    # Keep the legacy predicate/exit status for callers; it is metadata only.
+    if [ "$state" = native_present ]; then
+        echo 'metadata_present=true'
+        echo 'metadata_reason=nonempty_store'
+    else
+        echo 'metadata_present=false'
+        if [ -f "$2/Config/accounts.dat" ] || [ -f "$2/config/accounts.dat" ]; then
+            echo 'metadata_reason=empty_store'
+        else
+            echo 'metadata_reason=missing_or_inaccessible_store'
+        fi
+    fi
+    echo 'recovery_certified=false'
+    echo 'session_certified=false'
+    echo 'restart_certified=false'
+    echo 'verification_scope=metadata_only'
     if bootstrap_marker_valid "$3"; then
         echo 'bootstrap_marker_valid=true'
     else

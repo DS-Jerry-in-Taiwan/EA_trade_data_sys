@@ -46,7 +46,10 @@ Never edit `accounts.dat`, print a private INI, or put credentials in commands.
      /persistent/MT5_Data /persistent/MT5_Data/.mt5-bootstrap-complete
    ```
 
-   Verification prints only the native state and marker-valid boolean. It
+   Verification prints native state, marker validity, `metadata_present`, and
+   explicit `recovery_certified=false`, `session_certified=false`, and
+   `restart_certified=false`. Its zero exit status remains compatible with
+   callers and means only that metadata predicates passed. It
    requires nonempty native storage and a valid marker, never reads account
    contents, and fails if either condition is missing. It does not prove saved
    account count or credential validity; the authorized GUI session provides
@@ -61,3 +64,37 @@ For rollback stop the terminal and restore the backed-up native directories and
 marker as files, never modifying their contents. Restore the previous config
 mount and keep re-import disabled. Private backups have the same sensitivity as
 the original native credential store and require restricted access and retention.
+
+## Controlled recovery evidence checklist
+
+In a separately authorized recovery window, collect a fresh pre-import Journal
+baseline and fresh post-baseline startup/authorization booleans without raw
+logs or account IDs. Confirm the selected account appears in GUI Accounts.
+Close MT5 using normal GUI exit, confirm process absence, and collect metadata.
+Restart once with re-import disabled and without `/config`, checking the same
+mount and executable. Require fresh saved-session authorization and retained
+GUI account presence. A stable nonempty store alone never proves account
+validity, saved credentials, session authorization, or restart survival.
+
+Start bounded read-only sampling before import and retain captures through
+readiness, normal close, and config-free restart, marking each phase separately:
+
+```bash
+bash /mt5docker/observe_account_recovery.sh \
+  /persistent/MT5_Data /persistent/MT5_Data/.mt5-bootstrap-complete 600 1
+```
+
+The observer emits timestamps and existence, size, inode, and mtime for both
+Config/config accounts.dat stores and the marker. It never opens contents or
+prints supplied paths, raw logs, or account IDs. Zero size distinguishes empty
+from missing storage. A failed stat means missing/inaccessible, with unknown
+metadata. Sampling allows 1..3600 observations, intervals of 1..60 seconds,
+and at most one hour of waiting; gaps cannot exclude transient changes.
+It performs no login, import, close, or restart and certifies none of them.
+
+Classify disappearance before close as premature persistence acceptance;
+disappearance or empty rewrite during close as close-time storage failure;
+loss only after restart as reload/path failure. Retained metadata without fresh
+authorization or GUI presence still fails the checklist. These classifications
+guide investigation, not proven root causes: the prior audit matched paths and
+found missing storage but did not establish who removed it or why.
