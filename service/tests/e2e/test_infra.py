@@ -136,9 +136,10 @@ class TestMT5Client:
         from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected"
-        all_symbols = c._mt5.symbols_get()
-        known = all_symbols[0].name
-        logical = known + 'm'  # Add 'm' suffix to test fuzzy stripping
+        # EURUSDm is a documented logical alias, unlike arbitrary catalog
+        # entries with an invented suffix (for example an unsupported .simm).
+        logical = "EURUSDm"
         c.init_resolver([logical])
         resolved = c.resolve(logical)
-        assert resolved == known, f"Fuzzy match failed: expected {known}, got {resolved}"
+        assert resolved in {item.name for item in c._mt5.symbols_get()}
+        assert c._resolver.logical_for(resolved) == logical
