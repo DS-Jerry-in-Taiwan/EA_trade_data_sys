@@ -87,6 +87,7 @@ services:
       TRADE_DATA_CONFIG: ${TRADE_DATA_CONFIG:-}
       MT5_SETTINGS_PATH: ${MT5_SETTINGS_PATH:-}
       EXECUTION_IDEMPOTENCY_DB: /app/runtime/execution/idempotency.sqlite3
+      EXECUTION_AUTHORIZATION_DB: /app/runtime/execution/authorization.sqlite3
     volumes:
       - ..:/app
       # Keep durable idempotency records on the deployment worktree across

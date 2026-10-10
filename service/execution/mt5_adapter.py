@@ -556,7 +556,111 @@ class MT5ExecutionAdapter:
             raise ExecutionError(code, message, status=422, retcode=retcode)
         return request, {"retcode": retcode, "margin": getattr(result, "margin", None)}
 
-    def send_once(self, request, *, expected_session=None):
+    def assert_entry_scope(self, symbol):
+        """Require an empty symbol book before bounded test exposure."""
+        native = self._resolve(symbol)
+        def verify(mt5):
+            positions = mt5.positions_get(symbol=native)
+            orders = mt5.orders_get(symbol=native)
+            if positions is None or orders is None:
+                raise ExecutionError("mt5_unavailable", "Exposure baseline is unavailable", status=503)
+            if positions or orders:
+                raise ExecutionError("exposure_scope_conflict", "Symbol already has exposure", status=409)
+        self._call(verify)
+        return native
+
+    @staticmethod
+    def _scope_error():
+        return ExecutionError("exposure_scope_conflict", "Exposure ownership could not be proven", status=409)
+
+    def _validate_exposure(self, mt5, scope, *, operation):
+        """Verify broker lineage, not just a caller-supplied position ticket."""
+        try:
+            order_id = int(parse_ticket_id(scope["order_id"], resource="order"))
+            native, volume = scope["symbol"], Decimal(decimal_wire(scope["volume"]))
+            token = correlation_token(scope["client_order_id"])
+            orders = mt5.history_orders_get(ticket=order_id)
+            active = mt5.orders_get(ticket=order_id)
+            if orders is None or active is None:
+                raise self._scope_error()
+            matching = [o for o in (*orders, *active) if getattr(o, "ticket", None) == order_id]
+            if not matching or any(
+                getattr(o, "symbol", None) != native or getattr(o, "comment", None) != token
+                or Decimal(decimal_wire(getattr(o, "volume_initial", None))) != volume
+                for o in matching
+            ):
+                raise self._scope_error()
+            if operation == "cancel":
+                if len(active) != 1 or Decimal(decimal_wire(getattr(active[0], "volume_current", None))) != volume:
+                    raise self._scope_error()
+                return
+            position_id = int(parse_ticket_id(scope["position_id"], resource="position"))
+            positions = mt5.positions_get(ticket=position_id)
+            deals = mt5.history_deals_get(position=position_id)
+            if positions is None or deals is None or len(positions) != 1 or not deals:
+                raise self._scope_error()
+            position = positions[0]
+            if (getattr(position, "ticket", None) != position_id
+                or getattr(position, "symbol", None) != native
+                or Decimal(decimal_wire(getattr(position, "volume", None))) != volume):
+                raise self._scope_error()
+            total = Decimal(0)
+            for deal in deals:
+                if (getattr(deal, "order", None) != order_id or getattr(deal, "position_id", None) != position_id
+                    or getattr(deal, "symbol", None) != native or getattr(deal, "entry", None) != 0
+                    or getattr(deal, "type", None) != getattr(position, "type", None)
+                    or getattr(deal, "comment", None) != token):
+                    raise self._scope_error()
+                total += Decimal(decimal_wire(getattr(deal, "volume", None)))
+            if total != volume:
+                raise self._scope_error()
+        except (KeyError, TypeError, ValueError):
+            raise self._scope_error() from None
+
+    def exposure_scope(self, client_order_id, order_id, logical_symbol, volume):
+        native = self._resolve(logical_symbol)
+        scope = {"client_order_id": client_order_id, "order_id": str(order_id),
+                 "symbol": native, "volume": decimal_wire(volume)}
+        def discover(mt5):
+            deals = mt5.history_deals_get(ticket=int(parse_ticket_id(order_id, resource="order")))
+            if deals is None:
+                raise self._scope_error()
+            ids = {getattr(d, "position_id", None) for d in deals}
+            if len(ids) != 1 or not next(iter(ids), None):
+                raise self._scope_error()
+            scope["position_id"] = str(next(iter(ids)))
+            self._validate_exposure(mt5, scope, operation="close")
+        self._call(discover)
+        return scope
+
+    def cancel_scope(self, client_order_id, order_id, logical_symbol, volume):
+        scope = {"client_order_id": client_order_id, "order_id": str(order_id),
+                 "symbol": self._resolve(logical_symbol), "volume": decimal_wire(volume)}
+        self._call(lambda mt5: self._validate_exposure(mt5, scope, operation="cancel"))
+        return scope
+
+    def _exit_check(self, mt5, scope, operation, authorization_check, request=None):
+        if scope is not None:
+            self._validate_exposure(mt5, scope, operation=operation)
+            if request is not None and operation == "close":
+                current = mt5.positions_get(ticket=int(scope["position_id"]))
+                if current is None or len(current) != 1:
+                    raise self._scope_error()
+                position = current[0]
+                if (str(request.get("position")) != str(scope["position_id"])
+                    or request.get("symbol") != scope["symbol"]
+                    or Decimal(decimal_wire(request.get("volume"))) != Decimal(decimal_wire(scope["volume"]))
+                    or Decimal(decimal_wire(getattr(position, "volume", None))) != Decimal(decimal_wire(scope["volume"]))
+                    or getattr(position, "symbol", None) != scope["symbol"]
+                    or type(getattr(position, "type", None)) is not int
+                    or getattr(position, "type", None) not in {0, 1}
+                    or type(request.get("type")) is not int
+                    or request.get("type") != (1 if position.type == 0 else 0)):
+                    raise self._scope_error()
+        if authorization_check is not None:
+            authorization_check(mt5)
+
+    def send_once(self, request, *, expected_session=None, before_send=None, expected_empty_symbol=None, final_authorization=None):
         invoked = False
 
         def send(mt5):
@@ -566,6 +670,20 @@ class MT5ExecutionAdapter:
                 # preflight check and this locked callback. Inspect its current
                 # generation and Demo mode while it still owns the call lock.
                 self._validate_session_status(expected_session, self._fresh_mutation_status(mt5))
+            if expected_empty_symbol is not None:
+                positions = mt5.positions_get(symbol=expected_empty_symbol)
+                orders = mt5.orders_get(symbol=expected_empty_symbol)
+                if positions is None or orders is None or positions or orders:
+                    raise self._scope_error()
+                info = mt5.symbol_info(expected_empty_symbol)
+                if info is None or Decimal(decimal_wire(getattr(info, "volume_min", None))) != Decimal(decimal_wire(request.get("volume"))):
+                    raise ExecutionError("authorization_volume_denied", "Fresh broker minimum volume differs from authorized request", status=403)
+            if before_send is not None:
+                before_send(mt5)
+            if expected_session is not None:
+                self._validate_session_status(expected_session, self._fresh_mutation_status(mt5))
+            if final_authorization is not None:
+                final_authorization(mt5)
             invoked = True
             return mt5.order_send(request)
 
@@ -604,21 +722,25 @@ class MT5ExecutionAdapter:
             raise ExecutionError(code, message, status=422, retcode=retcode)
         return payload
 
-    def cancel(self, order_id, *, expected_session=None):
+    def cancel(self, order_id, *, expected_session=None, expected_exposure=None, authorization_check=None):
         order_id = parse_ticket_id(order_id, resource="order")
+        if expected_exposure is not None and str(order_id) != str(expected_exposure.get("order_id")):
+            raise self._scope_error()
         constants = self._call(lambda mt5: getattr(mt5, "TRADE_ACTION_REMOVE", 8))
         if expected_session is not None:
             self.validate_mutation_session(expected_session)
         self.send_once(
             {"action": constants, "order": order_id},
             expected_session=expected_session,
+            before_send=lambda mt5: self._exit_check(mt5, expected_exposure, "cancel", None),
+            final_authorization=authorization_check,
         )
         order = self.order(order_id)
         if order is None:
             raise AmbiguousMT5Result()
         return order
 
-    def close(self, position_id, *, expected_session=None):
+    def close(self, position_id, *, expected_session=None, expected_exposure=None, authorization_check=None):
         position_id = parse_ticket_id(position_id, resource="position")
         positions = self._call(lambda mt5: mt5.positions_get(ticket=position_id)) or ()
         if not positions:
@@ -648,7 +770,13 @@ class MT5ExecutionAdapter:
         }
         if expected_session is not None:
             self.validate_mutation_session(expected_session)
-        result = self.send_once(request, expected_session=expected_session)
+        if expected_exposure is not None and str(position_id) != str(expected_exposure.get("position_id")):
+            raise self._scope_error()
+        result = self.send_once(
+            request, expected_session=expected_session,
+            before_send=lambda mt5: self._exit_check(mt5, expected_exposure, "close", None, request),
+            final_authorization=authorization_check,
+        )
         ticket = result.get("deal_id")
         order_ticket = result.get("order_id")
         if not ticket or ticket == "0" or not order_ticket or order_ticket == "0":

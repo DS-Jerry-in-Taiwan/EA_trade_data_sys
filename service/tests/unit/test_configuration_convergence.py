@@ -27,6 +27,7 @@ def test_all_composition_roots_pass_alternate_settings_to_connectors(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(selector, str(path))
     monkeypatch.setenv("EXECUTION_IDEMPOTENCY_DB", str(tmp_path / "execution.sqlite3"))
+    monkeypatch.setenv("EXECUTION_AUTHORIZATION_DB", str(tmp_path / "authorization.sqlite3"))
 
     gateway_module = importlib.import_module("service.entrypoints.api_gateway")
     execution_module = importlib.import_module("service.entrypoints.execution_server")

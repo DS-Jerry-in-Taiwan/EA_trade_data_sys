@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: MT5 Demo Execution API
-  version: 1.0.0
-  description: Demo-only execution boundary. Mutations are disabled unless both the runtime gate and verified MT5 Demo mode are active. A timed-out create request must be recovered with the by-client endpoint and must never be automatically resent.
+  version: 1.1.0
+  description: Demo-only execution boundary. API keys authenticate but never authorize trading. Mutations require a locally provisioned durable scoped authorization bound to session and boot identity. Entry is closed by default; scoped exit recovery is independent of entry expiry or kill. Ambiguous outcomes must be reconciled, never automatically resent.
 servers:
   - url: /api/v1
 security:
@@ -57,6 +57,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/ExecutionAuthorization'
       requestBody:
         required: true
         content:
@@ -103,9 +104,16 @@ paths:
   /orders/{id}/cancel:
     post:
       operationId: cancelOrder
+      description: Scoped recovery only for the verified authorized order. A repeated or ambiguous attempt never sends again. Entry kill does not revoke bounded exit recovery; session changes require operator escalation.
       parameters:
         - $ref: '#/components/parameters/Id'
         - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/ExecutionAuthorization'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, maxProperties: 0}
       responses:
         '200': {description: Order observed after a single cancel attempt, content: {application/json: {schema: {$ref: '#/components/schemas/OrderEnvelope'}}}}
         '400': {$ref: '#/components/responses/Error'}
@@ -126,9 +134,16 @@ paths:
   /positions/{id}/close:
     post:
       operationId: closePosition
+      description: Scoped recovery only for exclusively owned authorized test exposure. Shared/netting exposure and changed sessions fail closed. Ambiguous outcomes require GET reconciliation and operator escalation, never automatic resend.
       parameters:
         - $ref: '#/components/parameters/Id'
         - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/ExecutionAuthorization'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, maxProperties: 0}
       responses:
         '200': {description: Deal observed after a single close attempt, content: {application/json: {schema: {$ref: '#/components/schemas/DealEnvelope'}}}}
         '400': {$ref: '#/components/responses/Error'}
@@ -152,6 +167,7 @@ components:
   securitySchemes:
     ApiKeyAuth: {type: apiKey, in: header, name: X-API-Key}
   parameters:
+    ExecutionAuthorization: {name: X-Execution-Authorization, in: header, required: true, description: ID of an immutable operator-local grant; API key alone cannot provision or enable a grant., schema: {type: string, minLength: 1}}
     Symbol: {name: symbol, in: path, required: true, schema: {type: string, minLength: 1}}
     Id: {name: id, in: path, required: true, description: Positive MT5 ticket ID in unsigned 64-bit range., schema: {type: string, minLength: 1, maxLength: 20, pattern: '^[0-9]+$'}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Must equal client_order_id., schema: {type: string, minLength: 1}}
@@ -166,6 +182,28 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
+    LocalDemoAuthorization:
+      type: object
+      additionalProperties: false
+      description: Operator-local artifact only; no HTTP provisioning endpoint. All dates are absolute UTC and entry_not_before < entry_expires_at <= recovery_expires_at.
+      required: [authorization_id, account_fingerprint, session_generation, session_epoch, symbol, minimum_volume, client_order_id, permissions, entry_not_before, entry_expires_at, recovery_expires_at, abort_owner]
+      properties:
+        authorization_id: {type: string, minLength: 1}
+        account_fingerprint: {type: string, minLength: 1}
+        session_generation: {type: integer, minimum: 1}
+        session_epoch: {type: string, minLength: 1}
+        symbol: {type: string, minLength: 1}
+        minimum_volume: {type: string, maxLength: 64, pattern: '^[0-9]+(\.[0-9]+)?$'}
+        client_order_id: {type: string, minLength: 1}
+        permissions:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, enum: [place, cancel, close]}
+        entry_not_before: {type: string, format: date-time}
+        entry_expires_at: {type: string, format: date-time}
+        recovery_expires_at: {type: string, format: date-time}
+        abort_owner: {type: string, minLength: 1}
     SuccessEnvelope:
       type: object
       additionalProperties: false
@@ -196,7 +234,7 @@ components:
               $ref: '#/components/schemas/ExecutionHealth'
     ExecutionHealth:
       type: object
-      required: [status, ready, mt5_connected, account_mode, account_session, mutation_enabled, account_policy, mutation_ready]
+      required: [status, ready, mt5_connected, account_mode, account_session, mutation_enabled, account_policy, mutation_ready, execution_authorization]
       properties:
         status: {type: string, enum: [healthy, unhealthy]}
         ready: {type: boolean}
@@ -206,6 +244,25 @@ components:
         mutation_enabled: {type: boolean}
         account_policy: {type: string}
         mutation_ready: {type: boolean}
+        execution_authorization:
+          type: object
+          description: Session-bound separate entry and recovery policy. Readiness is not permission to trade. Consult a fresh authenticated health immediately before operator approval.
+          required: [authorization_required, entry, exit]
+          properties:
+            authorization_required: {type: boolean, enum: [true]}
+            entry:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+                default: {type: string, enum: [closed]}
+            exit:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+                scope: {type: string, enum: [verified_authorized_exposure]}
+                session_change: {type: string, enum: [operator_escalation]}
     SymbolEnvelope:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
