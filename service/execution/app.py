@@ -173,6 +173,13 @@ def create_execution_app(context):
     def symbol(symbol):
         return _success(context.adapter.symbol(symbol))
 
+    @app.get("/api/v1/symbols/<symbol>/quote")
+    @app.get("/api/v1/symbols/<symbol>/risk")
+    def quote_risk(symbol):
+        data = context.adapter.quote_risk(symbol, risk=request.path.endswith("/risk"))
+        data["account_session"]["epoch"] = context.session_epoch
+        return _success(data)
+
     @app.get("/api/v1/orders")
     def orders():
         return _success(context.adapter.orders())

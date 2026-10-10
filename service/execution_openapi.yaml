@@ -1,13 +1,33 @@
 openapi: 3.0.3
 info:
   title: MT5 Demo Execution API
-  version: 1.1.0
+  version: 1.2.0
   description: Demo-only execution boundary. API keys authenticate but never authorize trading. Mutations require a locally provisioned durable scoped authorization bound to session and boot identity. Entry is closed by default; scoped exit recovery is independent of entry expiry or kill. Ambiguous outcomes must be reconciled, never automatically resent.
 servers:
   - url: /api/v1
 security:
   - ApiKeyAuth: []
 paths:
+  /symbols/{symbol}/quote:
+    get:
+      operationId: getExecutionQuote
+      description: Direct broker quote via the same execution adapter and guarded Demo session. Compare fingerprint, generation and epoch with fresh health. fresh is false for stale or future quotes; never infer tradability from HTTP 200 alone.
+      parameters:
+        - $ref: '#/components/parameters/Symbol'
+      responses:
+        '200': {description: Timestamped bid/ask and logical-to-broker mapping, content: {application/json: {schema: {$ref: '#/components/schemas/QuoteRiskEnvelope'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /symbols/{symbol}/risk:
+    get:
+      operationId: getExecutionRisk
+      description: Quote plus loss-side tick value per lot, explicit account currency, BUY and SELL one-tick loss calculations via order_calc_profit, and actual fixed 20-point entry/close deviation. loss_tick_value is the maximum of trade_tick_value_loss and calculated losses, not general trade_tick_value. Point-in-time evidence, not a bound on gaps, commissions or future FX conversion. Missing calculations fail closed; stale quotes return risk_ready false.
+      parameters:
+        - $ref: '#/components/parameters/Symbol'
+      responses:
+        '200': {description: Account-currency loss and execution policy evidence, content: {application/json: {schema: {$ref: '#/components/schemas/RiskEnvelope'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /health:
     get:
       operationId: getExecutionHealth
@@ -182,6 +202,59 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
+    RiskEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/QuoteRiskEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [loss_tick_value, tick_value_loss, loss_calculation_buy, loss_calculation_sell, tick_value_currency, account_currency, currency_relationship, loss_value_basis, tick_size, point, volume_min, volume_step, stops_level, freeze_level, entry_deviation_points, close_deviation_points, deviation_price, risk_ready]
+    QuoteRiskEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [symbol, broker_symbol, bid, ask, quote_at, observed_at, age_seconds, max_age_seconds, fresh, account_session]
+              properties:
+                symbol: {type: string}
+                broker_symbol: {type: string}
+                bid: {$ref: '#/components/schemas/PositiveDecimal'}
+                ask: {$ref: '#/components/schemas/PositiveDecimal'}
+                quote_at: {type: string, format: date-time}
+                observed_at: {type: string, format: date-time}
+                age_seconds: {type: string}
+                max_age_seconds: {type: integer, enum: [5]}
+                fresh: {type: boolean}
+                account_session:
+                  type: object
+                  required: [fingerprint, generation, epoch, account_mode, ready]
+                  properties:
+                    fingerprint: {type: string, minLength: 1}
+                    generation: {type: integer, minimum: 1}
+                    epoch: {type: string, minLength: 1}
+                    account_mode: {type: string, enum: [DEMO]}
+                    ready: {type: boolean, enum: [true]}
+                loss_tick_value: {$ref: '#/components/schemas/PositiveDecimal'}
+                tick_value_loss: {$ref: '#/components/schemas/PositiveDecimal'}
+                loss_calculation_buy: {$ref: '#/components/schemas/PositiveDecimal'}
+                loss_calculation_sell: {$ref: '#/components/schemas/PositiveDecimal'}
+                tick_value_currency: {type: string}
+                account_currency: {type: string}
+                currency_relationship: {type: string}
+                loss_value_basis: {type: string}
+                tick_size: {$ref: '#/components/schemas/PositiveDecimal'}
+                point: {$ref: '#/components/schemas/PositiveDecimal'}
+                volume_min: {$ref: '#/components/schemas/PositiveDecimal'}
+                volume_step: {$ref: '#/components/schemas/PositiveDecimal'}
+                stops_level: {type: string}
+                freeze_level: {type: string}
+                entry_deviation_points: {type: integer, enum: [20]}
+                close_deviation_points: {type: integer, enum: [20]}
+                deviation_price: {$ref: '#/components/schemas/PositiveDecimal'}
+                risk_ready: {type: boolean}
     LocalDemoAuthorization:
       type: object
       additionalProperties: false

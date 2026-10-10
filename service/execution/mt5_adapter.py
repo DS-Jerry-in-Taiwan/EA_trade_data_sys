@@ -27,6 +27,7 @@ RETCODE_ERRORS = {
 }
 SUCCESS_RETCODES = {10008, 10009, 10010}
 AMBIGUOUS_RETCODES = {10012, 10031}
+EXECUTION_DEVIATION_POINTS = 20
 
 
 def consistent_read(callback):
@@ -349,6 +350,100 @@ class MT5ExecutionAdapter:
             "observed_at": now_wire(),
         }
 
+    @consistent_read
+    def quote_risk(self, logical_symbol, *, risk=False):
+        """Read/calculation only; never order_check/order_send or login.
+
+        Values are point-in-time broker facts, not guaranteed execution prices.
+        MT5 order_calc_profit returns profit in the current account currency.
+        """
+        native = self._resolve(logical_symbol)
+
+        def observe(mt5):
+            before = self._fresh_mutation_status(mt5)
+            mode_error = self._account_mode_error(before)
+            if mode_error:
+                raise mode_error
+            info = mt5.symbol_info(native)
+            tick = mt5.symbol_info_tick(native)
+            if info is None or tick is None:
+                raise ExecutionError("quote_unavailable", "Broker quote is unavailable", status=503)
+            bid, ask = decimal_wire(getattr(tick, "bid", None)), decimal_wire(getattr(tick, "ask", None))
+            if Decimal(bid) > Decimal(ask):
+                raise contract_error()
+            milliseconds = getattr(tick, "time_msc", None)
+            if type(milliseconds) is not int or milliseconds <= 0:
+                raise contract_error()
+            observed = datetime.now(timezone.utc)
+            age = Decimal(str(observed.timestamp())) - Decimal(milliseconds) / 1000
+            result = {
+                "symbol": logical_symbol, "broker_symbol": native,
+                "bid": bid, "ask": ask, "quote_at": timestamp_wire(milliseconds / 1000),
+                "observed_at": observed.isoformat().replace("+00:00", "Z"),
+                "age_seconds": str(age), "max_age_seconds": 5,
+                "fresh": 0 <= age <= 5,
+            }
+            if risk:
+                account = mt5.account_info()
+                currency = getattr(account, "currency", None)
+                if not isinstance(currency, str) or not currency.strip():
+                    raise contract_error()
+                size = decimal_wire(getattr(info, "trade_tick_size", None))
+                loss = decimal_wire(getattr(info, "trade_tick_value_loss", None))
+                calculated = []
+                for kind, entry, exit_price in (
+                    (getattr(mt5, "ORDER_TYPE_BUY", 0), Decimal(ask), Decimal(ask)-Decimal(size)),
+                    (getattr(mt5, "ORDER_TYPE_SELL", 1), Decimal(bid), Decimal(bid)+Decimal(size)),
+                ):
+                    if exit_price <= 0:
+                        raise contract_error()
+                    value = mt5.order_calc_profit(kind, native, 1.0, float(entry), float(exit_price))
+                    try:
+                        if isinstance(value, bool) or value is None:
+                            raise ValueError
+                        amount = Decimal(str(value))
+                        if not amount.is_finite() or amount >= 0:
+                            raise ValueError
+                    except Exception as exc:
+                        raise ExecutionError("risk_facts_unavailable", "Loss-side account-currency calculation unavailable", status=503) from exc
+                    calculated.append(decimal_wire(-amount))
+                result.update({
+                    "tick_value_loss": loss,
+                    "loss_tick_value": format(max(Decimal(loss), *(Decimal(v) for v in calculated)), "f"),
+                    "loss_calculation_buy": calculated[0], "loss_calculation_sell": calculated[1],
+                    "tick_value_currency": currency, "account_currency": currency,
+                    "currency_relationship": "order_calc_profit_account_currency",
+                    "loss_value_basis": "max_mt5_loss_and_buy_sell_one_tick_loss_per_lot",
+                    "tick_size": size, "point": decimal_wire(info.point),
+                    "volume_min": decimal_wire(info.volume_min), "volume_step": decimal_wire(info.volume_step),
+                    "stops_level": decimal_wire(info.trade_stops_level, allow_zero=True),
+                    "freeze_level": decimal_wire(info.trade_freeze_level, allow_zero=True),
+                    "entry_deviation_points": EXECUTION_DEVIATION_POINTS,
+                    "close_deviation_points": EXECUTION_DEVIATION_POINTS,
+                    "deviation_price": format(Decimal(str(info.point))*EXECUTION_DEVIATION_POINTS, "f"),
+                    "risk_ready": bool(result["fresh"]),
+                })
+            after = self._fresh_mutation_status(mt5)
+            mode_error = self._account_mode_error(after)
+            if mode_error:
+                raise mode_error
+            identity = lambda status: (status.get("generation"), (status.get("fingerprint") or {}).get("id"))
+            if identity(before) != identity(after):
+                raise ExecutionError("account_session_transition", "Session changed during quote/risk observation", status=503)
+            completed = datetime.now(timezone.utc)
+            final_age = Decimal(str(completed.timestamp())) - Decimal(milliseconds) / 1000
+            result.update(observed_at=completed.isoformat().replace("+00:00", "Z"),
+                          age_seconds=str(final_age), fresh=bool(0 <= final_age <= 5))
+            if risk:
+                result["risk_ready"] = result["fresh"]
+            result["account_session"] = {
+                "fingerprint": (after.get("fingerprint") or {}).get("id"),
+                "generation": after["generation"], "account_mode": "DEMO", "ready": True,
+            }
+            return result
+
+        return self._call(observe)
+
     def _order(self, order):
         ticket = _source_ticket(getattr(order, "ticket", None), "order")
         order_type = getattr(order, "type", None)
@@ -539,7 +634,7 @@ class MT5ExecutionAdapter:
             "price": _number(payload.get("price"), getattr(info, "ask" if side == "BUY" else "bid", 0)),
             "sl": _number(payload.get("sl", payload.get("stop_loss"))),
             "tp": _number(payload.get("tp", payload.get("take_profit"))),
-            "deviation": int(payload.get("deviation", 20)),
+            "deviation": EXECUTION_DEVIATION_POINTS,
             "type_time": constants["gtc"], "type_filling": constants["ioc"],
             "comment": correlation_token(str(payload.get("client_order_id", ""))),
         }
@@ -766,7 +861,7 @@ class MT5ExecutionAdapter:
             "action": constants["action"], "position": position_id, "symbol": symbol,
             "volume": volume,
             "type": constants["buy"] if closing_buy else constants["sell"],
-            "price": getattr(info, "ask" if closing_buy else "bid", 0), "deviation": 20,
+            "price": getattr(info, "ask" if closing_buy else "bid", 0), "deviation": EXECUTION_DEVIATION_POINTS,
         }
         if expected_session is not None:
             self.validate_mutation_session(expected_session)
