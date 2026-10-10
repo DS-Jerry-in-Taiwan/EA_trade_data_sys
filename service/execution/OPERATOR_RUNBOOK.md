@@ -7,6 +7,33 @@ enablement is part of the implementation certification. Authentication via
 
 ## Approval and transport
 
+### Read-only quote/risk preconditions (OpenAPI 1.2.0)
+
+GET `symbols/{logical_symbol}/quote` and `/risk` use the execution adapter,
+not the asynchronous data-service tick cache. Compare their account_session
+fingerprint, generation and epoch to fresh authenticated health. Re-query
+health after the observations. Reject mismatch, missing facts, future or
+older-than-5-second quote timestamps and `fresh=false`/`risk_ready=false`.
+Broker symbol mapping and bid/ask are returned explicitly. Weekend/closed
+market quotes may be readable but are not fresh enough to authorize entry.
+
+Use `loss_tick_value`, never generic `tick_value`, for per-lot per-tick loss
+estimates. It is the maximum of MT5 `trade_tick_value_loss` and BUY/SELL adverse
+one-tick `order_calc_profit` results in account currency. Currency is explicit;
+unknown currency or loss facts fail closed. This is a point-in-time conversion
+and does not guarantee against FX changes, spread widening, gaps, commissions,
+swap or worse fills. Bot maximum-loss approval must account for these risks.
+
+Actual server entry and close deviation is fixed **20 points per operation**;
+`deviation_price = 20 * point`. Never use a smaller local assumption. Deviation
+is an MT5 request parameter, not a guaranteed maximum slippage bound under all
+broker execution modes. Quotes/risk facts must be refreshed immediately before
+separately authorized entry. Existing symbol DTO remains backward compatible.
+
+`intended_program=FTMO` is operator-confirmed intent; observing
+`OANDA-Demo-1` plus DEMO mode is not independent proof of FTMO enrollment.
+Do not change accounts merely because the server name is OANDA.
+
 Only an operator with separately approved trading authority may provision a
 grant locally. There is no HTTP grant-creation endpoint. The immutable grant ID
 is sent as `X-Execution-Authorization` alongside API authentication.

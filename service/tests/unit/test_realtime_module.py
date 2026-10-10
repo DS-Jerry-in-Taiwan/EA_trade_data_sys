@@ -27,7 +27,10 @@ def test_realtime_worker_is_only_symbol_info_tick_owner():
             for node in ast.walk(tree)
         ):
             owners.append(path.relative_to(SERVICE_ROOT).as_posix())
-    assert owners == ["realtime/worker.py"]
+    # Only the realtime worker owns streaming collection. Execution's
+    # on-demand read-only quote is a separate session-bound risk boundary,
+    # never a second gateway TickFetcher or stream publisher.
+    assert owners == ["execution/mt5_adapter.py", "realtime/worker.py"]
 
 
 def test_snapshot_store_atomically_replaces_latest_file(tmp_path):
