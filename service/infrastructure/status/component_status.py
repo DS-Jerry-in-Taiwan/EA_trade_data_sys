@@ -57,6 +57,9 @@ def read_status(path, max_age_seconds, now=None):
         result = dict(payload)
         result["age_seconds"] = max(age, 0)
         result["fresh"] = 0 <= age <= max_age_seconds
+        result["heartbeat_fresh"] = result["fresh"]
+        result["freshness_basis"] = "status_updated_at"
         return result
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        return {"state": "unknown", "fresh": False, "error": str(exc)}
+        return {"state": "unknown", "fresh": False, "heartbeat_fresh": False,
+                "freshness_basis": "status_updated_at", "error": str(exc)}

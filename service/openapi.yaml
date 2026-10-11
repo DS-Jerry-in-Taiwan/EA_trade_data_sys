@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MT5 Data API
-  version: 4.0.0
+  version: 4.1.0
   description: |
     Sole external interface for real-time Tick delivery, persisted historical
     rates and read-only account queries. Tick data reaches Gateway from Tick
@@ -14,7 +14,7 @@ paths:
   /api/v1/health:
     get:
       summary: Report service and MT5 connectivity health
-      description: Does not make an MT5/RPyC call. Readiness follows the real-time Tick critical path; History Worker failures are reported as degraded without making `ready` false.
+      description: Readiness follows transport receipt freshness and account session, not broker quote freshness. Component fresh is a legacy status-heartbeat alias. fresh_symbols is a legacy receipt-fresh alias. Use symbol_freshness.broker_quote or Execution quote/risk for broker timestamp freshness; health does not establish market-open state. History Worker failures are reported as degraded without making ready false.
       responses:
         '200':
           description: Real-time path is ready (overall status may be healthy or degraded)
@@ -327,12 +327,15 @@ components:
         source_time:
           type: string
           format: date-time
+          nullable: true
+          description: Broker tick timestamp; null when unavailable. Never inferred from receipt time.
         received_at:
           type: string
           format: date-time
         time:
           type: string
           format: date-time
+          description: Legacy display timestamp; falls back to received_at when source_time is unavailable. Not proof of broker freshness.
     ComponentStatus:
       type: object
       required: [state, fresh]
@@ -349,6 +352,12 @@ components:
           type: number
         fresh:
           type: boolean
+          description: Legacy alias of heartbeat_fresh; does not establish market-data freshness.
+        heartbeat_fresh:
+          type: boolean
+        freshness_basis:
+          type: string
+          enum: [status_updated_at]
     Health:
       type: object
       required: [status, ready, gateway, tick_service, history_service, tick_ipc_connected, symbols_tracked, fresh_symbols, timestamp]
@@ -358,6 +367,29 @@ components:
           enum: [healthy, degraded, unhealthy, not-ready]
         ready:
           type: boolean
+          description: Transport/account availability only; not trading admission.
+        readiness_basis:
+          type: string
+          enum: [transport_receipt_and_account_session]
+        fresh_symbols_basis:
+          type: string
+          enum: [received_at]
+        quote_max_age_seconds:
+          type: number
+        quote_fresh_symbols:
+          type: array
+          items:
+            type: string
+        symbol_freshness:
+          type: object
+          additionalProperties:
+            type: object
+            required: [receipt, broker_quote]
+            properties:
+              receipt:
+                $ref: '#/components/schemas/TimestampFreshness'
+              broker_quote:
+                $ref: '#/components/schemas/TimestampFreshness'
         gateway:
           type: object
           required: [state, ready]
@@ -378,11 +410,27 @@ components:
             type: string
         fresh_symbols:
           type: array
+          description: Legacy receipt-fresh symbols; repeated polling of stale broker ticks can remain receipt-fresh.
           items:
             type: string
         timestamp:
           type: string
           format: date-time
+    TimestampFreshness:
+      type: object
+      required: [timestamp, age_seconds, fresh]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          nullable: true
+        age_seconds:
+          type: number
+          nullable: true
+          description: Signed age; negative values are future timestamps and fresh is false.
+        fresh:
+          type: boolean
+          description: Missing, invalid, naive, future or stale timestamp is false. Does not establish session state.
 x-socketio:
   path: /socket.io
   events:

@@ -75,7 +75,7 @@ class TickService:
                     received_at = datetime.now(timezone.utc).isoformat()
                     source_time = (
                         datetime.fromtimestamp(source_timestamp, timezone.utc).isoformat()
-                        if source_timestamp else received_at
+                        if source_timestamp else None
                     )
                     result[symbol] = {
                         'version': PROTOCOL_VERSION, 'type': 'tick', 'symbol': symbol,

@@ -151,7 +151,7 @@ def test_tick_resolves_alias_inside_guarded_read_after_reconciliation(tmp_path):
     assert ticks['XAUUSDm']['bid'] == 200
 
 
-def test_tick_without_mt5_time_falls_back_to_received_at_utc(tmp_path):
+def test_tick_without_mt5_time_does_not_invent_broker_timestamp(tmp_path):
     tick = SimpleNamespace(bid=1.1, ask=1.2, last=1.15, volume=3)
     service = TickService(
         config_path=_config(tmp_path), mt5_client=FakeMT5Client([tick])
@@ -161,8 +161,8 @@ def test_tick_without_mt5_time_falls_back_to_received_at_utc(tmp_path):
 
     event = ticks["XAUUSDm"]
     assert healthy is True
-    assert event["source_time"] == event["received_at"]
-    assert event["source_time"].endswith("+00:00")
+    assert event["source_time"] is None
+    assert event["received_at"].endswith("+00:00")
 
 
 def test_publisher_sends_snapshot_before_live_event_and_accepts_reconnect(tmp_path):

@@ -3,11 +3,21 @@
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify
+from service.realtime.consumer import TickConsumer
 
 
 def health_payload(context):
     expected = context.tick_symbols
     fresh = [symbol for symbol in expected if context.fresh_tick(symbol)]
+    now = datetime.now(timezone.utc)
+    symbol_freshness = {}
+    for symbol in expected:
+        event = context.tick_consumer.get(symbol)
+        symbol_freshness[symbol] = {
+            "receipt": TickConsumer.timestamp_freshness(event, "received_at", context.tick_max_age, now),
+            "broker_quote": TickConsumer.timestamp_freshness(event, "source_time", context.tick_max_age, now),
+        }
+    quote_fresh = [symbol for symbol in expected if symbol_freshness[symbol]["broker_quote"]["fresh"]]
     tick = context.status_reader(context.tick_status_path, context.tick_status_max_age)
     history = context.status_reader(context.history_status_path, context.history_status_max_age)
     expected_storage = getattr(context, 'history_storage_id', None)
@@ -62,6 +72,11 @@ def health_payload(context):
             "account_session": session_status,
             "tick_ipc_connected": context.tick_consumer.connected,
             "symbols_tracked": expected, "fresh_symbols": fresh,
+            "readiness_basis": "transport_receipt_and_account_session",
+            "fresh_symbols_basis": "received_at",
+            "quote_fresh_symbols": quote_fresh,
+            "symbol_freshness": symbol_freshness,
+            "quote_max_age_seconds": context.tick_max_age,
             "timestamp": datetime.now(timezone.utc).isoformat()}
 
 

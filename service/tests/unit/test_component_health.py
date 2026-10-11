@@ -14,6 +14,8 @@ def test_atomic_status_round_trip_and_staleness(tmp_path):
     assert current["component"] == "tick_service"
     assert current["state"] == "healthy"
     assert current["fresh"] is True
+    assert current["heartbeat_fresh"] is True
+    assert current["freshness_basis"] == "status_updated_at"
 
     payload = json.loads(path.read_text())
     payload["updated_at"] = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat()
@@ -28,6 +30,15 @@ def test_status_reader_treats_missing_and_invalid_as_unknown(tmp_path):
     invalid = tmp_path / "invalid.json"
     invalid.write_text("{")
     assert read_status(str(invalid), 10)["state"] == "unknown"
+
+
+def test_future_status_is_not_heartbeat_fresh(tmp_path):
+    path = tmp_path / "future.json"
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    path.write_text(json.dumps({"state": "healthy", "updated_at": (now + timedelta(seconds=1)).isoformat()}))
+    result = read_status(str(path), 10, now)
+    assert result["fresh"] is False
+    assert result["heartbeat_fresh"] is False
 
 
 def _configure_health(monkeypatch, tmp_path, history_state="healthy", session=None):
@@ -61,6 +72,33 @@ def test_health_is_ready_when_tick_critical_path_is_fresh(monkeypatch, tmp_path)
     assert response.status_code == 200
     assert response.json["status"] == "healthy"
     assert response.json["ready"] is True
+    assert response.json["readiness_basis"] == "transport_receipt_and_account_session"
+    assert response.json["fresh_symbols_basis"] == "received_at"
+    assert response.json["quote_fresh_symbols"] == []
+    assert response.json["symbol_freshness"]["XAUUSDm"]["broker_quote"]["fresh"] is False
+
+
+def test_health_separates_healthy_transport_from_stale_broker(monkeypatch, tmp_path):
+    _configure_health(monkeypatch, tmp_path)
+    event = {"received_at": datetime.now(timezone.utc).isoformat(),
+             "source_time": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()}
+    monkeypatch.setattr(gateway.tick_consumer, "get", lambda symbol: event)
+    response = gateway.app.test_client().get("/api/v1/health")
+    assert response.status_code == 200
+    assert response.json["fresh_symbols"] == ["XAUUSDm"]
+    assert response.json["quote_fresh_symbols"] == []
+    values = response.json["symbol_freshness"]["XAUUSDm"]
+    assert values["receipt"]["fresh"] is True
+    assert values["broker_quote"]["fresh"] is False
+
+
+def test_health_reports_fresh_broker_quote(monkeypatch, tmp_path):
+    _configure_health(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(gateway.tick_consumer, "get", lambda symbol: {"received_at": now, "source_time": now})
+    response = gateway.app.test_client().get("/api/v1/health")
+    assert response.json["quote_fresh_symbols"] == ["XAUUSDm"]
+    assert response.json["symbol_freshness"]["XAUUSDm"]["broker_quote"]["fresh"] is True
 
 
 def test_history_failure_degrades_without_failing_realtime_readiness(monkeypatch, tmp_path):

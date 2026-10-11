@@ -44,16 +44,25 @@ class TickConsumer:
             return dict(event) if event is not None else None
 
     def is_fresh(self, event, max_age_seconds, now=None):
+        """Legacy transport receipt freshness, not broker quote freshness."""
+        return self.timestamp_freshness(event, "received_at", max_age_seconds, now)["fresh"]
+
+    @staticmethod
+    def timestamp_freshness(event, field, max_age_seconds, now=None):
+        """Fail closed for missing, malformed, naive or future timestamps."""
         if not event:
-            return False
+            return {"timestamp": None, "age_seconds": None, "fresh": False}
+        value = event.get(field)
         try:
-            received_at = datetime.fromisoformat(event["received_at"].replace("Z", "+00:00"))
-            if received_at.tzinfo is None:
-                received_at = received_at.replace(tzinfo=timezone.utc)
+            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                raise ValueError("timezone required")
             current = now if now is not None else datetime.now(timezone.utc)
-            return 0 <= (current - received_at).total_seconds() <= max_age_seconds
-        except (KeyError, TypeError, ValueError):
-            return False
+            age = (current - timestamp).total_seconds()
+            return {"timestamp": value, "age_seconds": age,
+                    "fresh": 0 <= age <= max_age_seconds}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return {"timestamp": None, "age_seconds": None, "fresh": False}
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():

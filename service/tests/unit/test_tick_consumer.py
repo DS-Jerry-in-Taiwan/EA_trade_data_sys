@@ -123,6 +123,30 @@ def test_invalid_frame_is_ignored():
     assert consumer.symbols == []
 
 
+def test_repeated_receipt_does_not_refresh_broker_quote():
+    consumer = TickConsumer("unused")
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    event = _event(received_at=now.isoformat())
+    event["source_time"] = (now - timedelta(days=2)).isoformat()
+    for offset in (0, 1, 2):
+        current = now + timedelta(seconds=offset)
+        event["received_at"] = current.isoformat()
+        assert consumer.is_fresh(event, 5, current)
+        assert not consumer.timestamp_freshness(event, "source_time", 5, current)["fresh"]
+
+
+def test_broker_timestamp_freshness_boundaries_and_unknown():
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    for age, expected in ((0, True), (5, True), (6, False), (-1, False)):
+        event = {"source_time": (now - timedelta(seconds=age)).isoformat()}
+        result = TickConsumer.timestamp_freshness(event, "source_time", 5, now)
+        assert result["fresh"] is expected
+        assert result["age_seconds"] == age
+    for value in (None, "invalid", "2026-10-11T00:00:00"):
+        result = TickConsumer.timestamp_freshness({"source_time": value}, "source_time", 5, now)
+        assert result == {"timestamp": None, "age_seconds": None, "fresh": False}
+
+
 def test_wrong_field_types_do_not_pollute_snapshot():
     consumer = TickConsumer("unused")
     invalid_events = []

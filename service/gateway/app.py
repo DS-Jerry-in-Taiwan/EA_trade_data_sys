@@ -72,12 +72,12 @@ def create_app(context):
         context.metrics.mt5_tick_ask.labels(symbol=event["symbol"]).set(event["ask"])
         try:
             source_time = datetime.fromisoformat(
-                (event.get("source_time") or event["received_at"]).replace("Z", "+00:00")
+                event["source_time"].replace("Z", "+00:00")
             )
             context.metrics.mt5_last_tick_timestamp.labels(symbol=event["symbol"]).set(
                 source_time.timestamp()
             )
-        except (KeyError, TypeError, ValueError):
+        except (AttributeError, KeyError, TypeError, ValueError):
             pass
         context.metrics.mt5_connected.set(1)
         socketio.emit("tick", public_tick(event), room=event["symbol"])
