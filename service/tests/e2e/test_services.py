@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime, timezone
 from pathlib import Path
 from service.config import load_settings
+from service.domain.market_sessions import configured_history_verdict
 
 
 SERVICES = ["tick_service", "history_service", "api_gateway"]
@@ -88,10 +89,10 @@ def test_tick_data_freshness(docker_exec):
 
 
 def test_history_data_freshness():
-    """Latest history CSV entry must be within the last 900 seconds.
-    
-    M5 bars complete 5 min after their timestamp + cycle timing,
-    so data up to 10-12 min old is expected during normal operation.
+    """M5 freshness requires proven sessions; missing evidence is blocked.
+
+    During open sessions the 900-second bound remains. During proven closures
+    the same bound is measured at the last session close, not wall-clock now.
     """
     history = load_settings().history_service
     paths = [Path(history.data_path) / f"{item.name}_M5.csv"
@@ -101,5 +102,8 @@ def test_history_data_freshness():
         df = pd.read_csv(path)
         assert not df.empty, f"Configured cache is empty: {path.name}"
         last_time = pd.to_datetime(df["time"].iloc[-1], utc=True)
-        delta = (datetime.now(timezone.utc) - last_time).total_seconds()
-        assert delta < 900, f"Configured history {path.name} is {delta:.0f}s old"
+        symbol = path.name.rsplit("_", 1)[0]
+        verdict = configured_history_verdict(
+            symbol, last_time.to_pydatetime(), datetime.now(timezone.utc), 900
+        )
+        assert verdict.accepted, f"History {path.name}: {verdict.state}: {verdict.reason}"

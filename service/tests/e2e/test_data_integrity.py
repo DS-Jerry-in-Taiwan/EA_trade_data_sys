@@ -10,6 +10,7 @@ import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 from service.config import load_settings
+from service.domain.market_sessions import configured_history_verdict
 
 
 REQUIRED_COLUMNS = {"time", "open", "high", "low", "close", "tick_volume"}
@@ -141,23 +142,20 @@ class TestChronology:
         assert not bad, f"Invalid cadence: {bad}"
 
     def test_recent_data(self, history_data):
-        """Caches must be current; bounded weekend tolerance applies off-session."""
+        """Caches require current bars or a bounded, evidence-proven last close."""
         stale = {}
         now = pd.Timestamp.now(tz=timezone.utc)
         for name, df in history_data.items():
             last_time = df["time"].max()
             if last_time.tz is None:
                 last_time = last_time.tz_localize("UTC")
-            delta = (now - last_time).total_seconds()
             symbol, timeframe = name.rsplit("_", 1)
             maximum_age = MAX_OPEN_AGE_SECONDS[timeframe]
-            if (
-                not symbol.upper().startswith(("BTC", "ETH", "CRYPTO"))
-                and now.weekday() in {5, 6}
-            ):
-                maximum_age = 259200
-            if delta > maximum_age:
-                stale[name] = f"{delta:.0f}s old"
+            verdict = configured_history_verdict(
+                symbol, last_time.to_pydatetime(), now.to_pydatetime(), maximum_age
+            )
+            if not verdict.accepted:
+                stale[name] = f"{verdict.state}: {verdict.reason}"
         assert not stale, f"Stale data: {stale}"
 
 
