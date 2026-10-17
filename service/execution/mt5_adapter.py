@@ -12,6 +12,7 @@ from service.domain.trades.errors import DealMappingError
 from service.trade_query.mt5_deal_mapper import map_mt5_deal
 from service.infrastructure.mt5.session import AccountSessionGuard, AccountSessionTransition
 from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+from service.infrastructure.mt5.time_policy import TimePolicy, TimePolicyError, normalize_mt5_time
 
 from .contracts import contract_error, decimal_wire, now_wire, restore_order_intent, timestamp_wire, validate_order
 from .errors import AmbiguousMT5Result, ExecutionError, parse_ticket_id
@@ -59,9 +60,12 @@ def _source_ticket(value, resource):
 
 
 class MT5ExecutionAdapter:
-    def __init__(self, mt5_client, resolver_symbols=()):
+    def __init__(self, mt5_client, resolver_symbols=(), *, time_policies=()):
         self.client = mt5_client
         self.resolver_symbols = tuple(resolver_symbols)
+        self.time_policies = tuple(time_policies)
+        if any(not isinstance(policy, TimePolicy) for policy in self.time_policies):
+            raise TimePolicyError("execution time policies must be typed TimePolicy values")
         self.idempotency_store = None
         self._read_session = ContextVar("execution_read_session", default=None)
 
@@ -375,10 +379,29 @@ class MT5ExecutionAdapter:
             if type(milliseconds) is not int or milliseconds <= 0:
                 raise contract_error()
             observed = datetime.now(timezone.utc)
-            age = Decimal(str(observed.timestamp())) - Decimal(milliseconds) / 1000
+            policy = None
+            if self.time_policies:
+                server = (before.get("fingerprint") or {}).get("server")
+                candidates = [candidate for candidate in self.time_policies
+                              if candidate.server == server and candidate.resource == "tick"
+                              and candidate.unit == "milliseconds"
+                              and candidate.valid_from <= observed < candidate.valid_until]
+                if len(candidates) != 1:
+                    raise ExecutionError("timestamp_policy_unavailable", "A unique current broker tick time policy is required", status=503)
+                policy = candidates[0]
+                try:
+                    quote_time = normalize_mt5_time(milliseconds, "tick", server, policy, now=observed).utc
+                except TimePolicyError as exc:
+                    raise ExecutionError("timestamp_policy_unavailable", "Broker tick time policy cannot normalize this quote", status=503) from exc
+                quote_seconds = Decimal(str(quote_time.timestamp()))
+            else:
+                # Compatibility only: preserve MT5's documented UTC encoding.
+                # This does not prove the broker follows that documented encoding.
+                quote_seconds = Decimal(milliseconds) / 1000
+            age = Decimal(str(observed.timestamp())) - quote_seconds
             result = {
                 "symbol": logical_symbol, "broker_symbol": native,
-                "bid": bid, "ask": ask, "quote_at": timestamp_wire(milliseconds / 1000),
+                "bid": bid, "ask": ask, "quote_at": timestamp_wire(float(quote_seconds)),
                 "observed_at": observed.isoformat().replace("+00:00", "Z"),
                 "age_seconds": str(age), "max_age_seconds": 5,
                 "fresh": 0 <= age <= 5,
@@ -431,7 +454,9 @@ class MT5ExecutionAdapter:
             if identity(before) != identity(after):
                 raise ExecutionError("account_session_transition", "Session changed during quote/risk observation", status=503)
             completed = datetime.now(timezone.utc)
-            final_age = Decimal(str(completed.timestamp())) - Decimal(milliseconds) / 1000
+            if policy is not None and not policy.valid_from <= completed < policy.valid_until:
+                raise ExecutionError("timestamp_policy_unavailable", "Broker tick time policy expired during observation", status=503)
+            final_age = Decimal(str(completed.timestamp())) - quote_seconds
             result.update(observed_at=completed.isoformat().replace("+00:00", "Z"),
                           age_seconds=str(final_age), fresh=bool(0 <= final_age <= 5))
             if risk:

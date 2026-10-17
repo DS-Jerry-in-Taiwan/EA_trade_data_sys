@@ -43,8 +43,9 @@ def test_all_composition_roots_pass_alternate_settings_to_connectors(
     adapters = []
     adapter_type = execution_module.MT5ExecutionAdapter
 
-    def capture_adapter(client, symbols):
-        adapter = adapter_type(client, symbols)
+    def capture_adapter(client, symbols, *, time_policies):
+        adapter = adapter_type(client, symbols, time_policies=time_policies)
+        assert adapter.time_policies == client._settings.time_policies
         adapters.append(adapter)
         return adapter
 

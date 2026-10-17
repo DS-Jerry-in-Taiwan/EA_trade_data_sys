@@ -19,7 +19,7 @@ def build_execution_server():
     settings = load_settings()
     client = MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
     symbols = [item.name for item in settings.history_service.symbols]
-    adapter = MT5ExecutionAdapter(client, symbols)
+    adapter = MT5ExecutionAdapter(client, symbols, time_policies=settings.time_policies)
     store = IdempotencyStore(
         os.getenv("EXECUTION_IDEMPOTENCY_DB", "/app/runtime/execution/idempotency.sqlite3")
     )

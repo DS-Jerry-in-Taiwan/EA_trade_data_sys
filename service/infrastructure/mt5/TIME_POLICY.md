@@ -33,9 +33,20 @@ boundary exception. No general config-to-MT5 client access is permitted.
 - #87: per-resource interpretation and old-data provenance.
 - #89: adapter integration, reviewed deployment and GET-only acceptance.
 
-Adapters do not call the helper yet. No production YAML, cache, API path,
-OpenAPI, authorization clock, gate, or idempotency behavior is changed here.
-Future integration must select one applicable policy explicitly, bind it to
-the current session/server, and convert only once before canonical mapping.
+Execution quote/risk now calls the helper when nonempty `time_policies` are
+configured. It selects exactly one currently valid policy for the observed
+session's exact server, `tick` resource and `milliseconds` unit. No match,
+multiple matches, unknown semantics, an unconvertible timestamp or expiry
+during calculation produces `timestamp_policy_unavailable` (HTTP 503).
+There is no fallback from a failed configured policy. Both initial and final
+freshness checks use the same once-normalized UTC instant; account generation
+and fingerprint consistency checks remain in place.
+
+An empty configuration preserves the existing documented-UTC interpretation;
+it is not evidence that any particular broker obeys that interpretation.
+In particular, a future timestamp stays future and freshness remains false.
+No production policy is supplied by this integration. No cache, API path,
+wire fields, authorization clock, gate or idempotency behavior is changed.
+Bars, orders, deals and positions are not converted by this quote-only work.
 Historical policy use may require explicit historical evaluation time; this
 does not authorize policy reuse in a current live session.
