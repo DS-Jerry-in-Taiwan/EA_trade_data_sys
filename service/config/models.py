@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
+from service.infrastructure.mt5.time_policy import TimePolicy, TimePolicyError
+
 
 def _section(raw: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     value = raw.get(name, {})
@@ -267,11 +269,18 @@ class Settings:
     api_gateway: ApiGatewaySettings = field(default_factory=ApiGatewaySettings)
     trade_query: TradeQuerySettings = field(default_factory=TradeQuerySettings)
     symbol_aliases: dict[str, str] = field(default_factory=dict)
+    time_policies: tuple[TimePolicy, ...] = ()
 
     @classmethod
     def from_mapping(
         cls, raw: Mapping[str, Any], *, environ: Mapping[str, str]
     ) -> "Settings":
+        configured_policies = raw.get("time_policies", [])
+        if not isinstance(configured_policies, (list, tuple)):
+            raise TimePolicyError("time_policies must be a list")
+        policies = tuple(TimePolicy.from_mapping(item) for item in configured_policies)
+        if len({(p.server, p.resource, p.id, p.version) for p in policies}) != len(policies):
+            raise TimePolicyError("duplicate time policy")
         return cls(
             connection=ConnectionSettings.from_mapping(
                 _section(raw, "connection"), environ=environ
@@ -289,11 +298,17 @@ class Settings:
                 _section(raw, "trade_query")
             ),
             symbol_aliases=_symbol_aliases(raw.get("symbol_aliases", {})),
+            time_policies=policies,
         )
 
     def as_dict(self) -> dict[str, Any]:
         """Return a compatibility mapping without exposing secret values."""
         result = asdict(self)
+        result["time_policies"] = [
+            {**asdict(policy), "valid_from": policy.valid_from.isoformat(),
+             "valid_until": policy.valid_until.isoformat()}
+            for policy in self.time_policies
+        ]
         result["tick_service"]["symbols"] = list(self.tick_service.symbols)
         result["history_service"]["symbols"] = [
             item.as_legacy_dict() for item in self.history_service.symbols

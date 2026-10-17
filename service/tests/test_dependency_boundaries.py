@@ -246,12 +246,32 @@ def test_modular_packages_follow_declared_dependency_direction():
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 for dependency in _service_dependencies(node, module_name):
+                    # The timestamp policy is a stdlib-only value object, not
+                    # the MT5 connection infrastructure. Keep this leaf-only
+                    # exception narrow; config must never import the client.
+                    if (module_name == "service.config.models"
+                            and isinstance(node, ast.ImportFrom)
+                            and node.level == 0
+                            and node.module == "service.infrastructure.mt5.time_policy"):
+                        continue
                     if dependency not in allowed:
                         violations.append(
                             f"{path.relative_to(SERVICE_ROOT)}:{node.lineno}: "
                             f"{owner} must not depend on {dependency}"
                         )
     assert not violations, "\n".join(violations)
+
+
+def test_time_policy_leaf_has_only_standard_library_dependencies():
+    import sys
+
+    path = SERVICE_ROOT / "infrastructure" / "mt5" / "time_policy.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.level == 0, "time policy must remain an independent leaf"
+    assert all(name.split(".", 1)[0] in sys.stdlib_module_names
+               for name in _absolute_imports(tree))
 
 
 def test_production_packages_do_not_import_legacy_flat_module_shims():
