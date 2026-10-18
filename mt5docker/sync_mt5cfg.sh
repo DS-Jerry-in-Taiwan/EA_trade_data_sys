@@ -1,13 +1,19 @@
 #!/bin/bash
 # 從 accounts.json 同步帳密到 mt5cfg.ini
 # 在啟動 MT5 前自動帶入最新帳密，避免敏感資訊寫死在 git repo
+set -Eeuo pipefail
+
+if [ "${MT5_CONNECTION_MODE:-terminal}" != managed ]; then
+    echo '[SYNC] refusing account sync outside managed MT5 connection mode' >&2
+    exit 1
+fi
 
 ACCOUNTS_FILE="/app/service/config/accounts.json"
 MT5CFG_FILE="/mt5docker/mt5cfg.ini"
 
 if [ ! -f "$ACCOUNTS_FILE" ]; then
-    echo "[SYNC] accounts.json not found at $ACCOUNTS_FILE, skipping"
-    exit 0
+    echo '[SYNC] accounts.json not found at configured private path' >&2
+    exit 1
 fi
 
 # 用 container 內的 Linux Python（不需 wine），只做 JSON 解析 + INI 寫入
@@ -42,5 +48,5 @@ Profile=1
 with open('$MT5CFG_FILE', 'w') as f:
     f.write(cfg)
 
-print('[SYNC] mt5cfg.ini synced from accounts.json')
-" 2>&1 || echo "[SYNC] sync failed, using existing mt5cfg.ini"
+print('[SYNC] mt5cfg.ini synced from managed account profile')
+"

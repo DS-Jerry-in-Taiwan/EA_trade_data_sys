@@ -11,9 +11,18 @@ import yaml
 try:
     with open("/app/service/config/settings.yaml") as f:
         _cfg = yaml.safe_load(f)
-    _KNOWN_SYMBOLS = set(_cfg.get("tick_service", {}).get("symbols", []))
+    _KNOWN_SYMBOLS = {
+        item["name"] for item in _cfg.get("history_service", {}).get("symbols", [])
+    }
 except Exception:
-    _KNOWN_SYMBOLS = {"XAUUSDm", "BTCUSDm", "EURUSDm", "GBPUSDm"}  # fallback
+    _KNOWN_SYMBOLS = {"XAUUSDm", "BTC", "EURUSDm", "GBPUSDm"}  # fallback
+
+_RATES_REQUIREMENTS = {"M5": 500, "M15": 200, "H1": 500, "D1": 200}
+_RATES_CASES = [
+    (symbol, timeframe, count)
+    for symbol in sorted(_KNOWN_SYMBOLS)
+    for timeframe, count in _RATES_REQUIREMENTS.items()
+]
 
 
 class TestHealthEndpoint:
@@ -21,18 +30,30 @@ class TestHealthEndpoint:
 
     def test_health_status(self, api):
         resp = api("/health")
-        assert resp.status_code in (200, 502), f"Unexpected status {resp.status_code}"
+        assert resp.status_code in (200, 503), f"Unexpected status {resp.status_code}"
         data = resp.json()
-        assert "status" in data, "Health response missing 'status'"
+        assert data["status"] in {"healthy", "degraded", "unhealthy", "not-ready"}
+        assert data["ready"] is (resp.status_code == 200)
+        for field in (
+            "gateway", "tick_service", "history_service", "tick_ipc_connected",
+            "symbols_tracked", "fresh_symbols", "timestamp",
+        ):
+            assert field in data, f"Health response missing '{field}'"
 
     def test_health_tick_service(self, api):
         """Health response should indicate tick_service status"""
         resp = api("/health")
-        if resp.status_code != 200:
-            pytest.skip("Health endpoint not available")
         data = resp.json()
-        assert "tick_service" in data, "Health response missing 'tick_service'"
-        assert data["tick_service"] == "running"
+        assert isinstance(data["tick_service"], dict)
+        assert "state" in data["tick_service"]
+        assert "fresh" in data["tick_service"]
+
+    def test_ready_requires_complete_fresh_symbol_set(self, api):
+        resp = api("/health")
+        data = resp.json()
+        if data["ready"]:
+            assert data["tick_ipc_connected"] is True
+            assert set(data["fresh_symbols"]) == set(data["symbols_tracked"])
 
 
 class TestSymbolsEndpoint:
@@ -65,7 +86,7 @@ class TestTicksEndpoint:
     @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_ticks_status(self, api, symbol):
         resp = api(f"/ticks/{symbol}")
-        assert resp.status_code in (200, 404, 502), f"Unexpected status {resp.status_code} for {symbol}"
+        assert resp.status_code in (200, 404, 503), f"Unexpected status {resp.status_code} for {symbol}"
 
     @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
     def test_ticks_data_shape(self, api, symbol):
@@ -76,32 +97,32 @@ class TestTicksEndpoint:
         if not data:
             pytest.skip(f"No tick data for {symbol}")
         record = data[0] if isinstance(data, list) else data
-        for field in ("time", "bid", "ask"):
+        for field in ("version", "type", "symbol", "time", "received_at", "bid", "ask"):
             assert field in record, f"Tick record missing '{field}' for {symbol}"
+        assert record["version"] == 1
+        assert record["type"] == "tick"
+        assert record["symbol"] == symbol
 
 
 class TestRatesEndpoint:
     """C4: /rates/<symbol>"""
 
-    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
-    def test_rates_status(self, api, symbol):
-        resp = api(f"/rates/{symbol}")
-        assert resp.status_code in (200, 404, 502), f"Unexpected status {resp.status_code} for {symbol}"
+    @pytest.mark.parametrize("symbol,timeframe,count", _RATES_CASES)
+    def test_rates_status(self, api, symbol, timeframe, count):
+        resp = api(f"/rates/{symbol}?timeframe={timeframe}&limit={count}")
+        assert resp.status_code == 200, (
+            f"Required rates unavailable for {symbol} {timeframe}: HTTP {resp.status_code}"
+        )
 
-    @pytest.mark.parametrize("symbol", sorted(_KNOWN_SYMBOLS))
-    def test_rates_data_shape(self, api, symbol):
-        resp = api(f"/rates/{symbol}")
-        if resp.status_code != 200:
-            pytest.skip(f"Rates endpoint not available for {symbol} (HTTP {resp.status_code})")
+    @pytest.mark.parametrize("symbol,timeframe,count", _RATES_CASES)
+    def test_rates_data_shape(self, api, symbol, timeframe, count):
+        resp = api(f"/rates/{symbol}?timeframe={timeframe}&limit={count}")
+        assert resp.status_code == 200
         data = resp.json()
-        if not data:
-            pytest.skip(f"No rate data for {symbol}")
-        # API may return a plain array (CSV cache) or an envelope object.
-        records = data.get("data", data) if isinstance(data, dict) else data
-        if not records:
-            pytest.skip(f"Empty rate data for {symbol}")
-        record = records[0] if isinstance(records, list) else data
-        for field in ("time", "open", "high", "low", "close"):
+        assert isinstance(data, list)
+        assert len(data) >= count
+        record = data[0]
+        for field in ("time", "open", "high", "low", "close", "tick_volume"):
             assert field in record, f"Rate record missing '{field}' for {symbol}"
 
 
@@ -153,6 +174,15 @@ class TestAccountEndpoint:
 class TestTradeQueryEndpoints:
     """Protected readonly trade query endpoints."""
 
+    @staticmethod
+    def _assert_deal_contract(payload):
+        deals = payload["data"] if isinstance(payload, dict) else payload
+        assert isinstance(deals, list)
+        for deal in deals:
+            assert deal["deal"] == deal["ticket"] == deal["deal_id"]
+            assert deal["order"] == deal["order_id"]
+        return deals
+
     def test_account_without_key(self, api):
         resp = api("/account")
         assert resp.status_code in (401, 503), f"Unexpected status {resp.status_code}"
@@ -197,6 +227,7 @@ class TestTradeQueryEndpoints:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
         data = resp.json()
         assert isinstance(data, list) or (isinstance(data, dict) and "data" in data)
+        self._assert_deal_contract(data)
 
     def test_history_deals_summary_with_key(self, api, readonly_headers):
         if not readonly_headers:
@@ -208,6 +239,8 @@ class TestTradeQueryEndpoints:
         data = resp.json()
         assert "data" in data
         assert "summary" in data
+        deals = self._assert_deal_contract(data)
+        assert data["summary"]["count"] == len(deals)
 
     def test_history_deals_range_too_large(self, api, readonly_headers):
         if not readonly_headers:
@@ -229,28 +262,6 @@ class TestTradeQueryEndpoints:
             pytest.skip("READONLY_API_KEY not configured")
         resp = api("/history/orders?from=2026-01-01&to=2026-05-01", headers=readonly_headers)
         assert resp.status_code == 400, f"Expected 400, got {resp.status_code}"
-
-
-class TestChartEndpoint:
-    """C7: /chart/<symbol>"""
-
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm"])
-    def test_chart_status(self, api, symbol):
-        resp = api(f"/chart/{symbol}")
-        assert resp.status_code in (200, 404, 503), \
-            f"Unexpected status {resp.status_code} for {symbol}"
-
-    @pytest.mark.parametrize("symbol", ["XAUUSDm", "BTCUSDm"])
-    def test_chart_data_shape(self, api, symbol):
-        resp = api(f"/chart/{symbol}")
-        if resp.status_code != 200:
-            pytest.skip(f"Chart endpoint not available for {symbol}")
-        data = resp.json()
-        if not data:
-            pytest.skip(f"No chart data for {symbol}")
-        record = data[0] if isinstance(data, list) else data
-        for field in ("time", "open", "high", "low", "close"):
-            assert field in record, f"Chart record missing '{field}' for {symbol}"
 
 
 class TestOpenApiSpec:
@@ -281,7 +292,7 @@ class TestOpenApiSpec:
 
 
 class TestRatesQueryEndpoint:
-    """C9: /rates/{symbol}/query — Direct MT5 historical data query"""
+    """C9: /rates/{symbol}/query — persisted historical data query."""
 
     def test_query_missing_params(self, api):
         """Missing start_time/end_time should return 400"""
@@ -296,9 +307,11 @@ class TestRatesQueryEndpoint:
     def test_query_success(self, api):
         """Valid query should return 200 with data structure"""
         resp = api("/rates/XAUUSDm/query?timeframe=M5&start_time=2025-01-01&end_time=2025-01-07")
-        if resp.status_code == 503:
-            pytest.skip("MT5 not connected")
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+        assert resp.status_code in (200, 404), f"Expected 200/404, got {resp.status_code}"
+        if resp.status_code == 404:
+            data = resp.json()
+            assert "available_range" in data
+            return
         data = resp.json()
         assert "symbol" in data
         assert "timeframe" in data
@@ -307,9 +320,9 @@ class TestRatesQueryEndpoint:
         assert isinstance(data["count"], int)
 
     def test_query_source_field(self, api):
-        """Response should contain source: 'mt5'"""
+        """Successful response identifies persisted storage, never direct MT5."""
         resp = api("/rates/XAUUSDm/query?timeframe=M5&start_time=2025-01-01&end_time=2025-01-07")
         if resp.status_code != 200:
-            pytest.skip("MT5 query not available")
+            pytest.skip("No persisted data in requested range")
         data = resp.json()
-        assert data.get("source") == "mt5", f"Expected source='mt5', got '{data.get('source')}'"
+        assert data.get("source") == "history_storage"

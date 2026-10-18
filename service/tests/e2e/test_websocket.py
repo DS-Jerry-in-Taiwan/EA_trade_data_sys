@@ -1,96 +1,78 @@
-"""
-Layer D: WebSocket Verification (5 tests)
-===========================================
-Tests for the WebSocket endpoint at ws://localhost:5000/api/v1/ws.
-If WebSocket support is not available, all tests skip gracefully.
-"""
-import json
+"""Socket.IO lifecycle checks against API Gateway's sole external endpoint."""
+
+import threading
+
 import pytest
-import websocket
 
-pytest.importorskip("websocket", reason="websocket-client not installed")
+socketio = pytest.importorskip("socketio", reason="python-socketio not installed")
 
-WS_URL = "ws://localhost:8090/api/v1/ws"
+BASE_URL = "http://localhost:8090"
 
 
-def _recv(ws, timeout=5):
-    """Receive a single message with timeout."""
-    ws.settimeout(timeout)
+def _connected_client(events):
+    client = socketio.Client(reconnection=False, logger=False, engineio_logger=False)
+
+    @client.on("connected")
+    def on_connected(payload):
+        events["connected_payload"] = payload
+        events["connected"].set()
+
+    @client.on("subscribed")
+    def on_subscribed(payload):
+        events["subscribed_payload"] = payload
+        events["subscribed"].set()
+
+    @client.on("tick")
+    def on_tick(payload):
+        events["tick_payload"] = payload
+        events["tick"].set()
+
     try:
-        return json.loads(ws.recv())
-    except websocket.WebSocketTimeoutException:
-        return None
+        client.connect(BASE_URL, transports=["websocket"], wait_timeout=5)
+    except (socketio.exceptions.ConnectionError, OSError):
+        pytest.skip("Gateway Socket.IO endpoint not available")
+    return client
 
 
-class TestWebSocket:
+@pytest.fixture
+def live_socketio_client():
+    events = {
+        "connected": threading.Event(),
+        "subscribed": threading.Event(),
+        "tick": threading.Event(),
+    }
+    client = _connected_client(events)
+    yield client, events
+    if client.connected:
+        client.disconnect()
 
-    def test_ws_connect(self):
-        """WebSocket connection can be established"""
-        try:
-            ws = websocket.create_connection(WS_URL, timeout=5)
-            ws.close()
-        except (websocket.WebSocketException, ConnectionRefusedError, OSError):
-            pytest.skip("WebSocket endpoint not available")
 
-    def test_ws_tick_subscription(self):
-        """Subscribing to ticks should return at least one tick message"""
-        try:
-            ws = websocket.create_connection(WS_URL, timeout=5)
-        except Exception:
-            pytest.skip("WebSocket endpoint not available")
-        try:
-            ws.send(json.dumps({"type": "subscribe", "channel": "ticks", "symbol": "XAUUSDm"}))
-            msg = _recv(ws, timeout=5)
-            assert msg is not None, "No tick message received within 5s"
-            assert isinstance(msg, dict), "Tick message should be a JSON object"
-        except websocket.WebSocketException:
-            pytest.skip("WebSocket communication failed")
-        finally:
-            ws.close()
+class TestWebSocketLifecycle:
+    def test_connects_through_gateway(self, live_socketio_client):
+        client, events = live_socketio_client
+        assert client.connected
+        assert events["connected"].wait(3), "Gateway did not emit connected event"
+        assert "message" in events["connected_payload"]
 
-    def test_ws_heartbeat(self):
-        """WebSocket should send periodic heartbeats"""
-        try:
-            ws = websocket.create_connection(WS_URL, timeout=5)
-        except Exception:
-            pytest.skip("WebSocket endpoint not available")
-        try:
-            msg = _recv(ws, timeout=10)
-            assert msg is not None, "No heartbeat received within 10s"
-        except websocket.WebSocketException:
-            pytest.skip("WebSocket communication failed")
-        finally:
-            ws.close()
+    def test_subscribe_receives_ack_and_fresh_snapshot(self, live_socketio_client):
+        client, events = live_socketio_client
+        client.emit("subscribe", {"symbol": "XAUUSDm"})
 
-    def test_ws_subscription_error(self):
-        """Invalid subscription should not crash the server"""
-        try:
-            ws = websocket.create_connection(WS_URL, timeout=5)
-        except Exception:
-            pytest.skip("WebSocket endpoint not available")
-        try:
-            ws.send(json.dumps({"type": "subscribe", "channel": "invalid_channel"}))
-            msg = _recv(ws, timeout=3)
-            assert ws.connected, "Connection dropped after invalid subscription"
-        except websocket.WebSocketException:
-            pytest.skip("WebSocket communication failed")
-        finally:
-            ws.close()
+        assert events["subscribed"].wait(3), "Gateway did not acknowledge subscription"
+        assert events["subscribed_payload"] == {"symbol": "XAUUSDm"}
+        assert events["tick"].wait(5), "Gateway did not send the fresh Tick snapshot"
+        tick = events["tick_payload"]
+        assert tick["version"] == 1
+        assert tick["type"] == "tick"
+        assert tick["symbol"] == "XAUUSDm"
+        for field in ("bid", "ask", "received_at", "time"):
+            assert field in tick
 
-    def test_ws_pong(self):
-        """Server must reply to ping with pong"""
-        try:
-            ws = websocket.create_connection(WS_URL, timeout=5)
-        except Exception:
-            pytest.skip("WebSocket endpoint not available")
-        try:
-            ws.ping("test")
-            ws.settimeout(3)
-            resp = ws.recv()
-            assert True  # No exception = pong received
-        except websocket.WebSocketTimeoutException:
-            pytest.fail("No pong response within 3s")
-        except websocket.WebSocketException:
-            pytest.skip("WebSocket ping/pong failed")
-        finally:
-            ws.close()
+    def test_unsubscribe_does_not_disconnect_transport(self, live_socketio_client):
+        client, events = live_socketio_client
+        client.emit("subscribe", {"symbol": "XAUUSDm"})
+        assert events["subscribed"].wait(3)
+
+        client.emit("unsubscribe", {"symbol": "XAUUSDm"})
+        client.sleep(0.2)
+        assert client.connected

@@ -1,26 +1,53 @@
 services:
   mt5-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: jerry/mt5-custom:v1
     container_name: mt5-server
     environment:
       - VNC_PWD=jerry1234
+      - MT5_CONFIG_LINUX=/run/mt5/mt5cfg.ini
+      - MT5_CONNECTION_MODE=${MT5_CONNECTION_MODE:-terminal}
+      - MT5_BOOTSTRAP_REIMPORT=${MT5_BOOTSTRAP_REIMPORT:-0}
+      - MT5_BOOTSTRAP_MARKER=/mt5docker/MT5_Data/.mt5-bootstrap-complete
     volumes:
       # 配置與腳本目錄
       - .:/mt5docker
-      # MT5 可攜式設定檔持久化（AppData）
-      - "./MT5_Data:/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5"
+      # Override MT5_DATA_DIR when compose runs from a deployment worktree.
+      # The same persistent directory is exposed for readiness logs and Wine.
+      - "${MT5_DATA_DIR:-./MT5_Data}:/mt5docker/MT5_Data"
+      - "${MT5_DATA_DIR:-./MT5_Data}:/opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5"
+      # Mount the already-generated config; do not regenerate secrets here.
+      - "${MT5_CONFIG_FILE:-./mt5cfg.ini}:/run/mt5/mt5cfg.ini:ro"
     entrypoint: /mt5docker/start_server.sh
+    # Keep Wine's desktop alive while MT5 handles its normal close request.
+    # Bounded shutdown can take 21s (4s request + 8s close wait + three 3s
+    # fallback waits); 30s avoids Docker's default 10s forced termination.
+    # Normal close requests do not themselves guarantee native state saved.
+    stop_grace_period: 30s
     ports:
       - 5901:5901
       - 6081:6081
-      - 8001:8001
+    healthcheck:
+      test: ["CMD", "/mt5docker/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 150s
     restart: always
 
-  python-runner:
+  trade-data-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: jerry/mt5-custom:v1
-    container_name: python-runner
+    container_name: trade-data-service
     environment:
       READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
+      MT5_CONNECTION_MODE: ${MT5_CONNECTION_MODE:-terminal}
+      TRADE_DATA_CONFIG: ${TRADE_DATA_CONFIG:-}
+      MT5_SETTINGS_PATH: ${MT5_SETTINGS_PATH:-}
     volumes:
       # 將整個專案代碼映射到 /app
       - ..:/app
@@ -28,5 +55,58 @@ services:
       - "0.0.0.0:8090:8090"
     entrypoint: /app/mt5docker/start_runner.sh
     depends_on:
-      - mt5-server
+      mt5-server:
+        # Start HTTP while the operator logs in; API readiness still fails
+        # closed until fresh MT5 authorization and RPyC are available.
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json,urllib.request; r=urllib.request.urlopen('http://localhost:8090/api/v1/health', timeout=3); assert r.status == 200 and json.load(r).get('ready') is True"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      # The runner deliberately installs bind-mounted Linux requirements before
+      # starting the supervisor; allow that bootstrap to finish on a clean image.
+      start_period: 150s
+    restart: always
+
+  execution-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jerry/mt5-custom:v1
+    container_name: execution-service
+    environment:
+      READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
+      EXECUTION_MUTATION_ENABLED: "false"
+      EXECUTION_ACCOUNT_POLICY: "DEMO"
+      MT5_CONNECTION_MODE: ${MT5_CONNECTION_MODE:-terminal}
+      TRADE_DATA_CONFIG: ${TRADE_DATA_CONFIG:-}
+      MT5_SETTINGS_PATH: ${MT5_SETTINGS_PATH:-}
+      EXECUTION_IDEMPOTENCY_DB: /app/runtime/execution/idempotency.sqlite3
+      EXECUTION_AUTHORIZATION_DB: /app/runtime/execution/authorization.sqlite3
+    volumes:
+      - ..:/app
+      # Keep durable idempotency records on the deployment worktree across
+      # execution-service container recreation.
+      - ../runtime:/app/runtime
+    ports:
+      - "0.0.0.0:8091:8091"
+    entrypoint: /app/mt5docker/start_execution.sh
+    depends_on:
+      mt5-server:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json,os,urllib.request; q=urllib.request.Request('http://localhost:8091/api/v1/health',headers={'X-API-Key':os.environ['READONLY_API_KEY']}); r=urllib.request.urlopen(q,timeout=3); d=json.load(r); assert r.status==200 and d['data']['ready'] is True"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 150s
     restart: always

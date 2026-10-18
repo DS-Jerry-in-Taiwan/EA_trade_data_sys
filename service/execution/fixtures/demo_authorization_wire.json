@@ -1,0 +1,51 @@
+{
+  "fixture_version": 1,
+  "classification": "synthetic_only",
+  "authorization": {
+    "authorization_id": "synthetic-grant",
+    "account_fingerprint": "synthetic-session",
+    "session_generation": 1,
+    "session_epoch": "synthetic-epoch",
+    "symbol": "XAUUSDm",
+    "minimum_volume": "0.01",
+    "client_order_id": "client-1",
+    "permissions": ["place", "cancel", "close"],
+    "entry_not_before": "2026-01-01T00:00:00Z",
+    "entry_expires_at": "2099-01-01T00:00:00Z",
+    "recovery_expires_at": "2099-01-02T00:00:00Z",
+    "abort_owner": "synthetic-operator"
+  },
+  "headers": {
+    "X-API-Key": "synthetic-only",
+    "X-Execution-Authorization": "synthetic-grant",
+    "Idempotency-Key": "client-1",
+    "X-Request-ID": "request-1"
+  },
+  "place_request": {
+    "request_id": "request-1",
+    "submitted_at": "2026-01-01T00:00:00Z",
+    "intent": {
+      "client_order_id": "client-1", "symbol": "XAUUSDm", "direction": 1,
+      "order_type": "market", "volume": "0.01", "limit_price": null,
+      "stop_loss": null, "take_profit": null, "time_in_force": "gtc"
+    }
+  },
+  "place_response": {
+    "schema_version": 1,
+    "data": {"request_id": "request-1", "status": "filled", "occurred_at": "2026-01-01T00:00:00Z", "broker_order_id": "7", "reason": null, "broker_retcode": "10009"}
+  },
+  "by_client_response": {
+    "schema_version": 1,
+    "data": {
+      "broker_order_id": "7", "request_id": "request-1",
+      "intent": {"client_order_id": "client-1", "symbol": "XAUUSDm", "direction": 1, "order_type": "market", "volume": "0.01", "limit_price": null, "stop_loss": null, "take_profit": null, "time_in_force": "gtc"},
+      "status": "accepted", "filled_volume": "0", "average_fill_price": null,
+      "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+    }
+  },
+  "rejected_authorization": {"extra_field": "must_not_be_accepted"},
+  "rejected_scope_error": {"schema_version": 1, "error": {"code": "authorization_scope_mismatch", "message": "Entry is outside authorized scope", "request_id": "request-1"}},
+  "ambiguous_exit_error": {"schema_version": 1, "error": {"code": "execution_outcome_unknown", "message": "MT5 acceptance could not be determined; use client_order_id lookup", "request_id": "request-1"}},
+  "exit_replay_error": {"schema_version": 1, "error": {"code": "exit_outcome_unknown", "message": "Exit may have been accepted; reconcile without resending", "request_id": "request-1"}},
+  "restart_mutation_error": {"schema_version": 1, "error": {"code": "authorization_session_changed", "message": "Account/session changed; operator escalation required", "request_id": "request-1"}}
+}

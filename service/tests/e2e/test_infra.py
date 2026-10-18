@@ -10,6 +10,20 @@ import socket
 import pytest
 
 
+def _module_process_pid(docker_exec, module):
+    """Return the PID whose argv contains the exact ``-m <module>`` pair."""
+    result = docker_exec("ps -eo pid=,args=")
+    for line in result.stdout.splitlines():
+        fields = line.strip().split()
+        if not fields:
+            continue
+        argv = fields[1:]
+        if any(argv[index:index + 2] == ["-m", module]
+               for index in range(len(argv) - 1)):
+            return fields[0]
+    return ""
+
+
 class TestInfrastructure:
 
     def test_container_python_version(self):
@@ -17,11 +31,10 @@ class TestInfrastructure:
         import sys
         assert sys.version_info >= (3, 12), f"Python {sys.version} is too old"
 
-    def test_working_directory(self):
-        """We must be inside /app/service/tests/e2e or a sub-path"""
-        allowed = {"app", "service", "tests"}
-        cwd = os.getcwd().replace("\\", "/").split("/")
-        assert allowed.issubset(set(cwd)), f"Unexpected CWD: {os.getcwd()}"
+    def test_application_mount(self):
+        """The repository must be mounted at the runtime's /app contract."""
+        test_root = "/app/service/tests/e2e"
+        assert os.path.isdir(test_root), f"Application mount missing: {test_root}"
 
     def test_required_folders(self, docker_exec):
         """Check that critical data/log/config folders exist"""
@@ -46,14 +59,14 @@ class TestInfrastructure:
             assert r.stdout.strip() == "OK", f"File {f} is missing"
 
     def test_process_tick_service(self, docker_exec):
-        """tick_service must be among running processes"""
-        r = docker_exec("ps auxww | grep tick_service | grep -v grep")
-        assert r.stdout.strip(), "tick_service not found in ps auxww"
+        """The Realtime worker module must be among running processes."""
+        assert _module_process_pid(docker_exec, "service.entrypoints.tick_worker"), \
+            "service.entrypoints.tick_worker not found in process argv"
 
     def test_process_history_service(self, docker_exec):
-        """history_service must be among running processes"""
-        r = docker_exec("ps auxww | grep history_service | grep -v grep")
-        assert r.stdout.strip(), "history_service not found in ps auxww"
+        """The History worker module must be among running processes."""
+        assert _module_process_pid(docker_exec, "service.entrypoints.history_worker"), \
+            "service.entrypoints.history_worker not found in process argv"
 
 
 class TestMT5Client:
@@ -63,7 +76,7 @@ class TestMT5Client:
         """MT5Client initialises with no connection"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c._mt5 is None, "_mt5 should be None on init"
         assert c._connector is None, "_connector should be None on init"
@@ -73,7 +86,7 @@ class TestMT5Client:
         """ensure_connected returns True when connected to MT5 server"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         result = c.ensure_connected()
         assert result is True, f"ensure_connected should return True, got {result}"
@@ -83,7 +96,7 @@ class TestMT5Client:
         """call() correctly executes a lambda against the mt5 object"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected to test call()"
         # Call a simple read-only method
@@ -96,7 +109,7 @@ class TestMT5Client:
         """init_resolver should succeed after connection"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected"
         c.init_resolver(["XAUUSDm", "BTCUSDm"])
@@ -107,7 +120,7 @@ class TestMT5Client:
         """resolve() should return exact match when symbol exists in broker"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected"
         all_symbols = c._mt5.symbols_get()
@@ -120,12 +133,13 @@ class TestMT5Client:
         """resolve() should fallback to fuzzy match when exact match fails"""
         import sys
         sys.path.insert(0, '/app')
-        from service.core.mt5_client import MT5Client
+        from service.infrastructure.mt5.client import MT5Client
         c = MT5Client()
         assert c.ensure_connected(), "Must be connected"
-        all_symbols = c._mt5.symbols_get()
-        known = all_symbols[0].name
-        logical = known + 'm'  # Add 'm' suffix to test fuzzy stripping
+        # EURUSDm is a documented logical alias, unlike arbitrary catalog
+        # entries with an invented suffix (for example an unsupported .simm).
+        logical = "EURUSDm"
         c.init_resolver([logical])
         resolved = c.resolve(logical)
-        assert resolved == known, f"Fuzzy match failed: expected {known}, got {resolved}"
+        assert resolved in {item.name for item in c._mt5.symbols_get()}
+        assert c._resolver.logical_for(resolved) == logical

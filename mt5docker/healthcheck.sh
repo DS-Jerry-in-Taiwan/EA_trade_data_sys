@@ -1,6 +1,19 @@
-#!/bin/bash
-echo 'Checking display services...'
-netstat -antp | grep 5901 || echo 'VNC Server NOT running'
-netstat -antp | grep 6081 || echo 'noVNC Proxy NOT running'
-netstat -antp | grep 8002 || echo 'MT5 Proxy NOT running'
-ps aux | grep -E 'Xvfb|terminal64.exe'
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/terminal_lifecycle.sh"
+# Do not open an RPyC connection: health probes must not consume client slots.
+exactly_one_normal_terminal || exit 1
+[ -r /run/mt5-server/terminal-ready ] || exit 1
+[ -r "${MT5_READY_SNAPSHOT:-/run/mt5-server/terminal-ready.snapshot}" ] || exit 1
+terminal_update_pending "${MT5_READY_SNAPSHOT:-/run/mt5-server/terminal-ready.snapshot}" && exit 1
+[ -r /run/mt5-server/rpyc.pid ] || exit 1
+read -r rpyc_pid < /run/mt5-server/rpyc.pid
+case "$rpyc_pid" in (*[!0-9]*|'') exit 1 ;; esac
+kill -0 "$rpyc_pid" 2>/dev/null || exit 1
+rpyc_is_listening || exit 1
+# The remote desktop is an operational control surface. Do not report healthy
+# when MT5 is reachable but users cannot restore windows or paste credentials.
+pgrep -x openbox >/dev/null || exit 1
+pgrep -x pcmanfm >/dev/null || exit 1
+pgrep -x tint2 >/dev/null || exit 1

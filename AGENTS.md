@@ -1,31 +1,34 @@
 # AGENTS.md
 
-## Repo map
-- `mt5docker/` + `service/` are the MT5 bridge/API; `apps/trade-review-web/` is the Next.js review/simulation UI.
-- There is no repo-level JS workspace manifest; run frontend commands inside `apps/trade-review-web/` with `npm` (`package-lock.json` is there).
-- Real REST entrypoint is `service/api_gateway.py`; `mt5docker/start_runner.sh` launches `tick_service.py`, `history_service.py`, and `api_gateway.py`.
-- All MT5 calls should go through `service/core/mt5_client.py`; avoid ad-hoc connections.
+## What this repo is
+- MT5 data bridge: `mt5docker/compose.yaml` runs `mt5-server` (Wine MT5 + `pymt5linux` on port 8001) and `python-runner` (Flask API on port 8090).
+- The real REST entrypoint is `service.entrypoints.api_gateway`; `service.runtime.supervisor` launches `service.entrypoints.tick_worker`, `service.entrypoints.history_worker`, and `service.entrypoints.api_gateway` from `mt5docker/start_runner.sh`.
+- All MT5 calls should go through `service/infrastructure/mt5/client.py` (`ensure_connected()`, `call()`, resolver support) rather than constructing ad-hoc connections.
+- Typed settings are loaded by `service.config.load_settings` from `service/config/settings.yaml`; the deployed MT5 host is `mt5-server`, RPyC port `8001`, and API port `8090`.
 
 ## Commands that are easy to guess wrong
-- Start the stack from the compose dir: `cd mt5docker && docker compose up -d`.
-- Quick API checks: `curl http://localhost:8090/api/v1/health` and `curl http://localhost:8090/api/v1/symbols`.
-- Backend E2E against running containers: `docker exec python-runner python3 -m pytest /app/service/tests/e2e -q`.
-- One backend test: `docker exec python-runner python3 -m pytest /app/service/tests/e2e/test_api.py::TestHealthEndpoint::test_health_status -q`.
-- Frontend checks: `cd apps/trade-review-web && npm run lint && npm run typecheck` (use `npm run dev` / `npm run build` there too).
+- Start the stack from the compose directory: `cd mt5docker && docker compose up -d`.
+- Check API quickly: `curl http://localhost:8090/api/v1/health` or `curl http://localhost:8090/api/v1/symbols`.
+- Run the E2E suite against running containers: `docker exec python-runner python3 -m pytest /app/service/tests/e2e -q`.
+- Run one focused E2E test: `docker exec python-runner python3 -m pytest /app/service/tests/e2e/test_api.py::TestHealthEndpoint::test_health_status -q`.
+- Logs live in the container at `/app/service/logs/*.log`; the runner script prints them there, not to the host console after startup.
 
-## Runtime quirks
-- Python code hard-codes `/app`; prefer running tests inside `python-runner`.
-- E2E fixtures assume `http://localhost:8090/api/v1`, a live stack, and files under `/app/service/data`.
-- `mt5docker/start_server.sh` owns MT5/VNC startup and the `pymt5linux` proxy on port 8001; runner logs land in `/app/service/logs/*.log`.
-- Logical symbols are exactly `XAUUSDm`, `EURUSDm`, `GBPUSDm`, and `BTC`; keep names unchanged in code, URLs, and filenames.
-- History cache files are `/app/service/data/history/{symbol}_{timeframe}.csv`; `/rates/<symbol>` reads the cache, `/rates/<symbol>/query` hits MT5 directly.
+## Runtime and testing quirks
+- Most Python files hard-code `/app` paths and insert `sys.path.insert(0, '/app')`; prefer running services/tests inside `python-runner` unless you intentionally patch paths/env.
+- E2E fixtures assume API base `http://localhost:8090/api/v1` and a live stack; many tests check running processes, fresh files under `/app/service/data`, and MT5 connectivity.
+- There is no verified lint/typecheck/formatter config in the repo; use focused pytest/curl checks for verification.
+- `docs/` is gitignored and may be absent even though `/api/v1/openapi.yaml` references `/app/docs/api/v3_data_api.yaml`; verify file existence directly, not via `git status`.
 
-## Config and secrets
-- Trade Query API (`/account`, `/positions`, `/history/deals`, `/history/orders`) requires `X-API-Key`; `READONLY_API_KEY` is injected via `mt5docker/compose.yaml`.
-- Frontend DB access uses `apps/trade-review-web/.env.local`; see `.env.local.example` for the expected `DATABASE_URL`.
-- Do not read, print, or commit `service/config/accounts.json`, `mt5docker/accounts.json`, `.env*`, or generated `mt5docker/mt5cfg.ini`.
-- Leave `.opencode/` alone unless the task is explicitly about OpenCode config.
+## Data, symbols, and API conventions
+- Configured logical symbols are `XAUUSDm`, `EURUSDm`, `GBPUSDm`, and `BTC`; do not uppercase symbols in API paths because services keep names exactly as configured.
+- `SymbolResolver` may map logical names to broker names; external API/file names should generally keep the logical symbol from `settings.yaml`.
+- History CSV cache files are named `/app/service/data/history/{symbol}_{timeframe}.csv`; API `/rates/<symbol>` reads these files, while `/rates/<symbol>/query` queries MT5 directly.
 
-## Docs
-- Planning docs belong under `docs/agent_context/<phase>/`; architecture docs belong under `docs/arch/`.
-- `docs/` is gitignored, so check file paths directly instead of relying on `git status`.
+## Secrets and generated files
+- Do not read, print, or commit real credentials from `service/config/accounts.json`, `mt5docker/accounts.json`, `.env*`, or generated `mt5docker/mt5cfg.ini`; they are ignored for a reason.
+- `mt5docker/sync_mt5cfg.sh` rewrites `mt5docker/mt5cfg.ini` from `/app/service/config/accounts.json` before MT5 starts, so editing the INI alone is not the source of truth.
+- `.opencode/` in this checkout is ignored runtime/config material and may contain API keys; avoid touching or quoting it unless the task is explicitly OpenCode configuration.
+- Trade Query API (`/account`, `/positions`, `/history/deals`, `/history/orders`) requires `X-API-Key` header. The readonly key is stored in `.env` as `READONLY_API_KEY`; the Flask service must have it in its environment at runtime.
+
+## Architecture documentation workflow
+- Project planning docs, when requested, belong under `docs/agent_context/<phase>/`; architecture docs belong under `docs/arch/`. Remember `docs/` is gitignored, so check paths directly.

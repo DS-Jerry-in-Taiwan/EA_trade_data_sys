@@ -9,12 +9,12 @@ import yaml
 # Unit tests must not import the real pymt5linux transport.
 connection_manager = types.ModuleType('core.connection_manager')
 connection_manager.MT5Connector = object
+connection_manager.close_mt5_connection = lambda mt5: None
 sys.modules.setdefault('core.connection_manager', connection_manager)
-sys.modules.setdefault('pandas', types.ModuleType('pandas'))
 
-from service.account_service import AccountService
-from service.history_service import HistoryService
-from service.tick_service import TickService
+from service.trade_query.account_service import AccountService
+from service.history.worker import HistoryService
+from service.realtime.worker import TickService
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +53,7 @@ def test_service_uses_injected_process_client(service_class, service_configs):
 
 
 def test_gateway_has_one_mt5_client_construction_at_composition_root():
-    source = (REPO_ROOT / 'service' / 'api_gateway.py').read_text(encoding='utf-8')
+    source = (REPO_ROOT / 'service' / 'entrypoints' / 'api_gateway.py').read_text(encoding='utf-8')
     tree = ast.parse(source)
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
@@ -70,10 +70,10 @@ def test_gateway_has_one_mt5_client_construction_at_composition_root():
 
 
 def test_query_route_does_not_construct_an_mt5_client():
-    source = (REPO_ROOT / 'service' / 'api_gateway.py').read_text(encoding='utf-8')
+    source = (REPO_ROOT / 'service' / 'gateway' / 'routes' / 'market_data.py').read_text(encoding='utf-8')
     tree = ast.parse(source)
     query_handler = next(
-        node for node in tree.body
+        node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == 'query_rates_by_range'
     )
 
@@ -83,3 +83,23 @@ def test_query_route_does_not_construct_an_mt5_client():
         and node.func.id == 'MT5Client'
         for node in ast.walk(query_handler)
     )
+
+
+def test_gateway_history_routes_have_no_persistence_or_mt5_calls():
+    source = (REPO_ROOT / 'service' / 'gateway' / 'routes' / 'market_data.py').read_text(encoding='utf-8')
+    tree = ast.parse(source)
+    handlers = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {'get_rates', 'query_rates_by_range'}
+    ]
+    forbidden = {'read_csv', 'copy_rates_range', 'open', 'exists', 'join'}
+
+    for handler in handlers:
+        calls = {
+            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, (ast.Attribute, ast.Name))
+        }
+        assert calls.isdisjoint(forbidden)

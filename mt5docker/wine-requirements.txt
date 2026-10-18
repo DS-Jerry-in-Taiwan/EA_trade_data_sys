@@ -1,0 +1,8 @@
+# Packages imported by the Wine-hosted pymt5linux RPyC server.
+pymt5linux==1.0
+MetaTrader5==5.0.6231
+# Pin direct runtime dependencies too; otherwise a later rebuild can silently
+# change the Wine server environment.
+rpyc==6.0.2
+plumbum==2.0.2
+numpy==2.5.3
