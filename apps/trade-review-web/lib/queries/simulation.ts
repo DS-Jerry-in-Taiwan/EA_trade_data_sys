@@ -44,7 +44,12 @@ export async function getTradesWithOhlcRange(params: {
 
   const client = await getPgPool().connect();
   try {
-    // ── Query 1: trade summaries grouped by position_id ──────────────────
+    // ── Query 1: trade summaries grouped by position_id only ──────────────
+    // NOTE: grouping by (position_id, type) splits IN and OUT deals into
+    // separate rows since IN deals carry the OPENING type and OUT deals
+    // carry the OPPOSITE type.  We group by position_id alone and use
+    // FILTER aggregates to collect entry/exit from all rows.  The trade
+    // side is the type of the earliest (opening) deal.
     const tradesResult = await client.query<{
       position_id: number;
       side_raw: string;
@@ -56,16 +61,19 @@ export async function getTradesWithOhlcRange(params: {
     }>(
       `SELECT
          d.position_id,
-         d.type                                              AS side_raw,
-         MIN(d.deal_time) FILTER (WHERE d.entry = 'IN')    AS entry_time,
-         MIN(d.price)    FILTER (WHERE d.entry = 'IN')      AS entry_price,
-         MAX(d.deal_time) FILTER (WHERE d.entry = 'OUT')   AS exit_time,
-         MAX(d.price)    FILTER (WHERE d.entry = 'OUT')     AS exit_price,
-         SUM(d.profit)                                      AS profit
+         (ARRAY_AGG(d.type ORDER BY d.deal_time ASC))[1]   AS side_raw,
+         MIN(d.deal_time) FILTER (WHERE d.entry = 'IN')  AS entry_time,
+         MIN(d.price)    FILTER (WHERE d.entry = 'IN')    AS entry_price,
+         MAX(d.deal_time) FILTER (WHERE d.entry = 'OUT') AS exit_time,
+         MAX(d.price)    FILTER (WHERE d.entry = 'OUT')   AS exit_price,
+         SUM(d.profit)                                   AS profit
        FROM trade_deals d
        WHERE d.symbol = $1
          AND d.deal_time >= $2 AND d.deal_time <= $3
-       GROUP BY d.position_id, d.type
+       GROUP BY d.position_id
+       HAVING
+         MIN(d.deal_time) FILTER (WHERE d.entry = 'IN')  IS NOT NULL
+         AND MAX(d.deal_time) FILTER (WHERE d.entry = 'OUT') IS NOT NULL
        ORDER BY entry_time DESC`,
       [params.symbol, range.from, range.to]
     );

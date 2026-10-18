@@ -61,7 +61,13 @@ class SymbolResolver:
         if logical + 'm' in self._broker_symbols:
             print(f'[SymbolResolver] Fuzzy match: "{logical}" → "{logical + "m"}"')
             return logical + 'm'
-        # ④ 大小寫不敏感
+        # ④ 底線變體（OANDA 風格：XAUUSD ↔ XAU_USD）
+        _no_us = logical.replace('_', '')
+        for _bs in self._broker_symbols:
+            if _bs.replace('_', '') == _no_us:
+                print(f'[SymbolResolver] Underscore match')
+                return _bs
+        # ⑤ 大小寫不敏感
         for bs in self._broker_symbols:
             if bs.lower() == logical.lower():
                 print(f'[SymbolResolver] Case-insensitive match: "{logical}" → "{bs}"')
