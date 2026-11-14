@@ -9,8 +9,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-RESULTS_DIR="/tmp/e2e_results"
+RESULTS_DIR="${E2E_RESULTS_DIR:-/tmp/e2e_results}"
 mkdir -p "$RESULTS_DIR"
+overall_rc=0
 
 LAYERS=(
     "test_infra.py::TestInfrastructure"
@@ -39,6 +40,7 @@ for layer in "${LAYERS[@]}"; do
         echo "  Layer ${layer} PASSED"
     else
         echo "  Layer ${layer} EXIT CODE $rc (some tests may have failed)"
+        overall_rc=1
     fi
     echo ""
 done
@@ -47,7 +49,14 @@ done
 echo "=========================================="
 echo "  Individual Test Summary"
 echo "=========================================="
+set +e
 python3 -m pytest --tb=line -q \
     test_infra.py test_services.py test_api.py \
     test_websocket.py test_data_integrity.py test_monitoring.py \
-    2>&1 || true
+    2>&1 | tee "$RESULTS_DIR/summary.log"
+summary_rc=$?
+set -e
+if [ "$summary_rc" -ne 0 ]; then
+    overall_rc=1
+fi
+exit "$overall_rc"
