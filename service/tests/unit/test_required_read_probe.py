@@ -1,5 +1,7 @@
 import importlib.util
+import json
 from pathlib import Path
+import sys
 
 
 PROBE = Path(__file__).resolve().parents[1] / "e2e" / "required_read_probe.py"
@@ -52,6 +54,40 @@ def test_account_missing_required_data_fails():
     assert probe.classify_probe(200, {"balance": 10}, "account") == {
         "http_status": 200, "outcome": "fail", "reason": "missing_account_fields"
     }
+
+
+def test_account_requires_valid_readable_values():
+    valid = {"login": 123, "server": "Demo", "balance": -1.5, "equity": 0}
+    assert probe.classify_probe(200, valid, "account") == {
+        "http_status": 200, "outcome": "required_pass"
+    }
+    invalid_accounts = (
+        {**valid, "server": ""}, {**valid, "server": []},
+        {**valid, "login": "123"}, {**valid, "login": True}, {**valid, "login": 0},
+        {**valid, "balance": "1"}, {**valid, "balance": True},
+        {**valid, "equity": float("nan")}, {**valid, "equity": float("inf")},
+    )
+    for account in invalid_accounts:
+        result = probe.classify_probe(200, account, "account")
+        assert result == {"http_status": 200, "outcome": "fail",
+                          "reason": "invalid_account_data"}
+
+
+def test_malformed_health_responses_are_unknown_without_raising():
+    for response in (None, {"status": 200, "body": None},
+                     {"status": 200, "body": {"account_session": None}},
+                     {"status": 200, "body": {"account_session": []}}):
+        assert probe.compare_sessions(response, response) == {
+            "outcome": "unknown", "reason": "session_identity_unavailable"
+        }
+
+
+def test_only_demo_health_session_can_certify_required_reads():
+    real = health({**session(), "fingerprint": {"id": "synthetic-session",
+                                                    "account_mode": "REAL"}})
+    unknown_mode = health({**session(), "fingerprint": {"id": "synthetic-session"}})
+    assert probe.compare_sessions(real, real)["outcome"] == "unknown"
+    assert probe.compare_sessions(unknown_mode, unknown_mode)["outcome"] == "unknown"
 
 
 def test_valid_empty_position_and_history_lists_are_readable():
@@ -114,3 +150,20 @@ def test_run_fails_if_health_bracket_observes_a_session_change():
     assert result["outcome"] == "fail"
     assert result["checks"][-1] == {"check": "session_window", "outcome": "fail",
                                    "reason": "session_mismatch"}
+
+
+def test_cli_setup_errors_are_redacted_json(capsys, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["required_read_probe.py", "--base-url", "http://[broken/api/v1"])
+    assert probe.main() == 2
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"outcome": "fail", "reason": "invalid_base_url",
+                                  "mutation_attempted": False}
+    assert "broken" not in output
+
+    monkeypatch.setattr(sys, "argv", ["required_read_probe.py", "--base-url",
+                                      "https://approved.example/api/v1", "--key-env", "bad-name"])
+    assert probe.main() == 2
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"outcome": "fail", "reason": "invalid_key_env",
+                                  "mutation_attempted": False}
+    assert "approved.example" not in output

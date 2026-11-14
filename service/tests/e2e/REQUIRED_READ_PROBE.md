@@ -7,16 +7,26 @@ to `/health`, `/account`, `/positions`, `/history/deals`, and
 `/history/orders`. It reports redacted outcome names and HTTP statuses only.
 It does not print response bodies, account identifiers, or the key.
 
-Example:
+Set `READONLY_API_KEY` in the process environment through the approved secret
+injection mechanism before running this command. Reuse an already injected
+environment value; do not paste the key into a command line or shell history.
+For example, run this from the environment where the operator has already
+provided the key:
 
 ```bash
-READONLY_API_KEY='<operator supplied key>' python3 service/tests/e2e/required_read_probe.py \
+python3 service/tests/e2e/required_read_probe.py \
   --base-url 'https://<approved-host>/api/v1'
 ```
 
 The probe has three overall outcomes: `required_pass`, `fail`, and `unknown`.
 Missing key, non-200 authenticated GET (including 401 and 503), malformed or
 missing account/list data, and a changed health session identity are failures.
+An account read passes only when `login` is a positive integer, `server` is a
+nonempty string, and `balance` and `equity` are finite JSON numbers. Negative
+balances remain valid account data. Certification also requires both health
+samples to report a ready session with a stable fingerprint ID, generation,
+and `account_mode` of `DEMO`; missing, malformed, or non-DEMO session identity
+is `unknown` and cannot certify the read window.
 An empty positions, deals, or orders list is valid: it can describe zero
 exposure or no activity in the requested period. A required probe does not
 silently skip. Health session identity is sampled before and after the read
@@ -46,8 +56,11 @@ greater than five seconds; absence remains `unknown` and stale evidence fails.
 | `market_closed` | Independent approved broker calendar says the relevant market is closed | No quote-freshness claim |
 | optional skip | A separately labeled optional legacy check lacks its optional dependency/service | Never counts as required pass |
 
-The existing broad `service/tests/e2e` suite remains a diagnostic suite, not
-the required-read acceptance command. Its optional skips include unconfigured
+The legacy broad `service/tests/e2e` runner is a diagnostic suite and never
+certifies required reads by itself. The explicit acceptance command is
+`python3 service/tests/e2e/required_read_probe.py --base-url
+<approved-api-url-ending-in-/api/v1>` with the approved key already injected in
+the environment. Its optional skips include unconfigured
 `READONLY_API_KEY` checks in `test_api.py`, optional metrics endpoint checks,
 missing diagnostic log files in service/monitoring checks, missing
 `python-socketio` or an unavailable gateway in WebSocket checks, and absent

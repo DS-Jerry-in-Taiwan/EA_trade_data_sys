@@ -4,7 +4,9 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -30,6 +32,13 @@ def classify_probe(status, body, name):
             return {"http_status": status, "outcome": "fail", "reason": "missing_account_fields"}
         if any(body.get(field) is None for field in ACCOUNT_FIELDS):
             return {"http_status": status, "outcome": "fail", "reason": "missing_account_fields"}
+        login, server = body["login"], body["server"]
+        balance, equity = body["balance"], body["equity"]
+        if (type(login) is not int or login < 1
+                or not isinstance(server, str) or not server.strip()
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) for value in (balance, equity))):
+            return {"http_status": status, "outcome": "fail", "reason": "invalid_account_data"}
         return {"http_status": status, "outcome": "required_pass"}
     if name in REQUIRED_LISTS:
         if not isinstance(body, list):
@@ -43,14 +52,18 @@ def _session_identity(response):
         return None
     body = response.get("body")
     session = body.get("account_session") if isinstance(body, dict) else None
+    if not isinstance(session, dict):
+        return None
     fingerprint = session.get("fingerprint") if isinstance(session, dict) else None
     identifier = fingerprint.get("id") if isinstance(fingerprint, dict) else None
+    account_mode = fingerprint.get("account_mode") if isinstance(fingerprint, dict) else None
     generation = session.get("generation") if isinstance(session, dict) else None
     if (session.get("ready") is not True or session.get("state") != "ready"
             or not isinstance(identifier, str) or not identifier
+            or account_mode != "DEMO"
             or type(generation) is not int or generation < 1):
         return None
-    return identifier, generation
+    return identifier, generation, account_mode
 
 
 def compare_sessions(before, after):
@@ -130,22 +143,31 @@ def main():
     parser.add_argument("--key-env", default="READONLY_API_KEY",
                         help="Environment variable containing the readonly API key")
     args = parser.parse_args()
-    parsed = urllib.parse.urlsplit(args.base_url)
-    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
-            or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or parsed.path.rstrip("/") != "/api/v1"):
+    try:
+        parsed = urllib.parse.urlsplit(args.base_url)
+        valid_url = (parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+                     and not parsed.username and not parsed.password
+                     and not parsed.query and not parsed.fragment
+                     and parsed.path.rstrip("/") == "/api/v1")
+    except (TypeError, ValueError):
+        valid_url = False
+    if not valid_url:
         print(json.dumps({"outcome": "fail", "reason": "invalid_base_url",
+                          "mutation_attempted": False}, sort_keys=True))
+        return 2
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.key_env):
+        print(json.dumps({"outcome": "fail", "reason": "invalid_key_env",
                           "mutation_attempted": False}, sort_keys=True))
         return 2
     key = os.environ.get(args.key_env)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def fetch(path, api_key):
-        request = urllib.request.Request(
-            args.base_url.rstrip("/") + path,
-            headers={"X-API-Key": api_key, "Accept": "application/json"}, method="GET",
-        )
         try:
+            request = urllib.request.Request(
+                args.base_url.rstrip("/") + path,
+                headers={"X-API-Key": api_key, "Accept": "application/json"}, method="GET",
+            )
             with opener.open(request, timeout=10) as response:
                 return response.status, json.loads(response.read(4_000_001))
         except urllib.error.HTTPError as error:
