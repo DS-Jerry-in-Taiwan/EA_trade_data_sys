@@ -21,6 +21,26 @@ permissions, redirect rejection and GET-only CLI transport. No real key or
 MT5 connection is used by these tests. A historical internally consistent
 payload deliberately cannot establish current-UTC or mutation certification.
 
+## Post-review correction validation
+
+The original tag and its historical results above remain unchanged. The PR
+follow-up corrects FIFO key-file blocking with non-blocking open while retaining
+descriptor-based file-type, owner, permission and symlink checks. It also names
+the three loss comparison fields explicitly rather than relying on a slice.
+
+Re-running the command above on the corrected source produced **82 passed,
+24 deselected**. Running only
+`service/tests/unit/test_readonly_recovery_baseline.py` produced **48 passed**.
+The ten additional cases cover rejection of an owner-only FIFO without a writer
+in a bounded subprocess, plus below/equal/above checks for each of the three
+loss comparison fields. The FIFO test failed with a timeout before the fix and
+passed afterward. An independent synthetic CLI check returned exit 2 and a
+redacted setup-failure result for a FIFO. `git diff --check` also passed.
+
+These are offline tests, not a complete service-suite run or deployed-build
+certification. No real credentials, broker connection, grant, gate change or
+mutation was used. The published baseline tag is not moved by this correction.
+
 ## Operational evidence boundary
 
 The 18/18 GET result in the baseline record is a prior observation on the

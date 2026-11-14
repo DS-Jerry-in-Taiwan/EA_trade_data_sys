@@ -3,7 +3,10 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -166,6 +169,18 @@ def test_quote_risk_broker_mismatch():
     assert not result['quote_risk_mapping_match'] and not result['read_only_contract_pass']
 
 
+@pytest.mark.parametrize('field', ['tick_value_loss', 'loss_calculation_buy', 'loss_calculation_sell'])
+@pytest.mark.parametrize('loss_tick_value,accepted', [('1', False), ('2', True), ('3', True)])
+def test_loss_tick_value_covers_each_comparison(field, loss_tick_value, accepted):
+    def fetch(path):
+        status, body = fixture(path)
+        if path.endswith('/risk'):
+            body['data'][field] = '2'
+            body['data']['loss_tick_value'] = loss_tick_value
+        return status, body
+    assert probe.run(fetch)['read_only_contract_pass'] is accepted
+
+
 def test_unavailable_does_not_report_empty_exposure():
     result = probe.run(lambda path: (503, None))
     assert not result['read_only_contract_pass']
@@ -184,6 +199,32 @@ def test_key_file_permissions_and_symlink(tmp_path):
     link.symlink_to(key)
     with pytest.raises(OSError):
         probe.read_key(link)
+
+
+def test_key_file_fifo_is_rejected_without_waiting_for_a_writer(tmp_path):
+    key = tmp_path / 'fifo-key'
+    os.mkfifo(key, 0o600)
+    script = '''
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location('probe', sys.argv[1])
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+try:
+    probe.read_key(sys.argv[2])
+except ValueError:
+    sys.exit(0)
+sys.exit(1)
+'''
+    # subprocess.run kills and reaps a timed-out child, so a regression cannot
+    # leave pytest blocked on the FIFO or leave a child waiting for a writer.
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(Path(probe.__file__)), str(key)],
+            capture_output=True, text=True, timeout=5, check=False)
+        assert result.returncode == 0, result.stderr
+    finally:
+        key.unlink()
 
 
 def test_cli_makes_only_get_requests_and_redacts_key(capsys, monkeypatch):

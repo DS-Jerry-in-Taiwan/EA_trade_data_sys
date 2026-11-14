@@ -81,13 +81,14 @@ def quote_ok(data, symbol, expected, currency, risk=False):
             or not 0 < number(data["bid"]) <= number(data["ask"])):
         return False
     if risk:
+        loss_comparisons = ("tick_value_loss", "loss_calculation_buy", "loss_calculation_sell")
         positive = "loss_tick_value tick_value_loss loss_calculation_buy loss_calculation_sell tick_size point volume_min volume_step".split()
         if (any(number(data[k]) <= 0 for k in positive)
                 or any(number(data[k]) < 0 for k in ("stops_level", "freeze_level"))
                 or currency is None or data["tick_value_currency"] != currency or data["account_currency"] != currency
                 or data["currency_relationship"] != "order_calc_profit_account_currency"
                 or data["loss_value_basis"] != "max_mt5_loss_and_buy_sell_one_tick_loss_per_lot"
-                or number(data["loss_tick_value"]) < max(number(data[k]) for k in positive[1:4])
+                or number(data["loss_tick_value"]) < max(number(data[k]) for k in loss_comparisons)
                 or type(data["entry_deviation_points"]) is not int or type(data["close_deviation_points"]) is not int
                 or data["entry_deviation_points"] != 20 or data["close_deviation_points"] != 20
                 or number(data["deviation_price"]) != number(data["point"])*20
@@ -155,7 +156,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def read_key(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "r", encoding="ascii") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
