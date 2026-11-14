@@ -1,0 +1,29 @@
+# Reference configuration only: contains no account credentials.
+# Confirm every alias against the selected Demo account's live catalog.
+# Select explicitly with TRADE_DATA_CONFIG; this does not change the default.
+connection:
+  mode: terminal
+symbol_aliases:
+  XAUUSDm: XAUUSD
+  EURUSDm: EURUSD
+  GBPUSDm: GBPUSD
+  BTC: BTCUSD
+tick_service:
+  enabled: true
+  symbols: [XAUUSDm, EURUSDm, GBPUSDm, BTC]
+  update_interval_seconds: 60
+  max_age_seconds: 120
+history_service:
+  enabled: true
+  minimum_bars: {M5: 500, M15: 200, H1: 500, D1: 200}
+  fetch_margin_bars: 20
+  symbols:
+    - name: XAUUSDm
+      timeframes: [M5, M15, H1, D1]
+    - name: EURUSDm
+      timeframes: [M5, M15, H1, D1]
+    - name: GBPUSDm
+      timeframes: [M5, M15, H1, D1]
+    - name: BTC
+      timeframes: [M5, M15, H1, D1]
+  update_interval_seconds: 60

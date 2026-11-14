@@ -1,0 +1,28 @@
+{
+  "version": "2026.11.14.1",
+  "tag": "ftmo-readonly-baseline-2026.11.14.1",
+  "classification": "prerelease-readonly-recovery-baseline",
+  "application_base_commit": "afc6a8884c2b66de00feaa0b4b3079e4516fc67f",
+  "data_openapi_version": "4.0.0",
+  "execution_openapi_version": "1.2.0",
+  "execution_schema_version": 1,
+  "mutation_certified": false,
+  "current_utc_freshness_certified": false,
+  "deployment_reproducibility_certified": false,
+  "historical_get_evidence": {
+    "passed_checks": 18,
+    "scope": "structural-readability-session-and-symbol-mapping",
+    "not_a_current_health_guarantee": true
+  },
+  "historical_history_evidence": {
+    "ready_combinations": 11,
+    "total_combinations": 16,
+    "complete": false
+  },
+  "remaining_work": [
+    "broker timestamp provenance and UTC freshness",
+    "historical data completeness",
+    "reviewed source and deployment convergence",
+    "separate mutation authorization and certification"
+  ]
+}
