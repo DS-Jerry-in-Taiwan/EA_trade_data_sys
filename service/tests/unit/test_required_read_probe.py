@@ -95,6 +95,15 @@ def test_valid_empty_position_and_history_lists_are_readable():
         assert probe.classify_probe(200, [], name) == {"http_status": 200, "outcome": "required_pass"}
 
 
+def test_required_lists_reject_non_object_items():
+    malformed_items = ([None], [1], ["x"])
+    for name in ("positions", "deals", "orders"):
+        for body in malformed_items:
+            assert probe.classify_probe(200, body, name) == {
+                "http_status": 200, "outcome": "fail", "reason": "malformed_list_data"
+            }
+
+
 def test_health_session_mismatch_is_failure_but_unknown_is_unknown():
     mismatch = probe.compare_sessions(health(session("before")), health(session("after")))
     assert mismatch == {"outcome": "fail", "reason": "session_mismatch"}
