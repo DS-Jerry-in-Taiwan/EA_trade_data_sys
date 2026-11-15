@@ -43,6 +43,8 @@ def classify_probe(status, body, name):
     if name in REQUIRED_LISTS:
         if not isinstance(body, list):
             return {"http_status": status, "outcome": "fail", "reason": "missing_list_data"}
+        if any(not isinstance(item, dict) for item in body):
+            return {"http_status": status, "outcome": "fail", "reason": "malformed_list_data"}
         return {"http_status": status, "outcome": "required_pass"}
     return {"http_status": status, "outcome": "fail", "reason": "unknown_probe"}
 
