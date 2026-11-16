@@ -7,7 +7,7 @@ from service.config import Settings, load_settings
 from service.infrastructure.ipc.tick_protocol import DEFAULT_SOCKET_PATH, PROTOCOL_VERSION
 from service.infrastructure.mt5.client import MT5Client
 from service.infrastructure.status.component_status import atomic_write_status
-from service.infrastructure.time import normalize_mt5_epoch, normalize_mt5_wire
+from service.config.time import normalize_mt5_epoch
 from service.realtime.publisher import TickPublisher
 from service.realtime.snapshot_store import TickSnapshotStore
 

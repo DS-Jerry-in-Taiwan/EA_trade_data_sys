@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from service.infrastructure.time import (
+from service.config.time import (
     BrokerTimeSettings, BrokerTimeWindow, normalize_mt5_epoch, normalize_mt5_wire, parse_schedule,
 )
 

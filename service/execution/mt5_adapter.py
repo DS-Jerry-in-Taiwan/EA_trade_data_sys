@@ -12,7 +12,7 @@ from service.domain.trades.errors import DealMappingError
 from service.trade_query.mt5_deal_mapper import map_mt5_deal
 from service.infrastructure.mt5.session import AccountSessionGuard, AccountSessionTransition
 from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
-from service.infrastructure.time import BrokerTimeSettings, normalize_mt5_epoch, normalize_mt5_wire
+from service.config.time import BrokerTimeSettings, normalize_mt5_epoch, normalize_mt5_wire
 
 from .contracts import contract_error, decimal_wire, now_wire, restore_order_intent, timestamp_wire, validate_order
 from .errors import AmbiguousMT5Result, ExecutionError, parse_ticket_id
