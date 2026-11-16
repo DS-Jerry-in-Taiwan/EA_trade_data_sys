@@ -13,16 +13,6 @@ def _section(raw: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _broker_time(raw: Mapping[str, Any]) -> BrokerTimeSettings:
-    value = _section(raw, "broker_time")
-    timezone_name = _str(value.get("timezone"), "UTC").strip()
-    source = _str(value.get("source"), "configuration").strip() or "configuration"
-    settings = BrokerTimeSettings(timezone_name, source, parse_schedule(value.get("schedule")))
-    if not settings.schedule and settings.timezone != "UTC":
-        raise ValueError("broker_time requires a validity-bounded schedule")
-    return settings
-
-
 def _str(value: Any, default: str) -> str:
     return value if isinstance(value, str) else default
 
