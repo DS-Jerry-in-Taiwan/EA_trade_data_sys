@@ -55,6 +55,11 @@ history_service:
       timeframes: ["M5", "M15", "H1", "D1"]
   update_interval_seconds: 60
   data_path: "/app/service/data/history"
+  calendar:
+    enabled: false
+    complete: false
+    source: ""
+    revision: ""
 
 api_gateway:
   host: "0.0.0.0"

@@ -44,6 +44,17 @@ paths:
           description: Tick is not available
         '503':
           description: Last Tick is stale
+  /api/v1/rates/status:
+    get:
+      summary: Return versioned persisted-history session metadata
+      description: Reports heartbeat and per-symbol/timeframe cache metadata published by the History Worker.
+      responses:
+        '200':
+          description: History publication status and metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryStatus'
   /api/v1/rates/{symbol}:
     get:
       summary: Return atomically published OHLCV rates
@@ -349,6 +360,133 @@ components:
           type: number
         fresh:
           type: boolean
+    HistoryMetadata:
+      type: object
+      additionalProperties: false
+      description: Persisted-history qualification metadata. Unknown states are invalid and must fail closed.
+      required: [state, logical_symbol, source_symbol, timeframe, bars, minimum_bars, source_exhausted, session_generation, session_state, provenance_id, calendar_revision, effective_from, effective_until, gaps]
+      properties:
+        state:
+          type: string
+          enum: [ready, insufficient, error]
+        logical_symbol:
+          type: string
+          minLength: 1
+          maxLength: 64
+        source_symbol:
+          type: string
+          minLength: 1
+          maxLength: 128
+        timeframe:
+          type: string
+          enum: [M5, M15, H1, D1]
+        bars:
+          type: integer
+          minimum: 0
+        minimum_bars:
+          type: integer
+          minimum: 1
+        source_exhausted:
+          type: boolean
+        session_generation:
+          type: integer
+          minimum: 1
+        session_state:
+          type: string
+          enum: [open, closed, unknown]
+        provenance_id:
+          type: string
+          minLength: 1
+        calendar_revision:
+          type: string
+          minLength: 1
+        effective_from:
+          type: string
+          format: date-time
+          nullable: true
+        effective_until:
+          type: string
+          format: date-time
+          nullable: true
+        gaps:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoryGap'
+    HistoryGap:
+      type: object
+      additionalProperties: false
+      required: [start, end, session_close, session_reopen, classification]
+      properties:
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+        session_close: {type: string, format: date-time, nullable: true}
+        session_reopen: {type: string, format: date-time, nullable: true}
+        classification:
+          type: string
+          enum: [expected_session_break, cache_backfill_gap, unknown]
+    SessionMetadata:
+      type: object
+      additionalProperties: false
+      description: Non-sensitive broker-session lifecycle facts. It contains no account identifier or credential.
+      required: [state, ready, generation]
+      properties:
+        state:
+          type: string
+          enum: [ready, disconnected, switch_detected]
+        ready:
+          type: boolean
+        generation:
+          type: integer
+          minimum: 1
+    HistorySessionMetadata:
+      type: object
+      additionalProperties: false
+      required: [schema_version, history, session]
+      properties:
+        schema_version:
+          type: integer
+          enum: [1]
+        history:
+          $ref: '#/components/schemas/HistoryMetadata'
+        session:
+          $ref: '#/components/schemas/SessionMetadata'
+    HistoryStatus:
+      type: object
+      additionalProperties: false
+      required: [schema_version, status, ready, heartbeat, history, cache_readiness, publication_version]
+      properties:
+        schema_version:
+          type: integer
+          enum: [1]
+        status:
+          type: string
+        ready:
+          type: boolean
+        heartbeat:
+          type: object
+          required: [fresh, state]
+          properties:
+            fresh: {type: boolean}
+            state: {type: string}
+            updated_at: {type: string, format: date-time, nullable: true}
+            age_seconds: {type: number, nullable: true}
+        history:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HistorySessionMetadata'
+        history_sessions:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HistorySessionMetadata'
+        cache_readiness:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HistoryMetadata'
+        provenance_id: {type: string, nullable: true}
+        publication_version: {type: integer, minimum: 0}
+        last_successful_scan: {type: string, format: date-time, nullable: true}
+        last_successful_publish: {type: string, format: date-time, nullable: true}
+        storage_id: {type: string, nullable: true}
     Health:
       type: object
       required: [status, ready, gateway, tick_service, history_service, tick_ipc_connected, symbols_tracked, fresh_symbols, timestamp]
@@ -370,6 +508,9 @@ components:
           $ref: '#/components/schemas/ComponentStatus'
         history_service:
           $ref: '#/components/schemas/ComponentStatus'
+        account_session:
+          type: object
+          description: Non-sensitive health session status; the health payload may include deployment-specific readiness details.
         tick_ipc_connected:
           type: boolean
         symbols_tracked:

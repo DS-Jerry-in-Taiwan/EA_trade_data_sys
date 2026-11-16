@@ -87,6 +87,9 @@ def create_app(context):
     app.register_blueprint(market_data.create_blueprint(
         context.tick_consumer, context.tick_max_age, context.history_query_service,
         context.account_service, context.symbol_names, context.openapi_path,
+        history_status_reader=context.status_reader,
+        history_status_path=context.history_status_path,
+        history_status_max_age=context.history_status_max_age,
     ))
     app.register_blueprint(trade_query.create_blueprint(
         context.account_service,

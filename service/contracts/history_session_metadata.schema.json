@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trade-data.invalid/schemas/history-session-metadata-v1.json",
+  "title": "History and account-session metadata",
+  "description": "Non-sensitive metadata used to qualify persisted history and its broker session. Unknown values are rejected so callers cannot infer readiness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "history", "session"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "history": { "$ref": "#/$defs/history" },
+    "session": { "$ref": "#/$defs/session" }
+  },
+  "$defs": {
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "logical_symbol", "source_symbol", "timeframe", "bars", "minimum_bars", "source_exhausted", "session_generation", "session_state", "provenance_id", "calendar_revision", "effective_from", "effective_until", "gaps"],
+      "properties": {
+        "state": { "type": "string", "enum": ["ready", "insufficient", "error"] },
+        "logical_symbol": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "source_symbol": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "timeframe": { "type": "string", "enum": ["M5", "M15", "H1", "D1"] },
+        "bars": { "type": "integer", "minimum": 0 },
+        "minimum_bars": { "type": "integer", "minimum": 1 },
+        "source_exhausted": { "type": "boolean" },
+        "session_generation": { "type": "integer", "minimum": 1 },
+        "session_state": { "type": "string", "enum": ["open", "closed", "unknown"] },
+        "provenance_id": { "type": "string", "minLength": 1 },
+        "calendar_revision": { "type": "string", "minLength": 1 },
+        "effective_from": { "type": ["string", "null"], "format": "date-time" },
+        "effective_until": { "type": ["string", "null"], "format": "date-time" },
+        "gaps": { "type": "array", "items": { "$ref": "#/$defs/gap" } }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "session_close", "session_reopen", "classification"],
+      "properties": {
+        "start": { "type": "string", "format": "date-time" },
+        "end": { "type": "string", "format": "date-time" },
+        "session_close": { "type": ["string", "null"], "format": "date-time" },
+        "session_reopen": { "type": ["string", "null"], "format": "date-time" },
+        "classification": { "type": "string", "enum": ["expected_session_break", "cache_backfill_gap", "unknown"] }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "ready", "generation"],
+      "properties": {
+        "state": { "type": "string", "enum": ["ready", "disconnected", "switch_detected"] },
+        "ready": { "type": "boolean" },
+        "generation": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

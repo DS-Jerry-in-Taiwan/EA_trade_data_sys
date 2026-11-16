@@ -1,0 +1,178 @@
+{
+  "fixture_version": 1,
+  "calendar": {
+    "source": "synthetic-broker-calendar",
+    "revision": "calendar-2026.11",
+    "daily_breaks": [
+      ["12:00:00", "13:00:00"]
+    ],
+    "holidays": ["2026-11-26"],
+    "early_closes": {
+      "2026-11-27": "18:00:00"
+    }
+  },
+  "observations": {
+    "daily_break": {
+      "symbol": "XAUUSDm",
+      "timeframe": "M5",
+      "start": "2026-11-23T12:10:00Z",
+      "end": "2026-11-23T12:50:00Z",
+      "state": "closed",
+      "reason": "daily_break",
+      "effective_from": "2026-11-23T12:00:00Z",
+      "effective_until": "2026-11-23T13:00:00Z"
+    },
+    "weekend": {
+      "symbol": "EURUSDm",
+      "timeframe": "M15",
+      "start": "2026-11-28T01:00:00Z",
+      "end": "2026-11-28T03:00:00Z",
+      "state": "closed",
+      "reason": "weekend",
+      "effective_from": "2026-11-28T00:00:00Z",
+      "effective_until": "2026-11-29T00:00:00Z"
+    },
+    "holiday": {
+      "symbol": "GBPUSDm",
+      "timeframe": "H1",
+      "start": "2026-11-26T09:00:00Z",
+      "end": "2026-11-26T12:00:00Z",
+      "state": "closed",
+      "reason": "holiday",
+      "effective_from": "2026-11-26T00:00:00Z",
+      "effective_until": "2026-11-27T00:00:00Z"
+    },
+    "early_close": {
+      "symbol": "XAUUSDm",
+      "timeframe": "M15",
+      "start": "2026-11-27T19:00:00Z",
+      "end": "2026-11-27T23:00:00Z",
+      "state": "closed",
+      "reason": "early_close",
+      "effective_from": "2026-11-27T18:00:00Z",
+      "effective_until": "2026-11-28T00:00:00Z"
+    },
+    "open": {
+      "symbol": "XAUUSDm",
+      "timeframe": "M5",
+      "start": "2026-11-23T10:00:00Z",
+      "end": "2026-11-23T11:00:00Z",
+      "state": "open",
+      "reason": "scheduled_open",
+      "effective_from": "2026-11-23T10:00:00Z",
+      "effective_until": "2026-11-23T11:00:00Z"
+    },
+    "unknown": {
+      "symbol": "BTC",
+      "timeframe": "H1",
+      "start": "2026-11-23T10:00:00Z",
+      "end": "2026-11-23T11:00:00Z",
+      "state": "unknown",
+      "reason": "calendar evidence unavailable",
+      "effective_from": "2026-11-23T10:00:00Z",
+      "effective_until": "2026-11-23T11:00:00Z"
+    }
+  },
+  "metadata": {
+    "closed": {
+      "schema_version": 1,
+      "history": {
+        "state": "ready",
+        "logical_symbol": "XAUUSDm",
+        "source_symbol": "XAUUSD.sim",
+        "timeframe": "M5",
+        "bars": 288,
+        "minimum_bars": 100,
+        "source_exhausted": false,
+        "session_generation": 3,
+        "session_state": "closed",
+        "provenance_id": "synthetic-provenance-closed",
+        "calendar_revision": "calendar-2026.11",
+        "effective_from": "2026-11-23T12:00:00Z",
+        "effective_until": "2026-11-23T13:00:00Z",
+        "gaps": [
+          {
+            "start": "2026-11-23T12:10:00Z",
+            "end": "2026-11-23T12:50:00Z",
+            "session_close": "2026-11-23T12:00:00Z",
+            "session_reopen": "2026-11-23T13:00:00Z",
+            "classification": "expected_session_break"
+          }
+        ]
+      },
+      "session": {
+        "state": "disconnected",
+        "ready": false,
+        "generation": 3
+      }
+    },
+    "open": {
+      "schema_version": 1,
+      "history": {
+        "state": "ready",
+        "logical_symbol": "XAUUSDm",
+        "source_symbol": "XAUUSD.sim",
+        "timeframe": "M5",
+        "bars": 288,
+        "minimum_bars": 100,
+        "source_exhausted": false,
+        "session_generation": 4,
+        "session_state": "open",
+        "provenance_id": "synthetic-provenance-open",
+        "calendar_revision": "calendar-2026.11",
+        "effective_from": null,
+        "effective_until": null,
+        "gaps": [
+          {
+            "start": "2026-11-23T10:00:00Z",
+            "end": "2026-11-23T11:00:00Z",
+            "session_close": null,
+            "session_reopen": null,
+            "classification": "cache_backfill_gap"
+          }
+        ]
+      },
+      "session": {
+        "state": "ready",
+        "ready": true,
+        "generation": 4
+      }
+    },
+    "unknown": {
+      "schema_version": 1,
+      "history": {
+        "state": "error",
+        "logical_symbol": "BTC",
+        "source_symbol": "BTC",
+        "timeframe": "H1",
+        "bars": 0,
+        "minimum_bars": 100,
+        "source_exhausted": false,
+        "session_generation": 5,
+        "session_state": "unknown",
+        "provenance_id": "synthetic-provenance-unknown",
+        "calendar_revision": "unknown",
+        "effective_from": null,
+        "effective_until": null,
+        "gaps": [
+          {
+            "start": "2026-11-23T10:00:00Z",
+            "end": "2026-11-23T11:00:00Z",
+            "session_close": null,
+            "session_reopen": null,
+            "classification": "unknown"
+          }
+        ]
+      },
+      "session": {
+        "state": "disconnected",
+        "ready": false,
+        "generation": 5
+      }
+    }
+  },
+  "rejected": {
+    "unknown_calendar_state": "unavailable",
+    "unknown_gap_classification": "guessed"
+  }
+}
