@@ -1,26 +1,20 @@
-"""Convert broker-local MT5 timestamp values into canonical UTC.
-
-The FTMO/OANDA MetaTrader server changes its fixed GMT offset with the
-European DST calendar. The schedule is explicit and validity bounded so a
-quote cannot be treated as fresh when the configured evidence is stale.
-"""
+"""Broker timestamp policy owned by the configuration boundary."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
+from typing import Any
 
 
 @dataclass(frozen=True)
 class BrokerTimeWindow:
-    """A half-open broker wall-clock validity window and fixed GMT offset."""
-
     valid_from: datetime
     valid_until: datetime
     offset_seconds: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.valid_from.tzinfo is not None or self.valid_until.tzinfo is not None:
             raise ValueError("broker schedule boundaries must be naive wall-clock values")
         if self.valid_until <= self.valid_from:
@@ -31,8 +25,6 @@ class BrokerTimeWindow:
 
 @dataclass(frozen=True)
 class BrokerTimeSettings:
-    """Explicit broker timestamp schedule used by quote and tick ingestion."""
-
     timezone: str = "UTC"
     source: str = "configuration"
     schedule: tuple[BrokerTimeWindow, ...] = ()
@@ -41,8 +33,7 @@ class BrokerTimeSettings:
         if wall_clock.tzinfo is not None:
             raise ValueError("wall_clock must be naive")
         if self.schedule:
-            matches = [window for window in self.schedule
-                       if window.valid_from <= wall_clock < window.valid_until]
+            matches = [w for w in self.schedule if w.valid_from <= wall_clock < w.valid_until]
             if len(matches) != 1:
                 raise ValueError("broker timestamp is outside the configured validity schedule")
             return matches[0].offset_seconds
@@ -52,8 +43,6 @@ class BrokerTimeSettings:
 
 
 def normalize_mt5_epoch(value: int | float, settings: BrokerTimeSettings | None = None) -> datetime:
-    """Return an aware UTC datetime for an MT5 server-local epoch value."""
-
     if isinstance(value, bool):
         raise ValueError("MT5 timestamp must be numeric")
     try:
@@ -64,34 +53,27 @@ def normalize_mt5_epoch(value: int | float, settings: BrokerTimeSettings | None 
         raise ValueError("MT5 timestamp must be finite")
     policy = settings or BrokerTimeSettings()
     wall_clock = datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(tzinfo=None)
-    offset = policy.offset_for(wall_clock)
-    return (wall_clock - timedelta(seconds=offset)).replace(tzinfo=timezone.utc)
+    return (wall_clock - timedelta(seconds=policy.offset_for(wall_clock))).replace(tzinfo=timezone.utc)
 
 
 def normalize_mt5_wire(value: int | float, settings: BrokerTimeSettings | None = None) -> str:
-    """Return an ISO-8601 UTC wire timestamp for an MT5 value."""
-
     return normalize_mt5_epoch(value, settings).isoformat().replace("+00:00", "Z")
 
 
-def parse_schedule(raw) -> tuple[BrokerTimeWindow, ...]:
-    """Parse bounded schedule entries from non-secret YAML configuration."""
-
+def parse_schedule(raw: Any) -> tuple[BrokerTimeWindow, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, (list, tuple)) or not raw:
         raise ValueError("broker_time.schedule must be a non-empty list")
-    result = []
+    result: list[BrokerTimeWindow] = []
     for entry in raw:
         if not isinstance(entry, dict):
             raise ValueError("broker_time.schedule entries must be mappings")
         try:
             start = datetime.fromisoformat(str(entry["valid_from"]).replace("Z", "+00:00"))
             end = datetime.fromisoformat(str(entry["valid_until"]).replace("Z", "+00:00"))
-            if start.tzinfo is not None:
-                start = start.replace(tzinfo=None)
-            if end.tzinfo is not None:
-                end = end.replace(tzinfo=None)
+            start = start.replace(tzinfo=None) if start.tzinfo else start
+            end = end.replace(tzinfo=None) if end.tzinfo else end
             offset = int(entry["offset_seconds"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid broker_time.schedule entry") from exc

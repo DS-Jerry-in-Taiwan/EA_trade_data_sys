@@ -233,6 +233,11 @@ def test_package_skeleton_is_importable(module_name):
     assert importlib.import_module(module_name)
 
 
+def test_config_does_not_depend_on_infrastructure_time():
+    source = (SERVICE_ROOT / "config" / "models.py").read_text(encoding="utf-8")
+    assert "service.infrastructure" not in source
+
+
 def test_modular_packages_follow_declared_dependency_direction():
     violations = []
     for owner in sorted(PACKAGES):

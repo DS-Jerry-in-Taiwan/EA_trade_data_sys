@@ -9,6 +9,7 @@ from service.config.loader import (
 from service.config.models import (
     ApiGatewaySettings,
     BrokerTimeSettings,
+    BrokerTimeSettings,
     ConnectionSettings,
     HistoryServiceSettings,
     HistorySymbolSettings,
@@ -20,6 +21,7 @@ from service.config.models import (
 
 __all__ = [
     "ApiGatewaySettings",
+    "BrokerTimeSettings",
     "BrokerTimeSettings",
     "ConnectionSettings",
     "DEFAULT_CONFIG_PATH",
