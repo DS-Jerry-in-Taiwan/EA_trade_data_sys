@@ -187,6 +187,7 @@ class HistoryServiceSettings:
     symbols: tuple[HistorySymbolSettings, ...] = ()
     update_interval_seconds: float = 60.0
     data_path: str = "/app/service/data/history"
+    calendar: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(
@@ -228,6 +229,7 @@ class HistoryServiceSettings:
                 raw.get("update_interval_seconds"), cls.update_interval_seconds
             ),
             data_path=_str(raw.get("data_path"), cls.data_path),
+            calendar=dict(raw.get("calendar", {})) if isinstance(raw.get("calendar"), Mapping) else {},
         )
 
 

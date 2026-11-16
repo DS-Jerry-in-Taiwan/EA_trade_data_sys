@@ -44,6 +44,17 @@ paths:
           description: Tick is not available
         '503':
           description: Last Tick is stale
+  /api/v1/rates/status:
+    get:
+      summary: Return versioned persisted-history session metadata
+      description: Reports heartbeat and per-symbol/timeframe cache metadata published by the History Worker.
+      responses:
+        '200':
+          description: History publication status and metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryStatus'
   /api/v1/rates/{symbol}:
     get:
       summary: Return atomically published OHLCV rates
@@ -426,7 +437,12 @@ components:
           type: boolean
         generation:
           type: integer
-          minimum: 1
+          minimum: 0
+        fingerprint:
+          type: string
+          nullable: true
+        error:
+          type: string
     HistorySessionMetadata:
       type: object
       additionalProperties: false
@@ -439,6 +455,43 @@ components:
           $ref: '#/components/schemas/HistoryMetadata'
         session:
           $ref: '#/components/schemas/SessionMetadata'
+    HistoryStatus:
+      type: object
+      additionalProperties: false
+      required: [schema_version, status, ready, heartbeat, history, cache_readiness, publication_version]
+      properties:
+        schema_version:
+          type: integer
+          enum: [1]
+        status:
+          type: string
+        ready:
+          type: boolean
+        heartbeat:
+          type: object
+          required: [fresh, state]
+          properties:
+            fresh: {type: boolean}
+            state: {type: string}
+            updated_at: {type: string, format: date-time, nullable: true}
+            age_seconds: {type: number, nullable: true}
+        history:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HistorySessionMetadata'
+        history_sessions:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HistorySessionMetadata'
+        cache_readiness:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HistoryMetadata'
+        provenance_id: {type: string, nullable: true}
+        publication_version: {type: integer, minimum: 0}
+        last_successful_scan: {type: string, format: date-time, nullable: true}
+        last_successful_publish: {type: string, format: date-time, nullable: true}
+        storage_id: {type: string, nullable: true}
     Health:
       type: object
       required: [status, ready, gateway, tick_service, history_service, tick_ipc_connected, symbols_tracked, fresh_symbols, timestamp]

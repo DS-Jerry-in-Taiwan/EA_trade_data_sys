@@ -13,6 +13,7 @@ from service.config import Settings, load_settings
 from service.history.repository import history_storage_id
 from service.infrastructure.mt5.client import MT5Client
 from service.infrastructure.mt5.session import AccountSessionTransition
+from service.infrastructure.mt5.calendar import CalendarObservation
 from service.infrastructure.status.component_status import (
     atomic_write_status,
 )
@@ -35,7 +36,7 @@ class HistoryService:
     DEFAULT_FETCH_TIMEOUT_SECONDS = 10
 
     def __init__(self, config_path=None, mt5_client=None,
-                 settings: Settings | None = None):
+                 settings: Settings | None = None, calendar_adapter=None):
         settings = settings or load_settings(config_path)
         cfg = settings.history_service
         self.symbols = [symbol.as_legacy_dict() for symbol in cfg.symbols]
@@ -75,6 +76,7 @@ class HistoryService:
             mt5_client if mt5_client is not None
             else MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
         )
+        self.calendar_adapter = calendar_adapter
         self._resolver_initialized = False
         # MT5Client serializes calls with one lock, so multiple executor workers
         # only accumulate blocked retries. Keep exactly one operation in flight
@@ -93,6 +95,9 @@ class HistoryService:
         self._cycle_published = False
         self._verified_gaps = {}
         self._staged_gaps = {}
+        # Calendar evidence is memoized with the same one-hour horizon as gap
+        # certificates so status metadata remains useful on later refreshes.
+        self._calendar_gap_evidence = {}
         os.makedirs(self.data_path, exist_ok=True)
 
     def _get_timeframe_attr(self, tf_str):
@@ -110,9 +115,23 @@ class HistoryService:
         return self.minimum_bars[timeframe] + self.retention_margin_bars
 
     def _set_status(self, symbol, timeframe, state, **details):
+        generation = details.get('session_generation') or self._session_generation() or 1
         status = {
             'state': state,
+            'logical_symbol': symbol,
+            'source_symbol': details.get('source_symbol') or symbol,
+            'timeframe': timeframe,
             'minimum_bars': self.minimum_bars[timeframe],
+            'bars': int(details.get('bars', 0) or 0),
+            'source_exhausted': bool(details.get('source_exhausted', False)),
+            'session_generation': max(1, int(generation)),
+            # Calendar integration is optional; unknown is explicit and
+            # clients must not infer a market-open state from cache freshness.
+            'session_state': details.get('session_state', 'unknown'),
+            'calendar_revision': details.get('calendar_revision', 'unknown'),
+            'effective_from': details.get('effective_from'),
+            'effective_until': details.get('effective_until'),
+            'gaps': details.get('gaps') if isinstance(details.get('gaps'), list) else [],
             'updated_at': datetime.now(timezone.utc).isoformat(),
             'provenance_id': self.provenance_id,
         }
@@ -257,11 +276,14 @@ class HistoryService:
                   if signature in current_signatures}
         self._staged_gaps[key] = (identity, staged, staged_at)
         remembered_identity, remembered, verified_at = self._verified_gaps.get(key, (None, set(), 0))
+        remembered_metadata = self._calendar_gap_evidence.get(key, {})
         if remembered_identity != identity or time.monotonic() - verified_at >= 3600:
             remembered = set()
             verified_at = time.monotonic()
+            remembered_metadata = {}
         active = set()
         additions = []
+        gap_metadata = []
         duration = self.SUPPORTED_TIMEFRAMES[timeframe]
         deadline = time.monotonic() + self.fetch_timeout_seconds
         calls = 0
@@ -272,11 +294,49 @@ class HistoryService:
             signature = tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
                               for row in (left, right))
             active.add(signature)
+            if signature in remembered_metadata:
+                gap_metadata.append(remembered_metadata[signature])
             if signature in staged:
                 additions.append(staged[signature])
                 continue
             if signature in remembered:
                 continue
+            if self.calendar_adapter is not None:
+                left_time = left['time'].to_pydatetime()
+                right_time = right['time'].to_pydatetime()
+                try:
+                    classify = getattr(self.calendar_adapter, 'classify_gap', None)
+                    if classify is None:
+                        classify = getattr(self.calendar_adapter, 'classify', None)
+                    if classify is None:
+                        raise ValueError('calendar adapter does not implement classify_gap')
+                    observation = classify(symbol, left_time, right_time, timeframe)
+                    if isinstance(observation, dict):
+                        observation = CalendarObservation(**observation)
+                    if not isinstance(observation, CalendarObservation):
+                        raise ValueError('calendar adapter returned invalid observation')
+                    if not observation.covers(left_time, right_time):
+                        raise ValueError('calendar observation does not cover history gap')
+                except Exception as exc:
+                    raise ValueError(f'calendar gap classification failed: {exc}') from exc
+                evidence = {
+                    'start': left_time.isoformat().replace('+00:00', 'Z'),
+                    'end': right_time.isoformat().replace('+00:00', 'Z'),
+                    'state': observation.state,
+                    'reason': observation.reason,
+                    'source': observation.source,
+                    'revision': observation.revision,
+                    'effective_from': observation.effective_from.isoformat().replace('+00:00', 'Z'),
+                    'effective_until': observation.effective_until.isoformat().replace('+00:00', 'Z'),
+                }
+                remembered_metadata[signature] = evidence
+                gap_metadata.append(evidence)
+                if observation.state == 'unknown':
+                    raise ValueError('calendar gap state is unknown')
+                if observation.state == 'closed':
+                    remembered.add(signature)
+                    self._verified_gaps[key] = (identity, remembered, verified_at)
+                    continue
             if calls >= 8 or time.monotonic() >= deadline:
                 raise ValueError('history gap verification budget exhausted')
             if right['time'] - left['time'] > duration * self._retention_count(timeframe) * 32:
@@ -338,9 +398,51 @@ class HistoryService:
                     active.add(tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
                                      for row in (a, b)))
         self._verified_gaps[key] = (identity, active, verified_at if remembered else time.monotonic())
+        self._calendar_gap_evidence[key] = {
+            signature: remembered_metadata[signature]
+            for signature in active
+            if signature in remembered_metadata
+        }
         if not additions:
             return frame
         return self._merge_bars(frame, pd.concat(additions, ignore_index=True), timeframe, now)
+
+    @classmethod
+    def _gap_metadata(cls, frame, timeframe, calendar_evidence=None):
+        """Serialize observed discontinuities for the public metadata contract."""
+        if frame is None or frame.empty or 'time' not in frame:
+            return []
+        duration = cls.SUPPORTED_TIMEFRAMES[timeframe]
+        gaps = []
+        evidence_by_bounds = {
+            (item.get('start'), item.get('end')): item
+            for item in (calendar_evidence or ())
+            if isinstance(item, dict)
+        }
+        ordered = frame.sort_values('time')
+        for left, right in zip(ordered.iloc[:-1].itertuples(), ordered.iloc[1:].itertuples()):
+            if right.time - left.time <= duration:
+                continue
+            start = pd.Timestamp(left.time).isoformat().replace('+00:00', 'Z')
+            end = pd.Timestamp(right.time).isoformat().replace('+00:00', 'Z')
+            evidence = evidence_by_bounds.get((start, end))
+            classification = 'unknown'
+            session_close = session_reopen = None
+            if evidence is not None:
+                if evidence.get('state') == 'closed':
+                    classification = 'expected_session_break'
+                    session_close = evidence.get('effective_from')
+                    session_reopen = evidence.get('effective_until')
+                elif evidence.get('state') == 'open':
+                    classification = 'cache_backfill_gap'
+            gaps.append({
+                'start': start,
+                'end': end,
+                'session_close': session_close,
+                'session_reopen': session_reopen,
+                'classification': classification,
+            })
+        return gaps
 
     @classmethod
     def _validate_bars(cls, frame, timeframe, now):
@@ -633,7 +735,40 @@ class HistoryService:
                         'bars': len(final_df),
                         'source_exhausted': source_exhausted,
                         'source_symbol': broker_symbol,
+                        'gaps': self._gap_metadata(
+                            final_df, tf_str,
+                            self._calendar_gap_evidence.get((symbol, tf_str), {}).values(),
+                        ),
                     }
+                    if not final_df.empty:
+                        details.update({
+                            'effective_from': pd.Timestamp(final_df.iloc[0]['time']).isoformat(),
+                            'effective_until': pd.Timestamp(final_df.iloc[-1]['time']).isoformat(),
+                        })
+                    if self.calendar_adapter is not None:
+                        calendar_evidence = list(
+                            self._calendar_gap_evidence.get((symbol, tf_str), {}).values()
+                        )
+                        details['calendar_gaps'] = calendar_evidence
+                        if calendar_evidence:
+                            revisions = sorted({
+                                str(item.get('revision')) for item in calendar_evidence
+                                if item.get('revision')
+                            })
+                            details['calendar_revision'] = ','.join(revisions) or 'unknown'
+                            states = {item.get('state') for item in calendar_evidence}
+                            details['session_state'] = (
+                                'closed' if states == {'closed'} else
+                                'open' if 'open' in states else 'unknown'
+                            )
+                            windows = [
+                                (item.get('effective_from'), item.get('effective_until'))
+                                for item in calendar_evidence
+                                if item.get('effective_from') and item.get('effective_until')
+                            ]
+                            if windows:
+                                details['effective_from'] = min(item[0] for item in windows)
+                                details['effective_until'] = max(item[1] for item in windows)
                     if details_version is not None:
                         details.update({
                             'provenance_id': self.provenance_id,

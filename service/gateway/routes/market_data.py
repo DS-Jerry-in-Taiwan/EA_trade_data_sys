@@ -16,30 +16,83 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
 
     @bp.get("/api/v1/rates/status")
     def rates_status():
-        """Expose history heartbeat and per-cache readiness independently."""
+        """Return versioned history metadata for every logical cache."""
         if history_status_reader is None or history_status_path is None:
-            return jsonify({
-                "status": "unknown", "ready": False,
-                "heartbeat": {"fresh": False, "state": "unknown"},
-                "cache_readiness": {},
-            })
-        payload = history_status_reader(history_status_path, history_status_max_age)
+            payload = {"state": "unknown", "fresh": False, "sync": {}}
+        else:
+            payload = history_status_reader(history_status_path, history_status_max_age)
         readiness = payload.get("cache_readiness", payload.get("sync", {}))
+        if not isinstance(readiness, dict):
+            readiness = {}
+
+        # Worker status entries are the source of truth for cache metadata.
+        # Normalize legacy entries into the versioned HistorySessionMetadata
+        # shape so clients never have to infer symbol or session identity.
+        sessions = {}
+        cache_readiness = {}
+        for key, item in readiness.items():
+            if not isinstance(item, dict):
+                continue
+            logical, _, timeframe = str(key).partition(":")
+            logical = item.get("logical_symbol") or logical
+            timeframe = item.get("timeframe") or timeframe
+            if not logical or not timeframe:
+                continue
+            try:
+                bars = max(0, int(item.get("bars", 0) or 0))
+                minimum_bars = max(1, int(item.get("minimum_bars", 1) or 1))
+                generation = max(1, int(item.get("session_generation", 1) or 1))
+            except (TypeError, ValueError):
+                # Invalid worker metadata is not exposed as a partially typed
+                # object; publish an explicit error record instead.
+                bars, minimum_bars, generation = 0, 1, 1
+            history = {
+                "state": item.get("state") if item.get("state") in {"ready", "insufficient", "error"} else "error",
+                "logical_symbol": logical,
+                "source_symbol": item.get("source_symbol") or logical,
+                "timeframe": timeframe if timeframe in {"M5", "M15", "H1", "D1"} else "M5",
+                "bars": bars,
+                "minimum_bars": minimum_bars,
+                "source_exhausted": bool(item.get("source_exhausted", False)),
+                "session_generation": generation,
+                "session_state": item.get("session_state") if item.get("session_state") in {"open", "closed", "unknown"} else "unknown",
+                "provenance_id": item.get("provenance_id") or payload.get("provenance_id") or "unknown",
+                "calendar_revision": item.get("calendar_revision") or "unknown",
+                "effective_from": item.get("effective_from"),
+                "effective_until": item.get("effective_until"),
+                "gaps": item.get("gaps") if isinstance(item.get("gaps"), list) else [],
+            }
+            normalized_timeframe = history["timeframe"]
+            session_state = "ready" if history["session_state"] == "open" and history["state"] == "ready" else "disconnected"
+            envelope = {
+                "schema_version": 1,
+                "history": history,
+                "session": {
+                    "state": session_state,
+                    "ready": session_state == "ready",
+                    "generation": history["session_generation"],
+                },
+            }
+            sessions[f"{logical}:{normalized_timeframe}"] = envelope
+            cache_readiness[f"{logical}:{normalized_timeframe}"] = history
+
+        all_ready = bool(cache_readiness) and all(
+            item.get("state") == "ready" for item in cache_readiness.values()
+        )
         heartbeat = {
             "fresh": bool(payload.get("fresh")),
             "state": payload.get("state", "unknown"),
             "updated_at": payload.get("updated_at"),
             "age_seconds": payload.get("age_seconds"),
         }
-        cache_ready = isinstance(readiness, dict) and bool(readiness) and all(
-            isinstance(item, dict) and item.get("state") == "ready"
-            for item in readiness.values()
-        )
         return jsonify({
+            "schema_version": 1,
             "status": payload.get("state", "unknown"),
-            "ready": bool(payload.get("fresh") and cache_ready),
+            "ready": bool(payload.get("fresh") and all_ready),
             "heartbeat": heartbeat,
-            "cache_readiness": readiness,
+            "history": sessions,
+            "history_sessions": sessions,
+            "cache_readiness": cache_readiness,
             "provenance_id": payload.get("provenance_id"),
             "publication_version": payload.get("publication_version", 0),
             "last_successful_scan": payload.get("last_successful_scan"),
