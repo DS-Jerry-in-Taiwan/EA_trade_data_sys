@@ -30,7 +30,11 @@ def test_realtime_worker_is_only_symbol_info_tick_owner():
     # Only the realtime worker owns streaming collection. Execution's
     # on-demand read-only quote is a separate session-bound risk boundary,
     # never a second gateway TickFetcher or stream publisher.
-    assert owners == ["execution/mt5_adapter.py", "realtime/worker.py"]
+    # ``Path.rglob`` does not promise a traversal order. Keep the ownership
+    # contract independent of filesystem ordering while still making sure a
+    # source file is not counted twice by the discovery scan.
+    assert len(owners) == len(set(owners))
+    assert set(owners) == {"execution/mt5_adapter.py", "realtime/worker.py"}
 
 
 def test_snapshot_store_atomically_replaces_latest_file(tmp_path):
