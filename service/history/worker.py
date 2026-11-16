@@ -3,6 +3,8 @@ import tempfile
 import time
 import signal
 import fcntl
+import uuid
+import json
 import pandas as pd
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -81,6 +83,14 @@ class HistoryService:
         self._inflight_future = None
         self._closed = False
         self.sync_status = {}
+        # A process-scoped provenance id makes an old publication observable
+        # after a worker restart.  The version advances only when a cache is
+        # atomically published, while heartbeat status continues independently.
+        self.provenance_id = uuid.uuid4().hex
+        self.publication_version = 0
+        self.last_successful_scan = None
+        self.last_successful_publish = None
+        self._cycle_published = False
         self._verified_gaps = {}
         self._staged_gaps = {}
         os.makedirs(self.data_path, exist_ok=True)
@@ -104,6 +114,7 @@ class HistoryService:
             'state': state,
             'minimum_bars': self.minimum_bars[timeframe],
             'updated_at': datetime.now(timezone.utc).isoformat(),
+            'provenance_id': self.provenance_id,
         }
         status.update(details)
         self.sync_status[(symbol, timeframe)] = status
@@ -114,10 +125,22 @@ class HistoryService:
                 for (symbol, timeframe), status in self.sync_status.items()}
 
     def _publish_status(self, state, **details):
+        heartbeat_at = datetime.now(timezone.utc).isoformat()
+        sync = self.get_sync_status()
         try:
             return atomic_write_status(
                 self.status_path, 'history_service', state,
-                sync=self.get_sync_status(), storage_id=history_storage_id(self.data_path), **details,
+                # ``heartbeat`` is liveness only.  Consumers must use
+                # ``cache_readiness`` for a cache-level readiness decision.
+                heartbeat={'state': 'alive', 'updated_at': heartbeat_at},
+                sync=sync,
+                cache_readiness=sync,
+                storage_id=history_storage_id(self.data_path),
+                provenance_id=self.provenance_id,
+                publication_version=self.publication_version,
+                last_successful_scan=self.last_successful_scan,
+                last_successful_publish=self.last_successful_publish,
+                **details,
             )
         except OSError as exc:
             # A full/read-only runtime directory degrades observability, not
@@ -419,11 +442,15 @@ class HistoryService:
         ready_path = cls._ready_path(filepath)
         if os.path.exists(ready_path):
             os.unlink(ready_path)
+        manifest_path = f'{ready_path}.meta'
+        if os.path.exists(manifest_path):
+            os.unlink(manifest_path)
 
-    @classmethod
-    def _publish_cache(cls, filepath, broker_symbol):
+    def _publish_cache(self, filepath, broker_symbol):
+        cls = type(self)
         directory = os.path.dirname(filepath) or '.'
         temp_path = None
+        manifest_temp = None
         try:
             with tempfile.NamedTemporaryFile(
                 mode='w',
@@ -439,11 +466,33 @@ class HistoryService:
                 os.fsync(temp_file.fileno())
             os.replace(temp_path, cls._ready_path(filepath))
             temp_path = None
+            # Keep the legacy source marker stable for existing readers while
+            # publishing provenance/version in an atomic sidecar manifest.
+            manifest = {
+                'schema_version': 1,
+                'provenance_id': self.provenance_id,
+                'publication_version': self.publication_version + 1,
+                'source_symbol': broker_symbol,
+                'published_at': datetime.now(timezone.utc).isoformat(),
+            }
+            manifest_path = f'{cls._ready_path(filepath)}.meta'
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                             prefix=f'.{os.path.basename(manifest_path)}.',
+                                             suffix='.tmp', dir=directory, delete=False) as manifest_file:
+                manifest_temp = manifest_file.name
+                json.dump(manifest, manifest_file, separators=(',', ':'), sort_keys=True)
+                manifest_file.flush()
+                os.fsync(manifest_file.fileno())
+            os.replace(manifest_temp, manifest_path)
+            manifest_temp = None
         finally:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
+            if manifest_temp and os.path.exists(manifest_temp):
+                os.unlink(manifest_temp)
 
     def fetch_incremental(self, now=None):
+        self._cycle_published = False
         self._publish_status('syncing')
         if self._history_call_running():
             # A timed-out call can still own MT5Client's lock. Do not block on
@@ -570,15 +619,27 @@ class HistoryService:
                             )
                         if status == 'ready':
                             self._publish_cache(filepath, broker_symbol)
+                            self.publication_version += 1
+                            self.last_successful_publish = datetime.now(timezone.utc).isoformat()
+                            self._cycle_published = True
+                            details_version = self.publication_version
                         else:
                             self._invalidate_cache(filepath)
+                            details_version = None
                     else:
                         self._invalidate_cache(filepath)
+                        details_version = None
                     details = {
                         'bars': len(final_df),
                         'source_exhausted': source_exhausted,
                         'source_symbol': broker_symbol,
                     }
+                    if details_version is not None:
+                        details.update({
+                            'provenance_id': self.provenance_id,
+                            'publication_version': details_version,
+                            'last_successful_publish': self.last_successful_publish,
+                        })
                     if generation is not None:
                         details['session_generation'] = generation
                     if rates.empty:
@@ -601,6 +662,9 @@ class HistoryService:
 
         states = [item['state'] for item in self.sync_status.values()]
         state = 'healthy' if states and all(item == 'ready' for item in states) else 'degraded'
+        # A completed scan is independent of cache readiness: a degraded cycle
+        # still records that the worker successfully finished its scan pass.
+        self.last_successful_scan = datetime.now(timezone.utc).isoformat()
         self._publish_status(state)
 
     def run(self):

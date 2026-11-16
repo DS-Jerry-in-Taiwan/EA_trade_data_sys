@@ -1,0 +1,101 @@
+{
+  "fixture_version": 1,
+  "classification": "synthetic_only",
+  "valid": {
+    "schema_version": 1,
+    "history": {
+      "state": "ready",
+      "logical_symbol": "XAUUSDm",
+      "source_symbol": "XAUUSD.sim",
+      "timeframe": "M5",
+      "bars": 288,
+      "minimum_bars": 100,
+      "source_exhausted": false,
+      "session_generation": 3,
+      "session_state": "open",
+      "provenance_id": "synthetic-provenance-1",
+      "calendar_revision": "synthetic-calendar-1",
+      "effective_from": "2026-11-02T00:00:00Z",
+      "effective_until": "2027-03-28T00:00:00Z",
+      "gaps": []
+    },
+    "session": {
+      "state": "ready",
+      "ready": true,
+      "generation": 3
+    }
+  },
+  "fail_closed": {
+    "schema_version": 1,
+    "history": {
+      "state": "error",
+      "logical_symbol": "XAUUSDm",
+      "source_symbol": "XAUUSD.sim",
+      "timeframe": "M5",
+      "bars": 0,
+      "minimum_bars": 100,
+      "source_exhausted": true,
+      "session_generation": 4,
+      "session_state": "unknown",
+      "provenance_id": "synthetic-provenance-2",
+      "calendar_revision": "synthetic-calendar-1",
+      "effective_from": null,
+      "effective_until": null,
+      "gaps": []
+    },
+    "session": {
+      "state": "switch_detected",
+      "ready": false,
+      "generation": 4
+    }
+  },
+  "rejected_unknown_state": {
+    "schema_version": 1,
+    "history": {
+      "state": "unknown",
+      "logical_symbol": "XAUUSDm",
+      "source_symbol": "XAUUSD.sim",
+      "timeframe": "M5",
+      "bars": 288,
+      "minimum_bars": 100,
+      "source_exhausted": false,
+      "session_generation": 3,
+      "session_state": "unknown",
+      "provenance_id": "synthetic-provenance-1",
+      "calendar_revision": "synthetic-calendar-1",
+      "effective_from": null,
+      "effective_until": null,
+      "gaps": []
+    },
+    "session": {
+      "state": "ready",
+      "ready": true,
+      "generation": 3
+    }
+  },
+  "rejected_sensitive_field": {
+    "schema_version": 1,
+    "history": {
+      "state": "ready",
+      "logical_symbol": "XAUUSDm",
+      "source_symbol": "XAUUSD.sim",
+      "timeframe": "M5",
+      "bars": 288,
+      "minimum_bars": 100,
+      "source_exhausted": false,
+      "session_generation": 3,
+      "session_state": "open",
+      "provenance_id": "synthetic-provenance-1",
+      "calendar_revision": "synthetic-calendar-1",
+      "effective_from": null,
+      "effective_until": null,
+      "gaps": [],
+      "account_id": "must-not-be-accepted"
+    },
+    "session": {
+      "state": "ready",
+      "ready": true,
+      "generation": 3
+    }
+  }
+}

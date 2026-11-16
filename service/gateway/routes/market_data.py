@@ -9,8 +9,43 @@ from service.trade_query.contracts import TradeQueryError
 
 
 def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
-                     account_service, symbol_names, openapi_path):
+                     account_service, symbol_names, openapi_path,
+                     history_status_reader=None, history_status_path=None,
+                     history_status_max_age=None):
     bp = Blueprint("market_data", __name__)
+
+    @bp.get("/api/v1/rates/status")
+    def rates_status():
+        """Expose history heartbeat and per-cache readiness independently."""
+        if history_status_reader is None or history_status_path is None:
+            return jsonify({
+                "status": "unknown", "ready": False,
+                "heartbeat": {"fresh": False, "state": "unknown"},
+                "cache_readiness": {},
+            })
+        payload = history_status_reader(history_status_path, history_status_max_age)
+        readiness = payload.get("cache_readiness", payload.get("sync", {}))
+        heartbeat = {
+            "fresh": bool(payload.get("fresh")),
+            "state": payload.get("state", "unknown"),
+            "updated_at": payload.get("updated_at"),
+            "age_seconds": payload.get("age_seconds"),
+        }
+        cache_ready = isinstance(readiness, dict) and bool(readiness) and all(
+            isinstance(item, dict) and item.get("state") == "ready"
+            for item in readiness.values()
+        )
+        return jsonify({
+            "status": payload.get("state", "unknown"),
+            "ready": bool(payload.get("fresh") and cache_ready),
+            "heartbeat": heartbeat,
+            "cache_readiness": readiness,
+            "provenance_id": payload.get("provenance_id"),
+            "publication_version": payload.get("publication_version", 0),
+            "last_successful_scan": payload.get("last_successful_scan"),
+            "last_successful_publish": payload.get("last_successful_publish"),
+            "storage_id": payload.get("storage_id"),
+        })
 
     @bp.get("/api/v1/ticks/<symbol>")
     def get_tick(symbol):
