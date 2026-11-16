@@ -6,6 +6,19 @@ connection:
   port: 8001
   timeout: 10
 
+# FTMO/OANDA MetaTrader server timestamps are local wall-clock values.
+# The platform schedule is validity bounded; unknown periods fail closed.
+broker_time:
+  timezone: "FTMO/OANDA MetaTrader"
+  source: "FTMO/OANDA platform trading update schedule"
+  schedule:
+    - valid_from: "2026-03-29T00:00:00"
+      valid_until: "2026-11-02T00:00:00"
+      offset_seconds: 10800
+    - valid_from: "2026-11-02T00:00:00"
+      valid_until: "2027-03-28T00:00:00"
+      offset_seconds: 7200
+
 # Keep public API/cache names in the service sections below. Configure exact
 # broker names here only when the catalog has ambiguous/other naming schemes.
 # Each alias is checked against the connected account's catalog; missing aliases

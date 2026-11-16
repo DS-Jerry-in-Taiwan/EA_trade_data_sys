@@ -7,6 +7,7 @@ from service.config import Settings, load_settings
 from service.infrastructure.ipc.tick_protocol import DEFAULT_SOCKET_PATH, PROTOCOL_VERSION
 from service.infrastructure.mt5.client import MT5Client
 from service.infrastructure.status.component_status import atomic_write_status
+from service.infrastructure.time import normalize_mt5_epoch, normalize_mt5_wire
 from service.realtime.publisher import TickPublisher
 from service.realtime.snapshot_store import TickSnapshotStore
 
@@ -20,6 +21,7 @@ class TickService:
         settings = settings or load_settings(config_path)
         cfg = settings.tick_service
         self.symbols = list(cfg.symbols)
+        self.broker_time = settings.broker_time
         self.interval = cfg.update_interval_seconds
         self.output_dir = cfg.output_dir
         self.socket_path = cfg.socket_path or DEFAULT_SOCKET_PATH
@@ -74,7 +76,7 @@ class TickService:
                         source_timestamp = getattr(tick, 'time', None)
                     received_at = datetime.now(timezone.utc).isoformat()
                     source_time = (
-                        datetime.fromtimestamp(source_timestamp, timezone.utc).isoformat()
+                        normalize_mt5_epoch(source_timestamp, self.broker_time).isoformat()
                         if source_timestamp else received_at
                     )
                     result[symbol] = {

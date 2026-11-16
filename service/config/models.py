@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
+from service.infrastructure.time import BrokerTimeSettings, parse_schedule
+
 
 def _section(raw: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     value = raw.get(name, {})
@@ -100,6 +102,16 @@ class ConnectionSettings:
             port=_int(raw.get("port"), cls.port),
             timeout=timeout,
         )
+
+
+def _broker_time(raw: Mapping[str, Any]) -> BrokerTimeSettings:
+    value = _section(raw, "broker_time")
+    timezone_name = _str(value.get("timezone"), "UTC").strip()
+    source = _str(value.get("source"), "configuration").strip() or "configuration"
+    settings = BrokerTimeSettings(timezone=timezone_name, source=source, schedule=parse_schedule(value.get("schedule")))
+    if not settings.schedule and settings.timezone != "UTC":
+        raise ValueError("broker_time requires a validity-bounded schedule")
+    return settings
 
 
 @dataclass(frozen=True)
@@ -262,6 +274,7 @@ class RuntimeSettings:
 @dataclass(frozen=True)
 class Settings:
     connection: ConnectionSettings = field(default_factory=ConnectionSettings)
+    broker_time: BrokerTimeSettings = field(default_factory=BrokerTimeSettings)
     tick_service: TickServiceSettings = field(default_factory=TickServiceSettings)
     history_service: HistoryServiceSettings = field(default_factory=HistoryServiceSettings)
     api_gateway: ApiGatewaySettings = field(default_factory=ApiGatewaySettings)
@@ -276,6 +289,7 @@ class Settings:
             connection=ConnectionSettings.from_mapping(
                 _section(raw, "connection"), environ=environ
             ),
+            broker_time=_broker_time(raw),
             tick_service=TickServiceSettings.from_mapping(
                 _section(raw, "tick_service"), environ=environ
             ),
