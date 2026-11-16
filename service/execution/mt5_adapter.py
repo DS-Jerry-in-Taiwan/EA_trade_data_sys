@@ -12,6 +12,7 @@ from service.domain.trades.errors import DealMappingError
 from service.trade_query.mt5_deal_mapper import map_mt5_deal
 from service.infrastructure.mt5.session import AccountSessionGuard, AccountSessionTransition
 from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+from service.infrastructure.time import BrokerTimeSettings, normalize_mt5_epoch, normalize_mt5_wire
 
 from .contracts import contract_error, decimal_wire, now_wire, restore_order_intent, timestamp_wire, validate_order
 from .errors import AmbiguousMT5Result, ExecutionError, parse_ticket_id
@@ -59,11 +60,18 @@ def _source_ticket(value, resource):
 
 
 class MT5ExecutionAdapter:
-    def __init__(self, mt5_client, resolver_symbols=()):
+    def __init__(self, mt5_client, resolver_symbols=(), broker_time=None):
         self.client = mt5_client
         self.resolver_symbols = tuple(resolver_symbols)
+        self.broker_time = broker_time or BrokerTimeSettings()
         self.idempotency_store = None
         self._read_session = ContextVar("execution_read_session", default=None)
+
+    def _timestamp_wire(self, value):
+        try:
+            return normalize_mt5_wire(value, self.broker_time)
+        except (TypeError, ValueError, OverflowError, OSError) as exc:
+            raise contract_error() from exc
 
     def bind_idempotency_store(self, store):
         self.idempotency_store = store
@@ -375,10 +383,14 @@ class MT5ExecutionAdapter:
             if type(milliseconds) is not int or milliseconds <= 0:
                 raise contract_error()
             observed = datetime.now(timezone.utc)
-            age = Decimal(str(observed.timestamp())) - Decimal(milliseconds) / 1000
+            try:
+                quote_at = normalize_mt5_epoch(milliseconds / 1000, self.broker_time)
+            except (TypeError, ValueError, OverflowError, OSError) as exc:
+                raise contract_error() from exc
+            age = Decimal(str(observed.timestamp())) - Decimal(str(quote_at.timestamp()))
             result = {
                 "symbol": logical_symbol, "broker_symbol": native,
-                "bid": bid, "ask": ask, "quote_at": timestamp_wire(milliseconds / 1000),
+                "bid": bid, "ask": ask, "quote_at": quote_at.isoformat().replace("+00:00", "Z"),
                 "observed_at": observed.isoformat().replace("+00:00", "Z"),
                 "age_seconds": str(age), "max_age_seconds": 5,
                 "fresh": 0 <= age <= 5,
@@ -431,7 +443,7 @@ class MT5ExecutionAdapter:
             if identity(before) != identity(after):
                 raise ExecutionError("account_session_transition", "Session changed during quote/risk observation", status=503)
             completed = datetime.now(timezone.utc)
-            final_age = Decimal(str(completed.timestamp())) - Decimal(milliseconds) / 1000
+            final_age = Decimal(str(completed.timestamp())) - Decimal(str(quote_at.timestamp()))
             result.update(observed_at=completed.isoformat().replace("+00:00", "Z"),
                           age_seconds=str(final_age), fresh=bool(0 <= final_age <= 5))
             if risk:
