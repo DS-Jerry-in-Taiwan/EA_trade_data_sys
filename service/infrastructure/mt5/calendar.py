@@ -171,11 +171,15 @@ BrokerCalendarAdapter = BrokerSessionCalendarAdapter
 
 def calendar_from_mapping(raw: Mapping | None) -> BrokerSessionCalendar | UnknownCalendar:
     """Build a calendar adapter from non-secret typed deployment settings."""
-    if not isinstance(raw, Mapping) or not raw.get("enabled", False):
+    if not isinstance(raw, Mapping) or not raw.get("enabled", False) or not raw.get("complete", False):
         return UnknownCalendar()
     source = raw.get("source")
     revision = raw.get("revision")
     if not isinstance(source, str) or not source.strip() or not isinstance(revision, str) or not revision.strip():
+        return UnknownCalendar()
+    daily_breaks = raw.get("daily_breaks", ())
+    holidays = raw.get("holidays", ())
+    if not isinstance(daily_breaks, (list, tuple)) or not isinstance(holidays, (list, tuple)):
         return UnknownCalendar()
     return BrokerSessionCalendarAdapter(
         source=source.strip(), revision=revision.strip(),

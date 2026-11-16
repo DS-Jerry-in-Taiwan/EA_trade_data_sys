@@ -5,6 +5,7 @@ import os
 from flask import Blueprint, jsonify, request, send_file
 
 from service.gateway.websocket import public_tick
+from service.contracts.history_session_metadata import MetadataContractError, validate_history_session_metadata
 from service.trade_query.contracts import TradeQueryError
 
 
@@ -18,7 +19,8 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
     def rates_status():
         """Return versioned history metadata for every logical cache."""
         if history_status_reader is None or history_status_path is None:
-            payload = {"state": "unknown", "fresh": False, "sync": {}}
+            return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                            "error": "history_metadata_unavailable"}), 503
         else:
             payload = history_status_reader(history_status_path, history_status_max_age)
         readiness = payload.get("cache_readiness", payload.get("sync", {}))
@@ -32,7 +34,8 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
         cache_readiness = {}
         for key, item in readiness.items():
             if not isinstance(item, dict):
-                continue
+                return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                "error": "invalid_history_metadata"}), 503
             logical, _, timeframe = str(key).partition(":")
             logical = item.get("logical_symbol") or logical
             timeframe = item.get("timeframe") or timeframe
@@ -43,14 +46,19 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
                 minimum_bars = max(1, int(item.get("minimum_bars", 1) or 1))
                 generation = max(1, int(item.get("session_generation", 1) or 1))
             except (TypeError, ValueError):
-                # Invalid worker metadata is not exposed as a partially typed
-                # object; publish an explicit error record instead.
-                bars, minimum_bars, generation = 0, 1, 1
+                return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                "error": "invalid_history_metadata"}), 503
+            if timeframe not in {"M5", "M15", "H1", "D1"}:
+                return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                "error": "invalid_history_metadata"}), 503
+            if item.get("state") not in {"ready", "insufficient", "error"}:
+                return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                "error": "invalid_history_metadata"}), 503
             history = {
-                "state": item.get("state") if item.get("state") in {"ready", "insufficient", "error"} else "error",
+                "state": item["state"],
                 "logical_symbol": logical,
                 "source_symbol": item.get("source_symbol") or logical,
-                "timeframe": timeframe if timeframe in {"M5", "M15", "H1", "D1"} else "M5",
+                "timeframe": timeframe,
                 "bars": bars,
                 "minimum_bars": minimum_bars,
                 "source_exhausted": bool(item.get("source_exhausted", False)),
@@ -73,6 +81,11 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
                     "generation": history["session_generation"],
                 },
             }
+            try:
+                validate_history_session_metadata(envelope)
+            except MetadataContractError:
+                return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                "error": "invalid_history_metadata"}), 503
             sessions[f"{logical}:{normalized_timeframe}"] = envelope
             cache_readiness[f"{logical}:{normalized_timeframe}"] = history
 

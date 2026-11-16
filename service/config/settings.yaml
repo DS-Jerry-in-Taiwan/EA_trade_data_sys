@@ -57,6 +57,7 @@ history_service:
   data_path: "/app/service/data/history"
   calendar:
     enabled: false
+    complete: false
     source: ""
     revision: ""
 

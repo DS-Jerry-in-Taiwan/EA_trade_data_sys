@@ -437,12 +437,7 @@ components:
           type: boolean
         generation:
           type: integer
-          minimum: 0
-        fingerprint:
-          type: string
-          nullable: true
-        error:
-          type: string
+          minimum: 1
     HistorySessionMetadata:
       type: object
       additionalProperties: false
@@ -514,7 +509,8 @@ components:
         history_service:
           $ref: '#/components/schemas/ComponentStatus'
         account_session:
-          $ref: '#/components/schemas/SessionMetadata'
+          type: object
+          description: Non-sensitive health session status; the health payload may include deployment-specific readiness details.
         tick_ipc_connected:
           type: boolean
         symbols_tracked:
