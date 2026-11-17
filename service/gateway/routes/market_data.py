@@ -106,8 +106,21 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
             sessions[f"{logical}:{normalized_timeframe}"] = envelope
             cache_readiness[f"{logical}:{normalized_timeframe}"] = history
 
+        # Aggregate readiness is deliberately stricter than the worker's
+        # cache state.  A cache can contain enough bars while its broker
+        # session or calendar evidence is still unknown; exposing that as a
+        # ready history snapshot would let consumers bypass fail-closed
+        # admission.  Backfill gaps also remain unqualified until the worker
+        # publishes an evidence-backed session break classification.
         all_ready = bool(cache_readiness) and all(
-            item.get("state") == "ready" for item in cache_readiness.values()
+            item.get("state") == "ready"
+            and item.get("session_state") != "unknown"
+            and item.get("calendar_revision") != "unknown"
+            and all(
+                gap.get("classification") == "expected_session_break"
+                for gap in item.get("gaps", [])
+            )
+            for item in cache_readiness.values()
         )
         heartbeat = {
             "fresh": bool(payload.get("fresh")),
