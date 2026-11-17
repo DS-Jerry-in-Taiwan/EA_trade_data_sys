@@ -1,7 +1,7 @@
 # MT5 Trade Data Downloader (Linux/Docker)
 
-**版本**: v3.0 (2026-09-28)
-**描述**: 單一 repository、單一 application image 的 MT5 資料服務。部署使用 `mt5-server` 與 `trade-data-service` 兩個容器；後者由 supervisor 管理三個職責分離的 process。
+**版本**: v3.1.0 (2026-11-16)
+**描述**: 單一 repository、單一 application image 的 MT5 交易資料與受控執行服務。部署使用 `mt5-server`、`trade-data-service` 與 `execution-service` 三個容器；資料服務由 supervisor 管理三個職責分離的 process。
 
 ---
 
@@ -19,7 +19,7 @@
 └───────────────────────────┼─────────────────────────┘
                             │ RPyC
 ┌───────────────────────────┼─────────────────────────┐
-│ trade-data-service (one container, supervised)       │
+│ trade-data-service (:8090, one container, supervised)│
 │  ┌───────────────────┐    │  tick NDJSON             │
 │  │ Tick Service      │◄───┘──▶ Unix socket ─────┐    │
 │  │ sole tick poller  │                         │    │
@@ -31,6 +31,12 @@
 │                         persisted history             │
 │  Supervisor: starts all 3, forwards shutdown, fails   │
 │  the container lifecycle when any child exits.        │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│ execution-service (:8091)                            │
+│  execution contract, auth/idempotency stores          │
+│  mutation disabled by default (fail-closed)           │
 └──────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────┐
@@ -50,7 +56,8 @@
 | TickService | Python | 唯一週期性 tick poller，透過 `/run/trade-data/ticks.sock` 發佈 versioned NDJSON |
 | HistoryService | Python | 獨立背景 worker；增量抓取、合併、去重並原子發佈 CSV 與 ready marker |
 | AccountService | Python | 帳戶資訊、持倉、委託、成交歷史查詢 |
-| API Gateway | Python (Flask) | REST API + WebSocket (Flask-SocketIO) Port 8090 |
+| API Gateway | Python (Flask) | REST API + WebSocket (Flask-SocketIO), port 8090 |
+| Execution Service | Python (Flask) | separately gated execution contract, port 8091 |
 | Trade ETL | Python | 只讀交易資料 + OHLC CSV 匯入 PostgreSQL (`service/etl/trade_etl.py`) |
 | PostgreSQL | SQL | `trade_analytics` 交易分析資料庫 |
 | Grafana | Dashboard | 交易績效與 K 線報表 |
@@ -58,11 +65,13 @@
 ### 資料與連線生命週期
 
 1. `mt5-server` 等待 Wine terminal ready，才啟動容器內的 RPyC bridge。
-2. `trade-data-service` 啟動時從 bind-mounted `mt5docker/requirements.txt` 安裝依賴；依賴不是 baked 進 image。
-3. PID 1 supervisor 啟動 Tick Service、History Worker、API Gateway 三個 process。各 process 經 `MT5Client` 自行建立及重試 RPyC 連線。
-4. Tick Service 建立 Unix socket 並持續輪詢 MT5。Gateway 的 consumer 連線後先收到 snapshot，再接收 live tick；斷線時以 bounded backoff 重連。外部 client 只連 Gateway：REST 讀取最新 snapshot，Socket.IO client `subscribe` 後由 Gateway push，WebSocket 本身不會輪詢。
-5. History Worker 寫入暫存檔並原子替換 persisted CSV；Gateway 只透過 repository 讀取已完成資料，不會在歷史查詢 request 中同步呼叫 MT5。
-6. 收到 `SIGTERM`/`SIGINT` 時 supervisor 要求三個 child graceful shutdown，逾時才強制終止；任何 child 意外退出會停止其餘 child 並讓容器非零退出。
+2. Compose 在 `mt5-server` 可用後啟動 `trade-data-service`（port 8090）與 `execution-service`（port 8091）。
+3. `trade-data-service` 啟動時從 bind-mounted `mt5docker/requirements.txt` 安裝依賴；依賴不是 baked 進 image。
+4. PID 1 supervisor 啟動 Tick Service、History Worker、API Gateway 三個 process。各 process 經 `MT5Client` 自行建立及重試 RPyC 連線。
+5. Tick Service 建立 Unix socket 並持續輪詢 MT5。Gateway 的 consumer 連線後先收到 snapshot，再接收 live tick；斷線時以 bounded backoff 重連。外部 client 只連 Gateway：REST 讀取最新 snapshot，Socket.IO client `subscribe` 後由 Gateway push，WebSocket 本身不會輪詢。
+6. History Worker 寫入暫存檔並原子替換 persisted CSV；Gateway 只透過 repository 讀取已完成資料，不會在歷史查詢 request 中同步呼叫 MT5。
+7. `execution-service` 使用獨立的 execution interface 與 durable authorization/idempotency stores；`EXECUTION_MUTATION_ENABLED=false` 時只允許唯讀合約，任何 mutation 皆 fail-closed。
+8. 收到 `SIGTERM`/`SIGINT` 時 supervisor 要求三個 child graceful shutdown，逾時才強制終止；任何 child 意外退出會停止其餘 child 並讓容器非零退出。
 
 `/api/v1/health` 的 `ready` 只由即時資料 critical path 決定：IPC 已連線、Tick Service status 新鮮健康，且所有設定 symbol 都有 fresh tick。History Worker 異常會回報 `status: degraded`，但不阻塞即時資料 readiness；即時路徑未 ready 則 HTTP 503。health handler 不會觸發 MT5/RPyC request。
 
@@ -80,6 +89,9 @@
 | GET | `/api/v1/openapi.yaml` | OpenAPI v3 規格文件 |
 | Socket.IO | `/socket.io` | 連線後以 `subscribe`/`unsubscribe` 管理即時 tick 推送 |
 
+`trade-data-service` 對外只提供 GET/read-only evidence。`execution-service` 的 execution
+contract 在 port 8091；mutation 預設停用，未經明確授權不會送出、取消或平倉請求。
+
 ### 只讀交易查詢 API
 
 以下端點需要 `X-API-Key` header，key 由 `READONLY_API_KEY` 環境變數提供。
@@ -96,7 +108,8 @@
 ### API 存取位址
 
 ```
-主機位址: http://<YOUR_HOST_IP>:8090
+資料 API: http://<YOUR_HOST_IP>:8090
+執行 API: http://<YOUR_HOST_IP>:8091
 ```
 
 > **注意**：請將 `<YOUR_HOST_IP>` 替換為實際主機 IP（可使用 `hostname -I` 或 `ip route get 8.8.8.8 | grep src` 查詢）。
@@ -233,6 +246,22 @@ docker exec trade-data-service wine python /app/download.py
 - **Broker**: Exness（SymbolResolver 自動解析）
 - **Readonly API Key**: 由 `READONLY_API_KEY` 環境變數注入，不提交 Git
 
+## v3.1.0 evidence 與限制
+
+- Execution read-only diagnostic：18/18 structural GET checks 通過；未執行任何 order、cancel 或 close mutation。
+- Data read-only evidence：7/7 GET checks 通過；這是觀測快照，不代表持續運行或 broker freshness 已認證。
+- Offline full service suite：756 passed、1 skipped、7 baseline configuration failures。失敗項目保留為 baseline 訊號，不以文件宣稱為通過。
+- `broker_time` 使用 validity-bounded FTMO/OANDA platform schedule：GMT+3 適用於 `[2026-03-29, 2026-11-02)`，GMT+2 適用於 `[2026-11-02, 2027-03-28)`；超出範圍或無法匹配時 fail closed，不從 symbol、週末或 stale quote 推論偏移。
+- 歷史完整性與 broker calendar 仍未完成：history blocker `#82`、calendar blockers `#80`/`#81` 保持 open。
+
+### Source、deployment、runtime state 責任
+
+| 責任 | 路徑/介面 | 說明 |
+|:-----|:----------|:-----|
+| Source | `service/`, `core/`, `apps/` | 應用程式、execution interface、資料與連線邏輯的版本化來源 |
+| Deployment | `mt5docker/compose.yaml`, `mt5docker/start_*.sh`, `service/config/` | 三容器拓撲、port 8090/8091、非敏感 selector 與啟動生命週期 |
+| Runtime state | `service/data/`, `/run/trade-data`, deployment-managed `runtime/execution/`, persistent MT5 data mount | tick/history 快取、IPC/status、execution authorization/idempotency state 與 terminal state；需由部署保留，不提交 secrets 或 raw account identity |
+
 ---
 
 ## 版本歷程
@@ -244,7 +273,8 @@ docker exec trade-data-service wine python /app/download.py
 | v1.2 | 2026-05-16 | E2E 測試框架 (50 tests) |
 | **v2.0** | **2026-05-17** | MT5Client 統一連線管理、HistoryService 穩定化 (83 行, -98% cycle time)、4 商品全追蹤 |
 | **v2.1** | **2026-06-13** | 只讀交易查詢 API、PostgreSQL ETL、Grafana 交易分析管道 |
+| **v3.1.0** | **2026-11-16** | 三容器 execution service、8091 execution contract、GET-only evidence、validity-bounded broker timestamp policy；history/calendar blockers 仍開放 |
 
 ---
 
-*README v2.1 — Updated 2026-06-13*
+*README v3.1.0 — Updated 2026-11-16*
