@@ -47,6 +47,31 @@ def test_rates_status_projects_versioned_metadata_per_cache():
     assert body["publication_version"] == 7
 
 
+def test_rates_status_publishes_error_record_without_marking_ready():
+    """Worker diagnostics are allowed, while required metadata stays intact."""
+    payload = {
+        "state": "healthy", "fresh": True,
+        "cache_readiness": {
+            "XAUUSDm:M5": {
+                "state": "error", "logical_symbol": "XAUUSDm",
+                "source_symbol": "XAUUSD.sim", "timeframe": "M5",
+                "bars": 0, "minimum_bars": 100,
+                "source_exhausted": False, "session_generation": 3,
+                "session_state": "unknown", "provenance_id": "proc-1",
+                "calendar_revision": "unknown", "effective_from": None,
+                "effective_until": None, "gaps": [],
+                "detail": "MT5 returned no history bars",
+            }
+        },
+    }
+    with _client_for(payload) as client:
+        response = client.get("/api/v1/rates/status")
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["ready"] is False
+    assert body["history"]["XAUUSDm:M5"]["history"]["state"] == "error"
+
+
 def _app_with_readiness(readiness):
     app = Flask(__name__)
     payload = {"state": "healthy", "fresh": True, "cache_readiness": readiness}
