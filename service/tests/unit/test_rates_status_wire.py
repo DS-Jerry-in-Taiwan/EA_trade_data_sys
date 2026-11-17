@@ -5,6 +5,18 @@ import pytest
 from service.gateway.routes.market_data import create_blueprint
 
 
+def _client_for(payload):
+    app = Flask(__name__)
+    app.register_blueprint(create_blueprint(
+        SimpleNamespace(get=lambda _: None, is_fresh=lambda *_: False), 30,
+        SimpleNamespace(get_rates=lambda *args, **kwargs: {}),
+        SimpleNamespace(get_symbols=lambda _: []), [], "/missing",
+        history_status_reader=lambda *_: payload,
+        history_status_path="status.json", history_status_max_age=30,
+    ))
+    return app.test_client()
+
+
 def test_rates_status_projects_versioned_metadata_per_cache():
     app = Flask(__name__)
     payload = {
