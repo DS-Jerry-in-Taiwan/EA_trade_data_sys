@@ -46,7 +46,15 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
                 "session_state", "provenance_id", "calendar_revision",
                 "effective_from", "effective_until", "gaps",
             }
-            if set(item) != required or not separator:
+            # Worker records may carry explicitly documented operational
+            # diagnostics.  They are not part of the public envelope, but
+            # must be allow-listed so an accidental field cannot bypass the
+            # wire contract.  In particular, error records carry ``detail``.
+            operational = {
+                "updated_at", "detail", "publication_version",
+                "last_successful_publish", "calendar_gaps",
+            }
+            if not required <= set(item) or bool(set(item) - required - operational) or not separator:
                 return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
                                 "error": "invalid_history_metadata"}), 503
             logical = item.get("logical_symbol")
