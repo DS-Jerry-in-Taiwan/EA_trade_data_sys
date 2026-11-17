@@ -17,11 +17,27 @@ from typing import Iterable, Literal, Mapping, Protocol
 CalendarState = Literal["open", "closed", "unknown"]
 
 
-def _utc(value: datetime, name: str) -> datetime:
+def normalize_utc(value: datetime | str, name: str = "value") -> datetime:
+    """Normalize an aware datetime/ISO timestamp to a UTC instant.
+
+    Wire producers are allowed to use either ``Z`` or an explicit offset;
+    comparisons must use the instant rather than the source spelling.
+    Naive timestamps are rejected so local wall-clock values cannot silently
+    enter the calendar contract.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a valid ISO timestamp") from exc
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError(f"{name} must be timezone-aware UTC datetime")
     result = value.astimezone(timezone.utc)
     return result
+
+
+def _utc(value: datetime, name: str) -> datetime:
+    return normalize_utc(value, name)
 
 
 @dataclass(frozen=True)
@@ -179,11 +195,41 @@ def calendar_from_mapping(raw: Mapping | None) -> BrokerSessionCalendar | Unknow
         return UnknownCalendar()
     daily_breaks = raw.get("daily_breaks", ())
     holidays = raw.get("holidays", ())
+    early_closes = raw.get("early_closes", {})
     if not isinstance(daily_breaks, (list, tuple)) or not isinstance(holidays, (list, tuple)):
+        return UnknownCalendar()
+    if not isinstance(early_closes, Mapping):
+        return UnknownCalendar()
+    try:
+        # Settings are deliberately parsed at the boundary.  Passing the raw
+        # strings through would make ``_window`` fail only when a gap happens
+        # to hit a rule, and silently dropping them (the old behaviour) made a
+        # configured calendar look authoritative while classifying every gap
+        # as open.
+        parsed_breaks: list[tuple[clock_time, clock_time]] = []
+        for entry in daily_breaks:
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                return UnknownCalendar()
+            start, end = (clock_time.fromisoformat(value) if isinstance(value, str) else value for value in entry)
+            if not isinstance(start, clock_time) or not isinstance(end, clock_time):
+                return UnknownCalendar()
+            parsed_breaks.append((start, end))
+        parsed_holidays = [date.fromisoformat(value) if isinstance(value, str) else value for value in holidays]
+        if not all(isinstance(value, date) and not isinstance(value, datetime) for value in parsed_holidays):
+            return UnknownCalendar()
+        parsed_early_closes = {
+            date.fromisoformat(day) if isinstance(day, str) else day:
+            clock_time.fromisoformat(close) if isinstance(close, str) else close
+            for day, close in early_closes.items()
+        }
+        if not all(isinstance(day, date) and not isinstance(day, datetime) and isinstance(close, clock_time)
+                   for day, close in parsed_early_closes.items()):
+            return UnknownCalendar()
+    except (TypeError, ValueError):
         return UnknownCalendar()
     return BrokerSessionCalendarAdapter(
         source=source.strip(), revision=revision.strip(),
-        daily_breaks=(), holidays=(), early_closes={},
+        daily_breaks=parsed_breaks, holidays=parsed_holidays, early_closes=parsed_early_closes,
     )
 
 
@@ -194,5 +240,6 @@ __all__ = [
     "BrokerSessionCalendarAdapter",
     "BrokerCalendarAdapter",
     "UnknownCalendar",
+    "normalize_utc",
     "calendar_from_mapping",
 ]

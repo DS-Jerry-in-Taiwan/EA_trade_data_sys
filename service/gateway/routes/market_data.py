@@ -36,15 +36,32 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
             if not isinstance(item, dict):
                 return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
                                 "error": "invalid_history_metadata"}), 503
-            logical, _, timeframe = str(key).partition(":")
-            logical = item.get("logical_symbol") or logical
-            timeframe = item.get("timeframe") or timeframe
-            if not logical or not timeframe:
-                continue
+            logical_from_key, separator, timeframe_from_key = str(key).partition(":")
+            # Do not repair malformed worker metadata from the cache key or
+            # defaults.  The status endpoint is a contract boundary: missing
+            # fields must fail closed instead of being silently coerced.
+            required = {
+                "state", "logical_symbol", "source_symbol", "timeframe",
+                "bars", "minimum_bars", "source_exhausted", "session_generation",
+                "session_state", "provenance_id", "calendar_revision",
+                "effective_from", "effective_until", "gaps",
+            }
+            if set(item) != required or not separator:
+                return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                "error": "invalid_history_metadata"}), 503
+            logical = item.get("logical_symbol")
+            timeframe = item.get("timeframe")
+            if logical != logical_from_key or timeframe != timeframe_from_key:
+                return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                "error": "invalid_history_metadata"}), 503
             try:
-                bars = max(0, int(item.get("bars", 0) or 0))
-                minimum_bars = max(1, int(item.get("minimum_bars", 1) or 1))
-                generation = max(1, int(item.get("session_generation", 1) or 1))
+                bars = item["bars"]
+                minimum_bars = item["minimum_bars"]
+                generation = item["session_generation"]
+                if (isinstance(bars, bool) or not isinstance(bars, int) or bars < 0 or
+                        isinstance(minimum_bars, bool) or not isinstance(minimum_bars, int) or minimum_bars < 1 or
+                        isinstance(generation, bool) or not isinstance(generation, int) or generation < 1):
+                    raise ValueError("invalid numeric metadata")
             except (TypeError, ValueError):
                 return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
                                 "error": "invalid_history_metadata"}), 503
@@ -57,18 +74,18 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
             history = {
                 "state": item["state"],
                 "logical_symbol": logical,
-                "source_symbol": item.get("source_symbol") or logical,
+                "source_symbol": item["source_symbol"],
                 "timeframe": timeframe,
                 "bars": bars,
                 "minimum_bars": minimum_bars,
-                "source_exhausted": bool(item.get("source_exhausted", False)),
+                "source_exhausted": item["source_exhausted"],
                 "session_generation": generation,
-                "session_state": item.get("session_state") if item.get("session_state") in {"open", "closed", "unknown"} else "unknown",
-                "provenance_id": item.get("provenance_id") or payload.get("provenance_id") or "unknown",
-                "calendar_revision": item.get("calendar_revision") or "unknown",
+                "session_state": item["session_state"],
+                "provenance_id": item["provenance_id"],
+                "calendar_revision": item["calendar_revision"],
                 "effective_from": item.get("effective_from"),
                 "effective_until": item.get("effective_until"),
-                "gaps": item.get("gaps") if isinstance(item.get("gaps"), list) else [],
+                "gaps": item["gaps"],
             }
             normalized_timeframe = history["timeframe"]
             session_state = "ready" if history["session_state"] == "open" and history["state"] == "ready" else "disconnected"

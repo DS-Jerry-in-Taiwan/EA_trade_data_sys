@@ -13,7 +13,7 @@ from service.config import Settings, load_settings
 from service.history.repository import history_storage_id
 from service.infrastructure.mt5.client import MT5Client
 from service.infrastructure.mt5.session import AccountSessionTransition
-from service.infrastructure.mt5.calendar import CalendarObservation
+from service.infrastructure.mt5.calendar import CalendarObservation, normalize_utc
 from service.infrastructure.status.component_status import (
     atomic_write_status,
 )
@@ -414,18 +414,25 @@ class HistoryService:
             return []
         duration = cls.SUPPORTED_TIMEFRAMES[timeframe]
         gaps = []
-        evidence_by_bounds = {
-            (item.get('start'), item.get('end')): item
-            for item in (calendar_evidence or ())
-            if isinstance(item, dict)
-        }
+        evidence_by_bounds = {}
+        for item in (calendar_evidence or ()):
+            if not isinstance(item, dict):
+                continue
+            try:
+                bounds = (normalize_utc(item.get('start'), 'gap start'),
+                          normalize_utc(item.get('end'), 'gap end'))
+            except (TypeError, ValueError):
+                continue
+            evidence_by_bounds[bounds] = item
         ordered = frame.sort_values('time')
         for left, right in zip(ordered.iloc[:-1].itertuples(), ordered.iloc[1:].itertuples()):
             if right.time - left.time <= duration:
                 continue
             start = pd.Timestamp(left.time).isoformat().replace('+00:00', 'Z')
             end = pd.Timestamp(right.time).isoformat().replace('+00:00', 'Z')
-            evidence = evidence_by_bounds.get((start, end))
+            evidence = evidence_by_bounds.get((
+                normalize_utc(start, 'gap start'), normalize_utc(end, 'gap end')
+            ))
             classification = 'unknown'
             session_close = session_reopen = None
             if evidence is not None:
