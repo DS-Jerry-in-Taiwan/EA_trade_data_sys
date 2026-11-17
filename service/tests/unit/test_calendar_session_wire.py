@@ -14,6 +14,7 @@ from service.contracts.history_session_metadata import (
 from service.infrastructure.mt5.calendar import (
     BrokerSessionCalendarAdapter,
     UnknownCalendar,
+    calendar_from_mapping,
 )
 
 
@@ -103,3 +104,44 @@ def test_unknown_session_state_value_fails_closed(wire):
     payload["history"]["session_state"] = wire["rejected"]["unknown_calendar_state"]
     with pytest.raises(MetadataContractError):
         validate_history_session_metadata(payload)
+
+
+def test_calendar_from_mapping_preserves_all_configured_rules(wire):
+    calendar = calendar_from_mapping({"enabled": True, "complete": True, **wire["calendar"]})
+    assert isinstance(calendar, BrokerSessionCalendarAdapter)
+    config = wire["calendar"]
+    observation = calendar.classify_gap(
+        "XAUUSDm",
+        datetime.fromisoformat("2026-11-23T12:10:00+00:00"),
+        datetime.fromisoformat("2026-11-23T12:50:00+00:00"),
+        "M5",
+    )
+    assert observation.reason == "daily_break"
+    assert observation.source == config["source"]
+    assert observation.revision == config["revision"]
+
+    holiday = calendar.classify_gap(
+        "GBPUSDm",
+        datetime.fromisoformat("2026-11-26T09:00:00+00:00"),
+        datetime.fromisoformat("2026-11-26T12:00:00+00:00"),
+        "H1",
+    )
+    assert holiday.reason == "holiday"
+
+    early_close = calendar.classify_gap(
+        "XAUUSDm",
+        datetime.fromisoformat("2026-11-27T19:00:00+00:00"),
+        datetime.fromisoformat("2026-11-27T23:00:00+00:00"),
+        "M15",
+    )
+    assert early_close.reason == "early_close"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("daily_breaks", [["not-a-time", "13:00:00"]]),
+    ("holidays", ["not-a-date"]),
+    ("early_closes", {"2026-11-27": "not-a-time"}),
+])
+def test_calendar_from_mapping_rejects_malformed_rules(wire, field, value):
+    raw = {"enabled": True, "complete": True, **wire["calendar"], field: value}
+    assert isinstance(calendar_from_mapping(raw), UnknownCalendar)

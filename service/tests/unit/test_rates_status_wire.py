@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from flask import Flask
+import pytest
 
 from service.gateway.routes.market_data import create_blueprint
 
@@ -44,3 +45,61 @@ def test_rates_status_projects_versioned_metadata_per_cache():
     assert metadata["history"]["source_symbol"] == "XAUUSD.sim"
     assert metadata["history"]["session_state"] == "open"
     assert body["publication_version"] == 7
+
+
+def _app_with_readiness(readiness):
+    app = Flask(__name__)
+    payload = {"state": "healthy", "fresh": True, "cache_readiness": readiness}
+    app.register_blueprint(create_blueprint(
+        SimpleNamespace(get=lambda _: None, is_fresh=lambda *_: False), 30,
+        SimpleNamespace(get_rates=lambda *args, **kwargs: {}),
+        SimpleNamespace(get_symbols=lambda _: []), [], "/missing",
+        history_status_reader=lambda *_: payload,
+        history_status_path="status.json", history_status_max_age=30,
+    ))
+    return app
+
+
+def test_rates_status_rejects_missing_and_invalid_metadata_instead_of_defaults():
+    base = {
+        "state": "ready", "logical_symbol": "XAUUSDm", "source_symbol": "XAUUSD.sim",
+        "timeframe": "M5", "bars": 500, "minimum_bars": 100,
+        "source_exhausted": False, "session_generation": 3, "session_state": "open",
+        "provenance_id": "proc-1", "calendar_revision": "cal-2", "effective_from": None,
+        "effective_until": None, "gaps": [],
+    }
+    for field, value in (("timeframe", ""), ("session_state", "bogus"),
+                         ("gaps", "not-a-list"), ("bars", "500"),
+                         ("source_symbol", None)):
+        item = dict(base)
+        item[field] = value
+        with _app_with_readiness({"XAUUSDm:M5": item}).test_client() as client:
+            response = client.get("/api/v1/rates/status")
+        assert response.status_code == 503
+        assert response.get_json()["error"] == "invalid_history_metadata"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("session_state", "unknown"),
+    ("calendar_revision", "unknown"),
+    ("gaps", [{
+        "start": "2026-11-15T00:00:00Z",
+        "end": "2026-11-15T01:00:00Z",
+        "session_close": None,
+        "session_reopen": None,
+        "classification": "cache_backfill_gap",
+    }]),
+])
+def test_rates_status_top_level_ready_fails_closed_for_unqualified_metadata(field, value):
+    item = {
+        "state": "ready", "logical_symbol": "XAUUSDm", "source_symbol": "XAUUSD.sim",
+        "timeframe": "M5", "bars": 500, "minimum_bars": 100,
+        "source_exhausted": False, "session_generation": 3, "session_state": "open",
+        "provenance_id": "proc-1", "calendar_revision": "cal-2", "effective_from": None,
+        "effective_until": None, "gaps": [],
+    }
+    item[field] = value
+    with _app_with_readiness({"XAUUSDm:M5": item}).test_client() as client:
+        response = client.get("/api/v1/rates/status")
+    assert response.status_code == 200
+    assert response.get_json()["ready"] is False
