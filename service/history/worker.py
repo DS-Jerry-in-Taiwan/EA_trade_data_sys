@@ -655,12 +655,11 @@ def main():
     settings = load_settings()
     calendar_service = None
     if settings.history_service.calendar_enabled:
-        # Provider wiring is intentionally explicit at the composition root.
-        # Until authoritative MT5 + broker adapters are configured this
-        # fail-closed composer yields ``unknown`` rather than guessing a
-        # weekend/DST schedule.
-        from service.infrastructure.mt5.calendar_composer import CalendarEvidenceComposer
-        calendar_service = CalendarEvidenceComposer()
+        # Provider/coordinator wiring is intentionally explicit at the
+        # composition root.  No configured coordinator means UnknownCalendar
+        # (via compose_calendar_service), never a guessed weekend/DST rule.
+        from service.history.calendar_service import compose_calendar_service
+        calendar_service = compose_calendar_service()
     service = HistoryService(settings=settings, calendar_service=calendar_service)
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
     signal.signal(signal.SIGINT, _handle_shutdown_signal)

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Callable, Mapping, Protocol
 
 from service.infrastructure.mt5.calendar import CalendarObservation
-from service.infrastructure.mt5.calendar import normalize_utc
+from service.infrastructure.mt5.calendar import UnknownCalendar, normalize_utc
 
 
 class CalendarEvidenceService(Protocol):
@@ -70,4 +70,17 @@ class RefreshBackedCalendarEvidenceService:
         )
 
 
-__all__ = ["CalendarEvidenceService", "RefreshBackedCalendarEvidenceService"]
+def compose_calendar_service(*, coordinator=None, session_provider=None):
+    """Return the history boundary for a configured refresh coordinator.
+
+    The composition root may supply a :class:`CalendarRefreshCoordinator`
+    and a session identity callback once authoritative providers are enabled.
+    In every other case the returned service is the explicit unknown adapter;
+    this keeps production defaults fail-closed and avoids guessed schedules.
+    """
+    if coordinator is None or not callable(session_provider):
+        return UnknownCalendar()
+    return RefreshBackedCalendarEvidenceService(coordinator, session_provider)
+
+
+__all__ = ["CalendarEvidenceService", "RefreshBackedCalendarEvidenceService", "compose_calendar_service"]
