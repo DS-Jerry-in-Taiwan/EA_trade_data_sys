@@ -117,6 +117,15 @@ def test_broker_artifact_accepts_provenance_dst_holidays_and_early_close():
     assert provider.fetch("BTC").source_symbol == "BTCUSD"
 
 
+@pytest.mark.parametrize("provenance", [{"publisher": "broker"}, {"uri": "https://broker.example/calendar"}, {"publisher": "broker", "uri": "https://broker.example/calendar", "retrieved_at": "not-a-time"}])
+def test_broker_artifact_requires_traceable_provenance(provenance):
+    value = artifact(
+        timezone="Europe/London", dst_rule="IANA:Europe/London", holidays=[], early_closes=[], provenance=provenance
+    )
+    with pytest.raises(CalendarProviderError, match="provenance"):
+        BrokerCalendarArtifactProvider(value, require_schedule_metadata=True)
+
+
 @pytest.mark.parametrize("field", ["timezone", "dst_rule", "holidays", "early_closes", "provenance"])
 def test_broker_artifact_rejects_missing_required_schedule_metadata(field):
     value = artifact(
