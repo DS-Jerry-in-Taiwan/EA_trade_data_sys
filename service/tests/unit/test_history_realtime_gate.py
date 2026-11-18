@@ -55,7 +55,13 @@ def test_closed_market_skips_latest_fetch(tmp_path):
 
 
 def test_unknown_calendar_allows_one_bounded_bootstrap_then_skips(tmp_path):
-    client = FakeMT5Client([_bar("2026-09-08T10:00:00Z")])
+    # The bootstrap asks for one closed bar plus the forming-bar margin.  Give
+    # the fake both rows so the bounded page is satisfied in one bridge call;
+    # a one-row fake would force a legitimate second pagination request.
+    client = FakeMT5Client([
+        _bar("2026-09-08T10:00:00Z"),
+        _bar("2026-09-08T10:05:00Z"),
+    ])
     calendar = Calendar("unknown")
     service = HistoryService(settings=_settings(tmp_path), mt5_client=client,
                              calendar_service=calendar)

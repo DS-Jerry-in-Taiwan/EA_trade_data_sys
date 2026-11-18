@@ -66,10 +66,11 @@ def test_backfill_fail_closed_before_archive_write(mode, change):
 @pytest.mark.parametrize('start,end', [
     ('2026-09-01', '2026-09-02'),
     ('2026-09-01T00:00:00+02:00', '2026-09-01T01:00:00+02:00'),
+    ('2026-09-01T08:00:00+08:00', '2026-09-01T09:00:00+08:00'),
     ('2026-01-01T00:00:00Z', '2026-03-01T00:00:00Z'),
     ('2026-09-02T00:00:00Z', '2026-09-01T00:00:00Z'),
 ])
-def test_backfill_rejects_unbounded_or_ambiguous_interval(start, end):
+def test_backfill_rejects_unbounded_or_non_utc_interval(start, end):
     client = Client()
     with pytest.raises(ValueError):
         backfill(client, None, 'BTC', 'M15', start, end)

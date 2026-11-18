@@ -6,6 +6,7 @@ accepted as arguments, and output contains aggregate facts only.
 import argparse
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +23,12 @@ def backfill(client, archive, symbol, timeframe, start, end):
     start, end = pd.Timestamp(start), pd.Timestamp(end)
     if start.tzinfo is None or end.tzinfo is None or end < start:
         raise ValueError('explicit timezone and ordered range required')
+    # The archive contract is UTC-only.  Converting an arbitrary offset here
+    # would silently reinterpret a caller's broker-local wall clock and make
+    # the persisted range ambiguous.  Require an explicit zero offset at the
+    # seam; callers may use either ``Z`` or ``+00:00`` spelling.
+    if start.utcoffset() != timedelta(0) or end.utcoffset() != timedelta(0):
+        raise ValueError('backfill interval must use explicit UTC timestamps')
     start, end = start.tz_convert('UTC'), end.tz_convert('UTC')
     if end - start > pd.Timedelta(days=32):
         raise ValueError('range exceeds 32-day bounded job')
