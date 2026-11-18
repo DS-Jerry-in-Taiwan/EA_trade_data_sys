@@ -45,6 +45,9 @@ services:
     container_name: trade-data-service
     environment:
       READONLY_API_KEY: ${READONLY_API_KEY:?READONLY_API_KEY is required}
+      # Calendar observe is opt-in.  It only collects MT5 session evidence and
+      # never authorizes gap classification or mutation.
+      HISTORY_CALENDAR_MODE: ${HISTORY_CALENDAR_MODE:-disabled}
       MT5_CONNECTION_MODE: ${MT5_CONNECTION_MODE:-terminal}
       TRADE_DATA_CONFIG: ${TRADE_DATA_CONFIG:-}
       MT5_SETTINGS_PATH: ${MT5_SETTINGS_PATH:-}

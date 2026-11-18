@@ -15,6 +15,24 @@ export READONLY_API_KEY='<your-readonly-api-key>'
 docker compose up -d
 ```
 
+### Read-only calendar observation
+
+To inspect MT5 session windows without authorizing calendar decisions, recreate
+only `trade-data-service` with the non-authoritative observe mode:
+
+```bash
+export HISTORY_CALENDAR_MODE=observe
+docker compose build trade-data-service
+docker compose up -d --no-deps --force-recreate trade-data-service
+docker compose ps
+```
+
+This mode probes the existing `mt5-server` through the private bridge and keeps
+all calendar classifications `unknown`. It does not change the MT5 profile,
+does not start `execution-service`, and cannot place, cancel, or close orders.
+Keep `HISTORY_CALENDAR_MODE=disabled` for the normal deployment. Do not set
+`enforce` until both MT5 and broker evidence have been reviewed.
+
 The lifecycle is ordered as follows:
 
 1. `mt5-server` starts the persisted portable terminal with `/skipupdate`; normal startup restores its saved GUI session, while bootstrap/explicit re-import or managed mode uses a Windows-readable config path. A mandatory updater can still launch, and readiness remains closed during its bounded maintenance cycle.
@@ -23,6 +41,15 @@ The lifecycle is ordered as follows:
 4. `start_runner.sh` installs `/app/mt5docker/requirements.txt` from the bind-mounted checkout, then `exec`s `service.runtime.supervisor`. These packages are installed at service startup; they are not baked into the image.
 5. The supervisor starts Tick Service, History Worker and API Gateway. If any child exits unexpectedly, it terminates the others and exits non-zero so the container restart policy can act.
 6. `trade-data-service` becomes healthy only when Gateway reports HTTP 200 and `ready: true`.
+
+### Calendar observation mode
+
+Compose passes `HISTORY_CALENDAR_MODE` to `trade-data-service`. The default is
+`disabled`, which preserves existing behaviour. In a disposable test
+environment, set it to `observe` to run the read-only MT5 session probe and
+record observations. Observe mode does not create authoritative calendar
+evidence and does not enable mutation. The `enforce` value is reserved for a
+deployment with verified MT5 and broker calendar evidence.
 
 The repository checkout is bind-mounted at `/app`; the running code and requirements therefore come from the deployment worktree selected by Compose.
 

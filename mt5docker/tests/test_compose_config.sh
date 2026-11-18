@@ -66,6 +66,9 @@ echo 'compose MT5_CONFIG_FILE interpolation test passed'
 printf '%s' "$config_json" | python3 -c '
 import json, sys
 service = json.load(sys.stdin)["services"]["trade-data-service"]
+environment = service.get("environment", {})
+if environment.get("HISTORY_CALENDAR_MODE") != "disabled":
+    raise SystemExit("FAIL: HISTORY_CALENDAR_MODE must default to disabled")
 healthcheck = service.get("healthcheck", {})
 test = healthcheck.get("test", [])
 rendered = " ".join(str(part) for part in test)
@@ -73,8 +76,26 @@ if "/api/v1/health" not in rendered or "ready" not in rendered:
     raise SystemExit("FAIL: trade-data-service healthcheck must verify Gateway readiness")
 if healthcheck.get("retries", 0) < 1:
     raise SystemExit("FAIL: trade-data-service healthcheck retries are missing")
+if service.get("environment", {}).get("HISTORY_CALENDAR_MODE") != "disabled":
+    raise SystemExit("FAIL: calendar mode must default to disabled")
 '
 echo 'compose trade-data-service critical-path healthcheck test passed'
+
+observe_rendered="$(
+    READONLY_API_KEY=compose-test-only HISTORY_CALENDAR_MODE=observe \
+    MT5_DATA_DIR="$FIXTURE_DATA" MT5_CONFIG_FILE="$FIXTURE_CONFIG" \
+    docker compose -f "$ROOT/mt5docker/compose.yaml" config --format json
+)"
+printf '%s' "$observe_rendered" | python3 -c '
+import json, sys
+service = json.load(sys.stdin)["services"]["trade-data-service"]
+mode = service.get("environment", {}).get("HISTORY_CALENDAR_MODE")
+if mode != "observe":
+    raise SystemExit(f"FAIL: observe mode was not propagated (got {mode!r})")
+if service.get("environment", {}).get("EXECUTION_MUTATION_ENABLED") is not None:
+    raise SystemExit("FAIL: trade-data-service must not receive execution mutation settings")
+'
+echo 'compose observe mode propagation test passed'
 
 default_rendered="$(
     env -u MT5_DATA_DIR -u MT5_CONFIG_FILE READONLY_API_KEY=compose-test-only \
@@ -95,3 +116,16 @@ if [ "$default_config_count" -ne 1 ]; then
 fi
 
 echo 'compose default MT5_Data interpolation test passed'
+
+observe_config="$({
+    env -u MT5_DATA_DIR -u MT5_CONFIG_FILE READONLY_API_KEY=compose-test-only \
+        HISTORY_CALENDAR_MODE=observe \
+        docker compose -f "$ROOT/mt5docker/compose.yaml" config --format json
+})"
+printf '%s' "$observe_config" | python3 -c '
+import json, sys
+service = json.load(sys.stdin)["services"]["trade-data-service"]
+if service.get("environment", {}).get("HISTORY_CALENDAR_MODE") != "observe":
+    raise SystemExit("FAIL: HISTORY_CALENDAR_MODE=observe was not passed to trade-data-service")
+'
+echo 'compose calendar mode interpolation test passed'
