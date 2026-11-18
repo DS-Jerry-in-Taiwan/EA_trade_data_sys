@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from threading import Barrier, Thread
-import time
+from threading import Event, Thread
 
 from service.infrastructure.mt5.calendar_refresh import CalendarRefreshCoordinator
 from service.infrastructure.mt5.calendar_snapshot import CalendarSnapshotStore
@@ -77,15 +76,15 @@ def test_successful_refresh_persists_and_is_available_after_restart(tmp_path):
 
 def test_concurrent_refreshes_are_single_flight(tmp_path):
     session = {"fingerprint": "fp", "generation": 1, "epoch": "e1"}
-    started = Barrier(2)
-
     class BlockingProvider:
         calls = 0
+        started = Event()
+        release = Event()
 
         def fetch(self, *, session):
             self.calls += 1
-            started.wait(timeout=2)
-            time.sleep(0.05)
+            self.started.set()
+            self.release.wait(timeout=2)
             return make_snapshot(session)
 
     provider = BlockingProvider()
@@ -99,8 +98,9 @@ def test_concurrent_refreshes_are_single_flight(tmp_path):
     second = Thread(target=run)
     first.start()
     # Ensure the first caller owns the in-flight refresh before the second.
-    started.wait(timeout=2)
+    assert provider.started.wait(timeout=2)
     second.start()
+    provider.release.set()
     first.join(timeout=2)
     second.join(timeout=2)
     assert provider.calls == 1
