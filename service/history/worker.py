@@ -168,6 +168,15 @@ class HistoryService:
         if state == 'open':
             return True, observation
         if state == 'closed':
+            # A trusted close suppresses recurring refreshes.  If no ready
+            # cache exists, permit one bounded bootstrap so a first deployment
+            # can seed history; the next cycle will skip until reopen.
+            key = (symbol, timeframe)
+            filepath = os.path.join(self.data_path, f'{symbol}_{timeframe}.csv')
+            if (key not in self._calendar_bootstrap_attempted
+                    and not os.path.exists(self._ready_path(filepath))):
+                self._calendar_bootstrap_attempted.add(key)
+                return True, observation
             return False, observation
         # Non-authoritative observe mode is a bridge diagnostic.  It must not
         # classify the market, but it may continue the legacy read so that

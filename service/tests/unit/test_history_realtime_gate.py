@@ -1,6 +1,4 @@
-from datetime import datetime, timezone
-
-import yaml
+from datetime import datetime, timezone, timedelta
 
 from service.history.worker import HistoryService
 from service.infrastructure.mt5.calendar import CalendarObservation
@@ -31,7 +29,7 @@ class Calendar:
         self.calls.append((symbol, timeframe))
         return CalendarObservation(
             state=self.state, effective_from=now,
-            effective_until=now.replace(second=now.second + 1),
+            effective_until=now + timedelta(minutes=1),
             source="test", revision="r1", reason="test",
         )
 
@@ -44,9 +42,14 @@ class Calendar:
 
 def test_closed_market_skips_latest_fetch(tmp_path):
     client = FakeMT5Client([_bar("2026-09-08T10:00:00Z")])
+    (tmp_path / "BTC_M5.csv").write_text(
+        "time,open,high,low,close,tick_volume,source_symbol\n"
+        "2026-09-08T10:00:00Z,100,101,99,100,10,broker-BTC\n"
+    )
+    (tmp_path / "BTC_M5.csv.ready").write_text("broker-BTC")
     service = HistoryService(settings=_settings(tmp_path), mt5_client=client,
                              calendar_service=Calendar("closed"))
-    service.fetch_incremental(now=datetime(2026, 9, 8, tzinfo=timezone.utc))
+    service.fetch_incremental(now=datetime(2026, 9, 8, 12, tzinfo=timezone.utc))
     assert client.mt5.requests == []
     assert service.get_sync_status()["BTC:M5"]["state"] == "closed"
 
@@ -56,7 +59,7 @@ def test_unknown_calendar_allows_one_bounded_bootstrap_then_skips(tmp_path):
     calendar = Calendar("unknown")
     service = HistoryService(settings=_settings(tmp_path), mt5_client=client,
                              calendar_service=calendar)
-    now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
     service.fetch_incremental(now=now)
     assert len(client.mt5.requests) == 1
     service.fetch_incremental(now=now)
