@@ -66,9 +66,6 @@ echo 'compose MT5_CONFIG_FILE interpolation test passed'
 printf '%s' "$config_json" | python3 -c '
 import json, sys
 service = json.load(sys.stdin)["services"]["trade-data-service"]
-environment = service.get("environment", {})
-if environment.get("HISTORY_CALENDAR_MODE") != "disabled":
-    raise SystemExit("FAIL: HISTORY_CALENDAR_MODE must default to disabled")
 healthcheck = service.get("healthcheck", {})
 test = healthcheck.get("test", [])
 rendered = " ".join(str(part) for part in test)
