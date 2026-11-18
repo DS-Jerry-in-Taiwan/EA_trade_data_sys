@@ -28,8 +28,18 @@ def test_reader_converts_terminal_sessions_to_utc():
     )
     raw = reader.fetch("EURUSD.sim")
     assert raw["source_symbol"] == "EURUSD.sim"
-    assert raw["utc_windows"] == [{"from": "2026-11-16T07:00:00Z", "until": "2026-11-16T08:00:00Z"}]
+    assert raw["utc_windows"] == [{"from": "2026-11-15T07:00:00Z", "until": "2026-11-15T08:00:00Z"}]
     assert raw["session_state"] == "closed"
+
+
+def test_reader_uses_mt5_sunday_zero_enum_not_python_weekday():
+    reader = MT5SessionScheduleReader(
+        FakeMT5(), server_utc_offset_seconds=0, revision="r",
+        clock=lambda: datetime(2026, 11, 18, tzinfo=timezone.utc), days=7,
+    )
+    windows = reader.fetch("EURUSD.sim")["utc_windows"]
+    assert windows[0]["from"].startswith("2026-11-15T")  # Sunday=0
+    assert windows[1]["from"].startswith("2026-11-16T")  # Monday=1
 
 
 def test_reader_rejects_missing_timezone_offset():

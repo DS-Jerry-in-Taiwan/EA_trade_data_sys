@@ -103,7 +103,11 @@ class MT5SessionScheduleReader:
             raise CalendarProviderError("mt5 source symbol is required")
         offset = self._offset()
         captured = _utc(self.clock())
-        first_day = captured.date() - timedelta(days=captured.weekday())
+        # MT5 ENUM_DAY_OF_WEEK is Sunday=0 through Saturday=6.  Keep the
+        # returned seven-day window aligned with that enum; Python's weekday
+        # uses Monday=0 and must not be passed through directly.
+        sunday_delta = (captured.weekday() + 1) % 7
+        first_day = captured.date() - timedelta(days=sunday_delta)
         trade = self._read_kind("symbol_info_session_trade", symbol, first_day, offset)
         quote = self._read_kind("symbol_info_session_quote", symbol, first_day, offset)
         if not trade or not quote:
