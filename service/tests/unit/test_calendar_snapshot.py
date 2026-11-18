@@ -1,5 +1,4 @@
 from datetime import datetime, timezone, timedelta
-
 import pytest
 
 from service.infrastructure.mt5.calendar_snapshot import (
@@ -63,4 +62,3 @@ def test_corrupt_store_is_fail_closed(tmp_path):
     path = tmp_path / "snapshot.json"
     path.write_text("not-json")
     assert CalendarSnapshotStore(path).load_valid(now=NOW) is None
-
