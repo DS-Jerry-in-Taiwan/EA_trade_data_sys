@@ -90,6 +90,9 @@ class HistoryService:
         self.sync_status = {}
         self._verified_gaps = {}
         self._staged_gaps = {}
+        # A missing calendar snapshot may permit one bounded bootstrap read.
+        # It must not become a recurring bypass while evidence remains unknown.
+        self._calendar_bootstrap_attempted = set()
         os.makedirs(self.data_path, exist_ok=True)
 
     def _get_timeframe_attr(self, tf_str):
@@ -146,6 +149,37 @@ class HistoryService:
         checker = getattr(self.calendar_service, 'check_generation', None)
         if callable(checker):
             checker(current)
+
+    def _realtime_calendar_decision(self, symbol, timeframe, now):
+        """Return whether a recurring latest-bar fetch is allowed.
+
+        ``None`` means no calendar seam is configured (legacy/disabled mode),
+        so existing read-only behaviour is preserved.  An authoritative
+        calendar must not infer ``open`` from missing evidence: one bounded
+        bootstrap is allowed for an empty cache, then later cycles skip until
+        a trusted state is available.
+        """
+        service = self.calendar_service
+        decision = getattr(service, 'current_state', None)
+        if not callable(decision):
+            return True, None
+        observation = decision(symbol, now, timeframe)
+        state = getattr(observation, 'state', 'unknown')
+        if state == 'open':
+            return True, observation
+        if state == 'closed':
+            return False, observation
+        # Non-authoritative observe mode is a bridge diagnostic.  It must not
+        # classify the market, but it may continue the legacy read so that
+        # operators can inspect the probe and gap observations.
+        if not getattr(service, 'authoritative', True):
+            return True, observation
+        key = (symbol, timeframe)
+        filepath = os.path.join(self.data_path, f'{symbol}_{timeframe}.csv')
+        if key not in self._calendar_bootstrap_attempted and not os.path.exists(self._ready_path(filepath)):
+            self._calendar_bootstrap_attempted.add(key)
+            return True, observation
+        return False, observation
 
     def _history_call_running(self):
         return self._inflight_future is not None and not self._inflight_future.done()
@@ -560,6 +594,23 @@ class HistoryService:
                 tf = self._get_timeframe_attr(tf_str)
                 if tf is None:
                     print(f'[{datetime.now()}] Unknown timeframe: {tf_str}')
+                    continue
+
+                try:
+                    fetch_allowed, calendar_observation = self._realtime_calendar_decision(
+                        symbol, tf_str, now or datetime.now(timezone.utc)
+                    )
+                except AccountSessionTransition:
+                    cycle_aborted = True
+                    break
+                if not fetch_allowed:
+                    state = getattr(calendar_observation, 'state', 'unknown')
+                    detail = (
+                        'market closed; latest history refresh skipped'
+                        if state == 'closed'
+                        else 'calendar state unknown; latest history refresh skipped'
+                    )
+                    self._set_status(symbol, tf_str, state, detail=detail)
                     continue
 
                 fetch_count = self._fetch_count(tf_str)

@@ -7,7 +7,7 @@ calendar knowledge that crosses into the worker.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Mapping, Protocol
 
 from service.infrastructure.mt5.calendar import CalendarObservation
@@ -21,6 +21,16 @@ class CalendarEvidenceService(Protocol):
     def classify_gap(
         self, symbol: str, start: datetime, end: datetime, timeframe: str
     ) -> CalendarObservation:
+        ...
+
+    def current_state(
+        self, symbol: str, now: datetime, timeframe: str
+    ) -> CalendarObservation:
+        """Return the session state for a realtime refresh decision.
+
+        Implementations must return ``unknown`` when evidence is missing or
+        stale.  The history worker never treats ``unknown`` as ``open``.
+        """
         ...
 
 
@@ -68,6 +78,27 @@ class RefreshBackedCalendarEvidenceService:
         return CalendarObservation(
             state=state, effective_from=start, effective_until=end,
             source=snapshot.source, revision=snapshot.revision, reason=reason,
+        )
+
+    def current_state(self, symbol, now, timeframe):
+        now = normalize_utc(now, "now")
+        snapshot = self.coordinator.snapshot(session=self.session_provider())
+        if snapshot is None or symbol not in snapshot.symbols:
+            return CalendarObservation(
+                state="unknown", effective_from=now,
+                effective_until=now + timedelta(minutes=1),
+                source="unavailable", revision="unknown",
+                reason="calendar snapshot unavailable",
+            )
+        item = snapshot.symbols[symbol]
+        state = item.get("session_state")
+        if state not in {"open", "closed"}:
+            state = "unknown"
+        return CalendarObservation(
+            state=state, effective_from=now,
+            effective_until=now + timedelta(minutes=1),
+            source=snapshot.source, revision=snapshot.revision,
+            reason="calendar snapshot session state",
         )
 
 
@@ -152,6 +183,14 @@ class ObserveCalendarEvidenceService:
             source="mt5:observe", revision="observation-only",
             reason="calendar observe mode is non-authoritative",
         )
+
+    def current_state(self, symbol, now, timeframe):
+        """Probe once per cycle, but never turn observation into authority."""
+        now = normalize_utc(now, "now")
+        # A zero-length gap is not valid for CalendarObservation.  The short
+        # diagnostic window is not used as evidence; it only satisfies the
+        # common result contract while the worker records ``unknown``.
+        return self.classify_gap(symbol, now, now + timedelta(minutes=1), timeframe)
 
 
 def compose_calendar_service(*, mode="enforce", coordinator=None,
