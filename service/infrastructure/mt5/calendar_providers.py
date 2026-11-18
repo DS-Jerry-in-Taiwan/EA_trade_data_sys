@@ -153,7 +153,16 @@ class BrokerCalendarArtifactProvider:
                 raise CalendarProviderError(f"broker_artifact_unavailable: {exc}") from exc
         if not isinstance(artifact, Mapping):
             raise CalendarProviderError("broker artifact must be an object")
+        expected = {"source", "revision", "captured_at", "valid_from", "valid_until", "symbols"}
+        if set(artifact) != expected:
+            missing = sorted(expected - set(artifact))
+            extra = sorted(set(artifact) - expected)
+            detail = f"missing={','.join(missing)}" if missing else f"unknown={','.join(extra)}"
+            raise CalendarProviderError(f"broker artifact fields do not match contract ({detail})")
         self.artifact = artifact
+        source = _required_text(artifact.get("source"), "source")
+        if not source.startswith("broker:"):
+            raise CalendarProviderError("source must identify a broker artifact")
         _required_text(artifact.get("revision"), "revision")
         _required_text(artifact.get("captured_at"), "captured_at")
         _required_text(artifact.get("valid_from"), "valid_from")
@@ -165,6 +174,9 @@ class BrokerCalendarArtifactProvider:
         if not isinstance(entries, Mapping) or not isinstance(entries.get(logical), Mapping):
             raise CalendarProviderError(f"broker artifact has no coverage for {logical}")
         raw = entries[logical]
+        allowed = {"source_symbol", "utc_windows", "session_state"}
+        if set(raw) - allowed:
+            raise CalendarProviderError(f"broker symbol evidence has unknown fields for {logical}")
         try:
             return CalendarEvidence(source=self.source, symbol=logical, revision=self.artifact["revision"], captured_at=self.artifact["captured_at"], valid_from=self.artifact["valid_from"], valid_until=self.artifact["valid_until"], source_symbol=raw["source_symbol"], utc_windows=raw["utc_windows"], session_state=raw.get("session_state", "unknown"))
         except KeyError as exc:
