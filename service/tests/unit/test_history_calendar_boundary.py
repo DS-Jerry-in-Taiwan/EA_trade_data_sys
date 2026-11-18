@@ -3,6 +3,7 @@
 from service.config.models import HistoryServiceSettings, Settings
 from service.history.worker import HistoryService
 from service.history.calendar_service import compose_calendar_service
+from service.infrastructure.mt5.session import AccountSessionTransition
 from service.infrastructure.mt5.calendar_snapshot import CalendarSnapshot
 from datetime import datetime, timezone, timedelta
 
@@ -49,6 +50,40 @@ def test_observe_factory_probes_but_returns_unknown():
     assert result.state == "unknown"
     assert seen == ["BTC"]
     assert service.observations[0]["status"] == "observed"
+
+
+def test_observe_factory_caches_probe_for_one_cycle_and_refreshes_next_cycle():
+    seen = []
+    service = compose_calendar_service(
+        mode="observe", probe=lambda symbol: seen.append(symbol) or {
+            "source_symbol": "BTCUSD.sim", "revision": "r1", "utc_windows": [],
+        }
+    )
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    service.begin_cycle(1)
+    service.classify_gap("BTC", start, start + timedelta(hours=1), "M5")
+    service.classify_gap("BTC", start, start + timedelta(hours=2), "M5")
+    assert seen == ["BTC"]
+    service.begin_cycle(2)
+    service.classify_gap("BTC", start, start + timedelta(hours=1), "M5")
+    assert seen == ["BTC", "BTC"]
+
+
+def test_observe_factory_aborts_when_session_generation_changes():
+    generation = [1]
+    service = compose_calendar_service(
+        mode="observe", generation_provider=lambda: generation[0],
+        probe=lambda symbol: {"source_symbol": "BTCUSD.sim", "revision": "r1", "utc_windows": []},
+    )
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    service.begin_cycle(1)
+    generation[0] = 2
+    try:
+        service.classify_gap("BTC", start, start + timedelta(hours=1), "M5")
+    except AccountSessionTransition:
+        pass
+    else:
+        raise AssertionError("session generation change must abort observation cycle")
 
 
 def test_history_service_accepts_only_deep_calendar_boundary(tmp_path):

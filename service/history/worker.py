@@ -136,6 +136,17 @@ class HistoryService:
         guard = getattr(self.mt5_client, 'session_guard', None)
         return getattr(guard, 'generation', None)
 
+    def _assert_cycle_generation(self, expected):
+        """Abort the refresh immediately when the terminal session changes."""
+        current = self._session_generation()
+        if expected is not None and current is not None and current != expected:
+            raise AccountSessionTransition(
+                'MT5 account session changed during refresh cycle'
+            )
+        checker = getattr(self.calendar_service, 'check_generation', None)
+        if callable(checker):
+            checker(current)
+
     def _history_call_running(self):
         return self._inflight_future is not None and not self._inflight_future.done()
 
@@ -491,13 +502,31 @@ class HistoryService:
             return
 
         # Lazy init resolver (第一次成功連線後執行一次)
-        if not self._resolver_initialized or not was_connected:
+        resolver_needs_refresh = (
+            not self._resolver_initialized
+            or not was_connected
+            or any(
+                not self.mt5_client.is_resolved(sym_conf['name'])
+                for sym_conf in self.symbols
+            )
+        )
+        if resolver_needs_refresh:
             symbols_list = [s['name'] for s in self.symbols]
             self.mt5_client.init_resolver(symbols_list)
             self._resolver_initialized = True
 
+        cycle_generation = self._session_generation()
+        begin_cycle = getattr(self.calendar_service, 'begin_cycle', None)
+        if callable(begin_cycle):
+            begin_cycle(cycle_generation)
+        cycle_aborted = False
+
         for sym_conf in self.symbols:
+            self._assert_cycle_generation(cycle_generation)
             symbol = sym_conf['name']
+            if self._session_generation() != cycle_generation:
+                cycle_aborted = True
+                break
             if self._history_call_running():
                 self._mark_pending_history_call(sym_conf)
                 continue
@@ -517,6 +546,9 @@ class HistoryService:
                         )
                 continue
             for tf_str in sym_conf['timeframes']:
+                if self._session_generation() != cycle_generation:
+                    cycle_aborted = True
+                    break
                 tf_str = str(tf_str).upper()
                 if self._history_call_running():
                     if tf_str in self.minimum_bars:
@@ -616,9 +648,23 @@ class HistoryService:
                         symbol, tf_str, 'error', detail=str(e)
                     )
                     print(f'[{datetime.now()}] Error fetching {symbol} {tf_str}: {e}')
+                    if isinstance(e, AccountSessionTransition):
+                        cycle_aborted = True
+                        break
                 finally:
                     if writer_lock is not None:
                         writer_lock.close()
+
+            if cycle_aborted:
+                break
+
+        if cycle_aborted:
+            self._publish_status(
+                'degraded',
+                detail='MT5 account session changed; refresh cycle aborted',
+                session_generation=cycle_generation,
+            )
+            return
 
         states = [item['state'] for item in self.sync_status.values()]
         state = 'healthy' if states and all(item == 'ready' for item in states) else 'degraded'
@@ -679,6 +725,9 @@ def main():
                     mode="observe",
                     probe=lambda symbol: mt5_client.session_schedule(
                         symbol, server_utc_offset_seconds=offset, revision=revision
+                    ),
+                    generation_provider=lambda: getattr(
+                        getattr(mt5_client, 'session_guard', None), 'generation', None
                     ),
                 )
             else:
