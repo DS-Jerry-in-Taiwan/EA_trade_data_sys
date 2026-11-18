@@ -125,6 +125,12 @@ class ObserveCalendarEvidenceService:
                 if self.generation_provider is not None:
                     self.check_generation(self.generation_provider())
                 result = self.probe(symbol)
+                # The terminal can reconnect while the bridge call is in
+                # flight.  Do not retain a schedule read from the old
+                # session; abort this cycle immediately and let the next
+                # cycle refresh the resolver and session identity.
+                if self.generation_provider is not None:
+                    self.check_generation(self.generation_provider())
                 self._cycle_cache[symbol] = result if isinstance(result, Mapping) else None
                 if isinstance(result, Mapping):
                     # Keep diagnostics bounded and avoid carrying arbitrary

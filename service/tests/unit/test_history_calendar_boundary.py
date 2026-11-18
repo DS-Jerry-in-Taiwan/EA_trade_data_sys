@@ -86,6 +86,27 @@ def test_observe_factory_aborts_when_session_generation_changes():
         raise AssertionError("session generation change must abort observation cycle")
 
 
+def test_observe_factory_aborts_if_generation_changes_during_probe():
+    generation = [1]
+
+    def probe(_symbol):
+        generation[0] = 2
+        return {"source_symbol": "BTCUSD.sim", "revision": "r1", "utc_windows": []}
+
+    service = compose_calendar_service(
+        mode="observe", generation_provider=lambda: generation[0], probe=probe,
+    )
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    service.begin_cycle(1)
+    try:
+        service.classify_gap("BTC", start, start + timedelta(hours=1), "M5")
+    except AccountSessionTransition:
+        pass
+    else:
+        raise AssertionError("generation change during probe must abort immediately")
+    assert service._cycle_cache == {}
+
+
 def test_history_service_accepts_only_deep_calendar_boundary(tmp_path):
     class StubCalendar:
         def classify_gap(self, symbol, start, end, timeframe):
