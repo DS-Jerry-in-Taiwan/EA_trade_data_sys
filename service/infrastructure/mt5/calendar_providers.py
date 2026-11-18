@@ -133,7 +133,10 @@ class MQL5SessionCalendarProvider:
         try:
             raw = self.bridge(self.symbol_mapping.get(logical, logical))
         except Exception as exc:
-            raise CalendarProviderError(f"mt5_session_provider_error: {exc}") from exc
+            # Do not expose bridge exception text: RPyC/Wine errors may include
+            # host paths, connection details, or credentials.  Keep the cause
+            # chained for local logs while exposing only a stable diagnostic.
+            raise CalendarProviderError("mt5_session_provider_error") from exc
         if not isinstance(raw, Mapping):
             raise CalendarProviderError("mt5 session response must be an object")
         try:
@@ -153,7 +156,9 @@ class BrokerCalendarArtifactProvider:
                 with Path(artifact).open(encoding="utf-8") as stream:
                     artifact = json.load(stream)
             except (OSError, json.JSONDecodeError) as exc:
-                raise CalendarProviderError(f"broker_artifact_unavailable: {exc}") from exc
+                # File paths and parser details are internal and must not cross
+                # the service contract boundary.
+                raise CalendarProviderError("broker_artifact_unavailable") from exc
         if not isinstance(artifact, Mapping):
             raise CalendarProviderError("broker artifact must be an object")
         expected = {"source", "revision", "captured_at", "valid_from", "valid_until", "symbols"}
@@ -224,7 +229,10 @@ class CompositeCalendarSnapshotProvider:
             try:
                 mt5, broker = self.mt5.fetch(logical), self.broker.fetch(logical)
             except CalendarProviderError as exc:
-                raise CalendarProviderError(f"calendar evidence incomplete for {logical}: {exc}") from exc
+                # Provider diagnostics are intentionally collapsed.  The
+                # logical symbol is safe and makes the failure actionable;
+                # nested exception text is not part of the wire contract.
+                raise CalendarProviderError(f"calendar evidence incomplete for {logical}") from exc
             if mt5.source_symbol != broker.source_symbol or mt5.utc_windows != broker.utc_windows or mt5.session_state != broker.session_state:
                 raise CalendarProviderError(f"calendar evidence conflict for {logical}")
             symbols[logical] = {"source_symbol": mt5.source_symbol, "utc_windows": list(mt5.utc_windows), "session_state": mt5.session_state, "evidence_sources": [mt5.source, broker.source]}

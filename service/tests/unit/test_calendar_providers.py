@@ -49,6 +49,26 @@ def test_mql5_missing_bridge_is_diagnostic_and_fail_closed():
         MQL5SessionCalendarProvider(None).fetch("BTC")
 
 
+def test_mql5_provider_sanitizes_bridge_exception():
+    secret = "password=do-not-leak"
+
+    def bridge(_name):
+        raise RuntimeError(secret)
+
+    with pytest.raises(CalendarProviderError) as caught:
+        MQL5SessionCalendarProvider(bridge).fetch("BTC")
+    assert str(caught.value) == "mt5_session_provider_error"
+    assert secret not in str(caught.value)
+
+
+def test_broker_artifact_file_error_does_not_expose_path(tmp_path):
+    path = tmp_path / "private-password.json"
+    with pytest.raises(CalendarProviderError) as caught:
+        BrokerCalendarArtifactProvider(path)
+    assert str(caught.value) == "broker_artifact_unavailable"
+    assert "private-password" not in str(caught.value)
+
+
 @pytest.mark.parametrize("field", ["revision", "captured_at", "valid_from", "valid_until"])
 def test_broker_artifact_requires_provenance(field):
     value = artifact()
@@ -98,3 +118,19 @@ def test_composite_provider_requires_complete_session_identity():
     provider = CompositeCalendarSnapshotProvider(symbols=["BTC"], mt5=MQL5SessionCalendarProvider(None), broker=BrokerCalendarArtifactProvider(artifact()))
     with pytest.raises(CalendarProviderError, match="identity"):
         provider.fetch(session={"generation": 1})
+
+
+def test_composite_provider_sanitizes_nested_provider_error():
+    secret = "Authorization: Bearer hidden"
+
+    class Failing:
+        def fetch(self, _symbol):
+            raise CalendarProviderError(secret)
+
+    provider = CompositeCalendarSnapshotProvider(
+        symbols=["BTC"], mt5=Failing(), broker=Failing(), clock=lambda: NOW
+    )
+    with pytest.raises(CalendarProviderError) as caught:
+        provider.fetch(session={"fingerprint": {"id": "fp"}, "generation": 1, "epoch": "e"})
+    assert str(caught.value) == "calendar evidence incomplete for BTC"
+    assert secret not in str(caught.value)

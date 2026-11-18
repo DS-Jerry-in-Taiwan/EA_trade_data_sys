@@ -52,6 +52,15 @@ def test_failed_refresh_uses_bounded_backoff(tmp_path):
     assert coordinator.status().state == "backoff"
 
 
+def test_failed_refresh_status_is_sanitized(tmp_path):
+    secret = "token=must-not-cross-contract"
+    provider = Provider(RuntimeError(secret))
+    coordinator = CalendarRefreshCoordinator(CalendarSnapshotStore(tmp_path / "snapshot.json"), provider, clock=lambda: NOW)
+    assert coordinator.snapshot(session={"fingerprint": "fp", "generation": 1, "epoch": "e1"}) is None
+    assert coordinator.status().reason == "refresh_failed"
+    assert secret not in coordinator.status().reason
+
+
 def test_session_change_invalidates_snapshot_and_provider_cannot_rebind_old(tmp_path):
     session = {"fingerprint": "fp", "generation": 1, "epoch": "e1"}
     changed = {"fingerprint": "other", "generation": 2, "epoch": "e2"}

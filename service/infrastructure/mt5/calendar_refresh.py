@@ -131,7 +131,10 @@ class CalendarRefreshCoordinator:
                 self._failure_count += 1
                 delay = min(self.max_backoff_seconds, self.base_backoff_seconds * (2 ** (self._failure_count - 1)))
                 next_retry = now + timedelta(seconds=delay)
-                result = CalendarRefreshStatus("error", str(exc), attempted, next_retry)
+                # ``reason`` is exposed through the status contract.  Keep it
+                # stable and sanitized; the chained exception is available to
+                # local diagnostics without leaking into API responses.
+                result = CalendarRefreshStatus("error", "refresh_failed", attempted, next_retry)
                 with self._lock:
                     self._status = result
                 return result
