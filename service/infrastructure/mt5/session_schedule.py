@@ -103,18 +103,27 @@ class MT5SessionScheduleReader:
             raise CalendarProviderError("mt5 source symbol is required")
         offset = self._offset()
         captured = _utc(self.clock())
-        # MT5 ENUM_DAY_OF_WEEK is Sunday=0 through Saturday=6.  Keep the
-        # returned seven-day window aligned with that enum; Python's weekday
-        # uses Monday=0 and must not be passed through directly.
-        sunday_delta = (captured.weekday() + 1) % 7
-        first_day = captured.date() - timedelta(days=sunday_delta)
+        # Session values are indexed by the terminal's *server-local* date,
+        # not by the UTC date.  Derive the week anchor in that local clock
+        # before converting each window to UTC.  MT5 ENUM_DAY_OF_WEEK is
+        # Sunday=0 through Saturday=6; Python's weekday uses Monday=0.
+        server_now = captured + offset
+        sunday_delta = (server_now.weekday() + 1) % 7
+        first_day = server_now.date() - timedelta(days=sunday_delta)
         trade = self._read_kind("symbol_info_session_trade", symbol, first_day, offset)
         quote = self._read_kind("symbol_info_session_quote", symbol, first_day, offset)
-        if not trade or not quote:
-            raise CalendarProviderError("mt5 session schedule is empty")
-        if trade != quote:
-            raise CalendarProviderError("mt5 trade and quote sessions conflict")
-        valid_from = datetime.combine(first_day, time.min, tzinfo=timezone.utc)
+        if not trade:
+            raise CalendarProviderError("mt5 trade session schedule is empty")
+        # Trade and quote sessions are independent MT5 contracts.  Brokers
+        # can publish quote coverage that is wider or narrower than trade
+        # execution hours, so equality is not a valid consistency check.
+        # Quote is still queried and must be readable, but trade windows are
+        # the authoritative schedule for gap classification.  Keep the
+        # result contract narrow: quote windows are observation-only and are
+        # not promoted to calendar evidence.
+        if not quote:
+            raise CalendarProviderError("mt5 quote session schedule is empty")
+        valid_from = (datetime.combine(first_day, time.min) - offset).replace(tzinfo=timezone.utc)
         return {
             "source_symbol": symbol,
             "revision": self.revision,

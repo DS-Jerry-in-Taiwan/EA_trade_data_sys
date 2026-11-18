@@ -47,13 +47,27 @@ def test_reader_rejects_missing_timezone_offset():
         MT5SessionScheduleReader(FakeMT5(), server_utc_offset_seconds=None, revision="r").fetch("BTCUSD.sim")
 
 
-def test_reader_rejects_trade_quote_conflict():
+def test_reader_accepts_independent_trade_and_quote_sessions():
     reader = MT5SessionScheduleReader(
         FakeMT5(mismatch=True), server_utc_offset_seconds=0, revision="r",
         clock=lambda: datetime(2026, 11, 18, tzinfo=timezone.utc), days=1,
     )
-    with pytest.raises(CalendarProviderError, match="conflict"):
-        reader.fetch("BTCUSD.sim")
+    raw = reader.fetch("BTCUSD.sim")
+    # Quote sessions are queried for observability, but trade windows remain
+    # the calendar contract.  Different quote hours are normal at brokers.
+    assert raw["utc_windows"] == [{"from": "2026-11-15T09:00:00Z", "until": "2026-11-15T11:00:00Z"}]
+
+
+def test_reader_anchors_week_in_server_local_date():
+    # At 23:30 UTC on Saturday the +2h terminal is already Sunday.  The
+    # first MT5 day must therefore be the current Sunday, not the preceding
+    # UTC Sunday.
+    reader = MT5SessionScheduleReader(
+        FakeMT5(), server_utc_offset_seconds=2 * 3600, revision="r",
+        clock=lambda: datetime(2026, 11, 14, 23, 30, tzinfo=timezone.utc), days=1,
+    )
+    windows = reader.fetch("EURUSD.sim")["utc_windows"]
+    assert windows[0]["from"].startswith("2026-11-15T07:")
 
 
 def test_reader_rejects_missing_bridge_method():
