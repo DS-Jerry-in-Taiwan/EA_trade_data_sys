@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import hashlib
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
+
+from .calendar_snapshot import CalendarSnapshot
 
 
 class CalendarProviderError(ValueError):
@@ -183,4 +186,53 @@ class BrokerCalendarArtifactProvider:
             raise CalendarProviderError(f"broker artifact missing field: {exc.args[0]}") from exc
 
 
-__all__ = ["BrokerCalendarArtifactProvider", "CalendarEvidence", "CalendarProvider", "CalendarProviderError", "MQL5SessionCalendarProvider", "ProviderFailure"]
+class CompositeCalendarSnapshotProvider:
+    """Build a session-bound snapshot from MT5 and broker evidence.
+
+    Both sources must cover every configured symbol and agree on broker symbol,
+    UTC windows and session state.  Partial coverage or disagreement raises a
+    diagnostic error, so callers cannot accidentally persist a partial/open
+    schedule.
+    """
+
+    def __init__(self, *, symbols: list[str] | tuple[str, ...], mt5: CalendarProvider, broker: CalendarProvider, clock: Callable[[], datetime] | None = None, valid_for_seconds: int = 86400):
+        if not symbols or len(set(symbols)) != len(symbols):
+            raise ValueError("symbols must be a non-empty unique sequence")
+        if valid_for_seconds <= 0:
+            raise ValueError("valid_for_seconds must be positive")
+        self.symbols, self.mt5, self.broker = tuple(symbols), mt5, broker
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.valid_for_seconds = valid_for_seconds
+
+    @staticmethod
+    def _session_identity(session: Mapping[str, Any]) -> tuple[str, int, str]:
+        fingerprint = session.get("fingerprint")
+        if isinstance(fingerprint, Mapping):
+            fingerprint = fingerprint.get("id")
+        generation, epoch = session.get("generation"), session.get("epoch")
+        if not isinstance(fingerprint, str) or not fingerprint or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1 or not isinstance(epoch, str) or not epoch:
+            raise CalendarProviderError("session identity is incomplete")
+        return fingerprint, generation, epoch
+
+    def fetch(self, *, session: Mapping[str, Any]) -> CalendarSnapshot:
+        fingerprint, generation, epoch = self._session_identity(session)
+        captured = _utc(self.clock(), "captured_at")
+        symbols: dict[str, dict[str, Any]] = {}
+        revisions: list[str] = []
+        sources: list[str] = []
+        for logical in self.symbols:
+            try:
+                mt5, broker = self.mt5.fetch(logical), self.broker.fetch(logical)
+            except CalendarProviderError as exc:
+                raise CalendarProviderError(f"calendar evidence incomplete for {logical}: {exc}") from exc
+            if mt5.source_symbol != broker.source_symbol or mt5.utc_windows != broker.utc_windows or mt5.session_state != broker.session_state:
+                raise CalendarProviderError(f"calendar evidence conflict for {logical}")
+            symbols[logical] = {"source_symbol": mt5.source_symbol, "utc_windows": list(mt5.utc_windows), "session_state": mt5.session_state, "evidence_sources": [mt5.source, broker.source]}
+            revisions.extend((mt5.revision, broker.revision))
+            sources.extend((mt5.source, broker.source))
+        valid_until = captured.replace(microsecond=0) + timedelta(seconds=self.valid_for_seconds)
+        snapshot_id = hashlib.sha256((fingerprint + ":" + str(generation) + ":" + epoch + ":" + captured.isoformat()).encode()).hexdigest()[:24]
+        return CalendarSnapshot(schema_version="calendar.snapshot.v1", snapshot_id=snapshot_id, source="+".join(sorted(set(sources))), revision="+".join(sorted(set(revisions))), captured_at=captured, valid_from=captured, valid_until=valid_until, session_fingerprint=fingerprint, session_generation=generation, session_epoch=epoch, symbols=symbols)
+
+
+__all__ = ["BrokerCalendarArtifactProvider", "CalendarEvidence", "CalendarProvider", "CalendarProviderError", "CompositeCalendarSnapshotProvider", "MQL5SessionCalendarProvider", "ProviderFailure"]

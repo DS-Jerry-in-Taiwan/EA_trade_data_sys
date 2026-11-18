@@ -5,6 +5,7 @@ import pytest
 from service.infrastructure.mt5.calendar_providers import (
     BrokerCalendarArtifactProvider,
     CalendarProviderError,
+    CompositeCalendarSnapshotProvider,
     MQL5SessionCalendarProvider,
 )
 
@@ -73,3 +74,27 @@ def test_malformed_windows_are_rejected():
     bad = artifact(symbols={"BTC": {"source_symbol": "BTCUSD", "utc_windows": [{"from": "bad", "until": "2026-11-18T23:00:00Z"}]}})
     with pytest.raises(CalendarProviderError, match="timestamp"):
         BrokerCalendarArtifactProvider(bad).fetch("BTC")
+
+
+def test_composite_provider_builds_session_bound_snapshot():
+    source = artifact()
+    mt5 = MQL5SessionCalendarProvider(lambda name: {"source_symbol": "BTCUSD", "revision": "mt5-1", "captured_at": NOW, "valid_from": NOW, "valid_until": NOW + timedelta(days=1), "utc_windows": windows(), "session_state": "open"})
+    broker = BrokerCalendarArtifactProvider(source)
+    snapshot = CompositeCalendarSnapshotProvider(symbols=["BTC"], mt5=mt5, broker=broker, clock=lambda: NOW).fetch(session={"fingerprint": {"id": "fp"}, "generation": 1, "epoch": "e"})
+    assert snapshot.session_fingerprint == "fp"
+    assert snapshot.symbols["BTC"]["source_symbol"] == "BTCUSD"
+
+
+def test_composite_provider_rejects_partial_coverage_and_conflict():
+    source = artifact()
+    mt5 = MQL5SessionCalendarProvider(lambda name: {"source_symbol": "OTHER", "revision": "mt5-1", "captured_at": NOW, "valid_from": NOW, "valid_until": NOW + timedelta(days=1), "utc_windows": windows(), "session_state": "open"})
+    with pytest.raises(CalendarProviderError, match="conflict"):
+        CompositeCalendarSnapshotProvider(symbols=["BTC"], mt5=mt5, broker=BrokerCalendarArtifactProvider(source), clock=lambda: NOW).fetch(session={"fingerprint": {"id": "fp"}, "generation": 1, "epoch": "e"})
+    with pytest.raises(CalendarProviderError, match="incomplete"):
+        CompositeCalendarSnapshotProvider(symbols=["EURUSDm"], mt5=mt5, broker=BrokerCalendarArtifactProvider(source), clock=lambda: NOW).fetch(session={"fingerprint": {"id": "fp"}, "generation": 1, "epoch": "e"})
+
+
+def test_composite_provider_requires_complete_session_identity():
+    provider = CompositeCalendarSnapshotProvider(symbols=["BTC"], mt5=MQL5SessionCalendarProvider(None), broker=BrokerCalendarArtifactProvider(artifact()))
+    with pytest.raises(CalendarProviderError, match="identity"):
+        provider.fetch(session={"generation": 1})
