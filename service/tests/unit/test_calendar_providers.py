@@ -100,6 +100,34 @@ def test_broker_artifact_normalizes_source_and_metadata():
     assert evidence.session_state == "open"
 
 
+def test_broker_artifact_production_mode_requires_auditable_schedule_metadata():
+    with pytest.raises(CalendarProviderError, match="schedule metadata"):
+        BrokerCalendarArtifactProvider(artifact(), require_schedule_metadata=True)
+
+
+def test_broker_artifact_accepts_provenance_dst_holidays_and_early_close():
+    value = artifact(
+        timezone="Europe/London",
+        dst_rule="IANA:Europe/London",
+        holidays=[{"date": "2026-12-25", "label": "Christmas"}],
+        early_closes=[{"date": "2026-12-24", "until": "2026-12-24T12:00:00Z", "label": "Christmas Eve"}],
+        provenance={"publisher": "broker", "uri": "https://broker.example/calendar", "retrieved_at": NOW.isoformat()},
+    )
+    provider = BrokerCalendarArtifactProvider(value, require_schedule_metadata=True)
+    assert provider.fetch("BTC").source_symbol == "BTCUSD"
+
+
+@pytest.mark.parametrize("field", ["timezone", "dst_rule", "holidays", "early_closes", "provenance"])
+def test_broker_artifact_rejects_missing_required_schedule_metadata(field):
+    value = artifact(
+        timezone="Europe/London", dst_rule="IANA:Europe/London", holidays=[], early_closes=[],
+        provenance={"publisher": "broker", "uri": "https://broker.example/calendar"},
+    )
+    value.pop(field)
+    with pytest.raises(CalendarProviderError, match="schedule metadata"):
+        BrokerCalendarArtifactProvider(value, require_schedule_metadata=True)
+
+
 def test_malformed_windows_are_rejected():
     bad = artifact(symbols={"BTC": {"source_symbol": "BTCUSD", "utc_windows": [{"from": "bad", "until": "2026-11-18T23:00:00Z"}]}})
     with pytest.raises(CalendarProviderError, match="timestamp"):

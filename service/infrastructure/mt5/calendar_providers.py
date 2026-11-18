@@ -154,7 +154,12 @@ class BrokerCalendarArtifactProvider:
 
     source = "broker:official-artifact"
 
-    def __init__(self, artifact: Mapping[str, Any] | str | Path):
+    def __init__(
+        self,
+        artifact: Mapping[str, Any] | str | Path,
+        *,
+        require_schedule_metadata: bool = False,
+    ):
         if isinstance(artifact, (str, Path)):
             try:
                 with Path(artifact).open(encoding="utf-8") as stream:
@@ -165,20 +170,68 @@ class BrokerCalendarArtifactProvider:
                 raise CalendarProviderError("broker_artifact_unavailable") from exc
         if not isinstance(artifact, Mapping):
             raise CalendarProviderError("broker artifact must be an object")
-        expected = {"source", "revision", "captured_at", "valid_from", "valid_until", "symbols"}
-        if set(artifact) != expected:
-            missing = sorted(expected - set(artifact))
-            extra = sorted(set(artifact) - expected)
-            detail = f"missing={','.join(missing)}" if missing else f"unknown={','.join(extra)}"
+        required = {"source", "revision", "captured_at", "valid_from", "valid_until", "symbols"}
+        optional = {"timezone", "dst_rule", "holidays", "early_closes", "provenance"}
+        unknown = set(artifact) - required - optional
+        missing = required - set(artifact)
+        if missing or unknown:
+            detail = f"missing={','.join(sorted(missing))}" if missing else f"unknown={','.join(sorted(unknown))}"
             raise CalendarProviderError(f"broker artifact fields do not match contract ({detail})")
         self.artifact = artifact
         source = _required_text(artifact.get("source"), "source")
         if not source.startswith("broker:"):
             raise CalendarProviderError("source must identify a broker artifact")
         _required_text(artifact.get("revision"), "revision")
-        _required_text(artifact.get("captured_at"), "captured_at")
-        _required_text(artifact.get("valid_from"), "valid_from")
-        _required_text(artifact.get("valid_until"), "valid_until")
+        captured_at = _utc(artifact.get("captured_at"), "captured_at")
+        valid_from = _utc(artifact.get("valid_from"), "valid_from")
+        valid_until = _utc(artifact.get("valid_until"), "valid_until")
+        if valid_until <= valid_from:
+            raise CalendarProviderError("valid_until must be after valid_from")
+
+        # These fields make the artifact auditable.  They are optional for the
+        # legacy unit fixture, but production composition must set
+        # ``require_schedule_metadata=True`` so a guessed schedule cannot be
+        # promoted to authoritative evidence.
+        self.require_schedule_metadata = require_schedule_metadata
+        self._validate_schedule_metadata(artifact, required=require_schedule_metadata)
+
+    @staticmethod
+    def _validate_schedule_metadata(artifact: Mapping[str, Any], *, required: bool) -> None:
+        fields = ("timezone", "dst_rule", "holidays", "early_closes", "provenance")
+        if required and any(field not in artifact for field in fields):
+            missing = ",".join(field for field in fields if field not in artifact)
+            raise CalendarProviderError(f"broker artifact missing schedule metadata: {missing}")
+        if "timezone" in artifact:
+            _required_text(artifact["timezone"], "timezone")
+        if "dst_rule" in artifact:
+            _required_text(artifact["dst_rule"], "dst_rule")
+        for field in ("holidays", "early_closes"):
+            if field not in artifact:
+                continue
+            entries = artifact[field]
+            if not isinstance(entries, list):
+                raise CalendarProviderError(f"{field} must be an array")
+            for index, entry in enumerate(entries):
+                if not isinstance(entry, Mapping):
+                    raise CalendarProviderError(f"{field}[{index}] must be an object")
+                if "date" not in entry or not isinstance(entry["date"], str):
+                    raise CalendarProviderError(f"{field}[{index}].date is required")
+                try:
+                    datetime.fromisoformat(entry["date"])
+                except ValueError as exc:
+                    raise CalendarProviderError(f"{field}[{index}].date is invalid") from exc
+                if field == "early_closes":
+                    if "until" not in entry:
+                        raise CalendarProviderError(f"early_closes[{index}].until is required")
+                    _utc(entry["until"], f"early_closes[{index}].until")
+        if "provenance" in artifact:
+            provenance = artifact["provenance"]
+            if not isinstance(provenance, Mapping):
+                raise CalendarProviderError("provenance must be an object")
+            for key in ("publisher", "uri"):
+                _required_text(provenance.get(key), f"provenance.{key}")
+            if "retrieved_at" in provenance:
+                _utc(provenance["retrieved_at"], "provenance.retrieved_at")
 
     def fetch(self, symbol: str) -> CalendarEvidence:
         logical = _required_text(symbol, "symbol")

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Broker calendar evidence artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source", "revision", "captured_at", "valid_from", "valid_until", "timezone", "dst_rule", "holidays", "early_closes", "provenance", "symbols"],
+  "properties": {
+    "source": {"type": "string", "pattern": "^broker:.+"},
+    "revision": {"type": "string", "minLength": 1},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "valid_from": {"type": "string", "format": "date-time"},
+    "valid_until": {"type": "string", "format": "date-time"},
+    "timezone": {"type": "string", "minLength": 1},
+    "dst_rule": {"type": "string", "minLength": 1},
+    "holidays": {"type": "array", "items": {"$ref": "#/$defs/holiday"}},
+    "early_closes": {"type": "array", "items": {"$ref": "#/$defs/early_close"}},
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["publisher", "uri"],
+      "properties": {
+        "publisher": {"type": "string", "minLength": 1},
+        "uri": {"type": "string", "format": "uri", "minLength": 1},
+        "retrieved_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "symbols": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/symbol"}
+    }
+  },
+  "$defs": {
+    "symbol": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_symbol", "utc_windows"],
+      "properties": {
+        "source_symbol": {"type": "string", "minLength": 1},
+        "session_state": {"enum": ["open", "closed", "unknown"]},
+        "utc_windows": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["from", "until"],
+            "properties": {"from": {"type": "string", "format": "date-time"}, "until": {"type": "string", "format": "date-time"}}
+          }
+        }
+      }
+    },
+    "holiday": {
+      "type": "object", "additionalProperties": false,
+      "required": ["date"],
+      "properties": {"date": {"type": "string", "format": "date"}, "label": {"type": "string"}}
+    },
+    "early_close": {
+      "type": "object", "additionalProperties": false,
+      "required": ["date", "until"],
+      "properties": {"date": {"type": "string", "format": "date"}, "until": {"type": "string", "format": "date-time"}, "label": {"type": "string"}}
+    }
+  }
+}
