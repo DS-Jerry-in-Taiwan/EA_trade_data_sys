@@ -44,6 +44,16 @@ def test_mql5_provider_maps_logical_symbol_and_normalizes_evidence():
     assert evidence.utc_windows[0]["from"].endswith("Z")
 
 
+def test_mql5_provider_rejects_unknown_fields():
+    def bridge(source_symbol):
+        return {"source_symbol": source_symbol, "revision": "terminal-1", "captured_at": NOW,
+                "valid_from": NOW, "valid_until": NOW + timedelta(days=1),
+                "utc_windows": windows(), "session_state": "open", "secret": "ignored"}
+
+    with pytest.raises(CalendarProviderError, match="unknown fields"):
+        MQL5SessionCalendarProvider(bridge).fetch("BTC")
+
+
 def test_mql5_missing_bridge_is_diagnostic_and_fail_closed():
     with pytest.raises(CalendarProviderError, match="unavailable"):
         MQL5SessionCalendarProvider(None).fetch("BTC")

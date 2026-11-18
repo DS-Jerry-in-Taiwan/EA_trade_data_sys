@@ -139,6 +139,10 @@ class MQL5SessionCalendarProvider:
             raise CalendarProviderError("mt5_session_provider_error") from exc
         if not isinstance(raw, Mapping):
             raise CalendarProviderError("mt5 session response must be an object")
+        allowed = {"source_symbol", "revision", "captured_at", "valid_from", "valid_until", "utc_windows", "session_state"}
+        unknown = set(raw) - allowed
+        if unknown:
+            raise CalendarProviderError("mt5 session response has unknown fields")
         try:
             return CalendarEvidence(source=self.source, symbol=logical, session_state=raw.get("session_state", "unknown"), **{k: raw[k] for k in ("revision", "captured_at", "valid_from", "valid_until", "utc_windows", "source_symbol")})
         except KeyError as exc:
