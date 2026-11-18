@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Callable, Mapping, Protocol
 
 from .calendar import normalize_utc
@@ -58,6 +58,7 @@ class CalendarRefreshCoordinator:
         self.base_backoff_seconds = float(base_backoff_seconds)
         self.max_backoff_seconds = float(max_backoff_seconds)
         self._lock = Lock()
+        self._inflight: Event | None = None
         self._failure_count = 0
         self._status = CalendarRefreshStatus("unknown", "snapshot unavailable")
 
@@ -89,12 +90,32 @@ class CalendarRefreshCoordinator:
     def refresh(self, *, session: Mapping[str, Any], force: bool = False) -> CalendarRefreshStatus:
         now = self._now()
         with self._lock:
-            if not force and self._status.next_retry_at is not None and now < self._status.next_retry_at:
+            # A refresh is process-wide and provider calls can be slow.  Other
+            # callers wait for the current refresh instead of starting a
+            # second request against MT5 or the broker.
+            if self._inflight is not None:
+                inflight = self._inflight
+                waiter = True
+            else:
+                inflight = Event()
+                self._inflight = inflight
+                waiter = False
+            if waiter:
+                # Never hold the coordinator lock while waiting.  The owner
+                # needs it to publish the result and signal completion.
+                pass
+            elif not force and self._status.next_retry_at is not None and now < self._status.next_retry_at:
                 self._status = CalendarRefreshStatus(
                     "backoff", "refresh backoff active", self._status.attempted_at,
                     self._status.next_retry_at, self._status.symbols,
                 )
+                self._inflight = None
+                inflight.set()
                 return self._status
+        if waiter:
+            inflight.wait()
+            return self._status
+        try:
             attempted = now
             try:
                 fetch = getattr(self.provider, "fetch", None)
@@ -110,11 +131,20 @@ class CalendarRefreshCoordinator:
                 self._failure_count += 1
                 delay = min(self.max_backoff_seconds, self.base_backoff_seconds * (2 ** (self._failure_count - 1)))
                 next_retry = now + timedelta(seconds=delay)
-                self._status = CalendarRefreshStatus("error", str(exc), attempted, next_retry)
-                return self._status
+                result = CalendarRefreshStatus("error", str(exc), attempted, next_retry)
+                with self._lock:
+                    self._status = result
+                return result
             self._failure_count = 0
-            self._status = CalendarRefreshStatus("valid", "snapshot refreshed", attempted, None, tuple(snapshot.symbols))
-            return self._status
+            result = CalendarRefreshStatus("valid", "snapshot refreshed", attempted, None, tuple(snapshot.symbols))
+            with self._lock:
+                self._status = result
+            return result
+        finally:
+            with self._lock:
+                if self._inflight is inflight:
+                    self._inflight = None
+                    inflight.set()
 
 
 __all__ = ["CalendarSnapshotProvider", "CalendarRefreshStatus", "CalendarRefreshCoordinator"]

@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+from threading import Barrier, Thread
+import time
 
 from service.infrastructure.mt5.calendar_refresh import CalendarRefreshCoordinator
 from service.infrastructure.mt5.calendar_snapshot import CalendarSnapshotStore
@@ -71,3 +73,36 @@ def test_successful_refresh_persists_and_is_available_after_restart(tmp_path):
     assert coordinator.snapshot(session=session).session_fingerprint == "fp"
     restarted = CalendarRefreshCoordinator(store, Provider(RuntimeError("must not fetch")), clock=lambda: NOW)
     assert restarted.snapshot(session=session).session_generation == 1
+
+
+def test_concurrent_refreshes_are_single_flight(tmp_path):
+    session = {"fingerprint": "fp", "generation": 1, "epoch": "e1"}
+    started = Barrier(2)
+
+    class BlockingProvider:
+        calls = 0
+
+        def fetch(self, *, session):
+            self.calls += 1
+            started.wait(timeout=2)
+            time.sleep(0.05)
+            return make_snapshot(session)
+
+    provider = BlockingProvider()
+    coordinator = CalendarRefreshCoordinator(CalendarSnapshotStore(tmp_path / "snapshot.json"), provider, clock=lambda: NOW)
+    results = []
+
+    def run():
+        results.append(coordinator.refresh(session=session))
+
+    first = Thread(target=run)
+    second = Thread(target=run)
+    first.start()
+    # Ensure the first caller owns the in-flight refresh before the second.
+    started.wait(timeout=2)
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert provider.calls == 1
+    assert len(results) == 2
+    assert all(result.state == "valid" for result in results)
