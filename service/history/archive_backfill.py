@@ -32,16 +32,39 @@ def backfill(client, archive, symbol, timeframe, start, end):
         raise ValueError('MT5 readonly source unavailable')
     client.init_resolver([symbol])
 
-    def read(mt5):
+    def session_identity():
+        """Return the opaque identity that scopes an archive write.
+
+        Generation is the required lifecycle token.  When the caller exposes
+        a boot epoch, bind that value too so a restart cannot reuse an older
+        archive identity. Keep this check at the backfill seam so callers can
+        never persist bars from a mixed session.
+        """
         state = client.session_guard.status()
         fingerprint = state.get('fingerprint') or {}
-        token = fingerprint.get('id')
-        if not state.get('ready') or fingerprint.get('account_mode') != 'DEMO' or not token:
+        token = fingerprint.get('id') if isinstance(fingerprint, dict) else None
+        generation = state.get('generation')
+        # History's session guard predates the execution boot-epoch field.
+        # Bind to it when supplied, while generation remains the required
+        # lifecycle token for this read-only archive path.
+        epoch = state.get('epoch')
+        if (
+            not isinstance(fingerprint, dict)
+            or not state.get('ready')
+            or fingerprint.get('account_mode') != 'DEMO'
+            or not isinstance(token, str) or not token.strip()
+            or isinstance(generation, bool) or not isinstance(generation, int) or generation < 1
+            or (epoch is not None and (not isinstance(epoch, str) or not epoch.strip()))
+        ):
             raise ValueError('confirmed Demo source required')
+        return token, generation, epoch
+
+    def read(mt5):
+        token, generation, epoch = session_identity()
         source = client.resolve(symbol)
         rates = mt5.copy_rates_range(source, getattr(mt5, f'TIMEFRAME_{timeframe}'),
                                      start.to_pydatetime(), end.to_pydatetime())
-        return rates, (token, source, state.get('generation'))
+        return rates, (token, source, generation, epoch)
 
     snapshots = []
     identities = []
@@ -59,7 +82,13 @@ def backfill(client, archive, symbol, timeframe, start, end):
     columns = ['time', 'open', 'high', 'low', 'close', 'tick_volume']
     if not snapshots[0][columns].equals(snapshots[1][columns]):
         raise ValueError('source changed between readonly snapshots')
-    token, source, _ = identities[0]
+    # Re-check immediately before writing.  This closes the small window
+    # between the final read and persistence where a reconnect could occur.
+    final_token, final_generation, final_epoch = session_identity()
+    if (final_token, final_generation, final_epoch) != (
+            identities[0][0], identities[0][2], identities[0][3]):
+        raise ValueError('source changed before archive write')
+    token, source, _, _ = identities[0]
     scope = dict(session_token=token, source_symbol=source, logical_symbol=symbol, timeframe=timeframe)
     archive.upsert(**scope, bars=snapshots[1])
     archive.mark_completed(**scope, start=start, end=end, source_bars=snapshots[1])

@@ -13,9 +13,13 @@ class Client:
         self.mode = mode
         self.session_guard = SimpleNamespace(status=self.status)
         self.mt5 = SimpleNamespace(TIMEFRAME_M15=15, copy_rates_range=self.rates)
+        self.epoch = 'boot-a'
+        self.status_calls = 0
 
     def status(self):
+        self.status_calls += 1
         return {'ready': True, 'generation': 1,
+                'epoch': self.epoch,
                 'fingerprint': {'id': 'opaque-test-source', 'account_mode': self.mode}}
 
     def ensure_connected(self):
@@ -69,3 +73,26 @@ def test_backfill_rejects_unbounded_or_ambiguous_interval(start, end):
     with pytest.raises(ValueError):
         backfill(client, None, 'BTC', 'M15', start, end)
     assert client.calls == 0
+
+
+def test_backfill_rejects_session_epoch_change_before_archive_write(tmp_path):
+    """A terminal restart between verification and persistence is fail-closed."""
+    from service.history.archive import HistoricalOHLCArchive
+
+    client = Client()
+    original_status = client.status
+
+    def status_then_restart():
+        state = original_status()
+        # The first two calls are the source reads.  The next call is the
+        # final pre-write identity check and simulates a terminal restart.
+        if client.status_calls >= 3:
+            client.epoch = 'boot-b'
+        return state | {'epoch': client.epoch}
+
+    client.session_guard.status = status_then_restart
+    archive = HistoricalOHLCArchive(tmp_path / 'archive.sqlite3')
+    with pytest.raises(ValueError, match='source changed before archive write'):
+        backfill(client, archive, 'BTC', 'M15',
+                 '2026-09-01T00:00:00Z', '2026-09-01T01:00:00Z')
+    assert archive.coverage('opaque-test-source', 'TEST_BTC', 'BTC', 'M15') == []
