@@ -264,7 +264,9 @@ class HistoryService:
                     timeframe,
                 )
                 self.calendar_observations[(symbol, timeframe, signature)] = observation
-                if observation.state == 'unknown':
+                if observation.state == 'unknown' and getattr(
+                    self.calendar_service, 'authoritative', True
+                ):
                     raise ValueError(
                         f'calendar evidence unavailable or conflicting for {symbol} {timeframe}'
                     )
@@ -654,13 +656,37 @@ def main():
     """Run the process-owned history worker until it receives a stop signal."""
     settings = load_settings()
     calendar_service = None
-    if settings.history_service.calendar_enabled:
+    mt5_client = None
+    if settings.history_service.calendar_mode in {"observe", "enforce"}:
         # Provider/coordinator wiring is intentionally explicit at the
         # composition root.  No configured coordinator means UnknownCalendar
         # (via compose_calendar_service), never a guessed weekend/DST rule.
         from service.history.calendar_service import compose_calendar_service
-        calendar_service = compose_calendar_service()
-    service = HistoryService(settings=settings, calendar_service=calendar_service)
+        if settings.history_service.calendar_mode == "observe":
+            # Observation is deliberately opt-in and requires an operator
+            # supplied server-to-UTC offset and revision.  Missing values do
+            # not guess a timezone; the service records an unavailable probe.
+            try:
+                offset = int(os.environ["MT5_SERVER_UTC_OFFSET_SECONDS"])
+                revision = os.environ["MT5_CALENDAR_REVISION"]
+                if not revision.strip():
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                offset = revision = None
+            if offset is not None:
+                mt5_client = MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
+                calendar_service = compose_calendar_service(
+                    mode="observe",
+                    probe=lambda symbol: mt5_client.session_schedule(
+                        symbol, server_utc_offset_seconds=offset, revision=revision
+                    ),
+                )
+            else:
+                calendar_service = compose_calendar_service(mode="observe")
+        else:
+            calendar_service = compose_calendar_service(mode="enforce")
+    service = HistoryService(settings=settings, mt5_client=mt5_client,
+                             calendar_service=calendar_service)
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
     signal.signal(signal.SIGINT, _handle_shutdown_signal)
     try:

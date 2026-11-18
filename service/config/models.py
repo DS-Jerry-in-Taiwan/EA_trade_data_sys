@@ -168,6 +168,10 @@ class HistoryServiceSettings:
     # configured.  When enabled, HistoryService fails closed on unknown or
     # conflicting schedule observations.
     calendar_enabled: bool = False
+    # Calendar operation mode. ``disabled`` preserves the legacy path;
+    # ``observe`` may collect MT5 session evidence but never authorizes a
+    # gap classification; ``enforce`` requires the dual-source snapshot.
+    calendar_mode: str = "disabled"
     status_path: str = "/run/trade-data/history-status.json"
     minimum_bars: dict[str, int] = field(
         default_factory=lambda: {"M5": 500, "M15": 200, "H1": 500, "D1": 200}
@@ -201,9 +205,19 @@ class HistoryServiceSettings:
             if (item := HistorySymbolSettings.from_value(value)) is not None
         )
         retention = raw.get("retention_margin_bars")
+        configured_mode = environ.get("HISTORY_CALENDAR_MODE", raw.get("calendar_mode"))
+        if configured_mode is None:
+            # Backwards compatibility: the old boolean was an enforce switch.
+            configured_mode = "enforce" if _bool(raw.get("calendar_enabled"), False) else cls.calendar_mode
+        if not isinstance(configured_mode, str):
+            raise ValueError("history_service.calendar_mode must be disabled, observe, or enforce")
+        configured_mode = configured_mode.strip().lower()
+        if configured_mode not in {"disabled", "observe", "enforce"}:
+            raise ValueError("history_service.calendar_mode must be disabled, observe, or enforce")
         return cls(
             enabled=_bool(raw.get("enabled"), cls.enabled),
-            calendar_enabled=_bool(raw.get("calendar_enabled"), cls.calendar_enabled),
+            calendar_enabled=(configured_mode == "enforce"),
+            calendar_mode=configured_mode,
             status_path=environ.get(
                 "HISTORY_STATUS_PATH", _str(raw.get("status_path"), cls.status_path)
             ),

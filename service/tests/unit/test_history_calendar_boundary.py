@@ -16,6 +16,41 @@ def test_calendar_setting_is_opt_in_and_serialized():
     assert HistoryServiceSettings().calendar_enabled is False
 
 
+def test_calendar_modes_are_explicit_and_observe_is_non_authoritative():
+    disabled = Settings.from_mapping({"history_service": {}}, environ={})
+    assert disabled.history_service.calendar_mode == "disabled"
+    assert disabled.history_service.calendar_enabled is False
+
+    observed = Settings.from_mapping(
+        {"history_service": {"calendar_mode": "observe"}}, environ={}
+    )
+    assert observed.history_service.calendar_mode == "observe"
+    assert observed.history_service.calendar_enabled is False
+
+    enforced = Settings.from_mapping(
+        {"history_service": {"calendar_mode": "enforce"}}, environ={}
+    )
+    assert enforced.history_service.calendar_mode == "enforce"
+    assert enforced.history_service.calendar_enabled is True
+
+
+def test_observe_factory_probes_but_returns_unknown():
+    seen = []
+    service = compose_calendar_service(
+        mode="observe", probe=lambda symbol: seen.append(symbol) or {
+            "source_symbol": "BTCUSD.sim", "revision": "r1",
+            "utc_windows": [],
+        }
+    )
+    result = service.classify_gap(
+        "BTC", datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 1, tzinfo=timezone.utc), "M5"
+    )
+    assert result.state == "unknown"
+    assert seen == ["BTC"]
+    assert service.observations[0]["status"] == "observed"
+
+
 def test_history_service_accepts_only_deep_calendar_boundary(tmp_path):
     class StubCalendar:
         def classify_gap(self, symbol, start, end, timeframe):

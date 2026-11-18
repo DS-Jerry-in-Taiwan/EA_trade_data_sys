@@ -70,7 +70,48 @@ class RefreshBackedCalendarEvidenceService:
         )
 
 
-def compose_calendar_service(*, coordinator=None, session_provider=None):
+class ObserveCalendarEvidenceService:
+    """Read-only MT5 probe boundary used by the ``observe`` mode.
+
+    Probe results are retained for diagnostics, but are never converted into
+    an authoritative snapshot or an ``open``/``closed`` classification.  This
+    lets operators validate the bridge while the broker evidence source is
+    still being prepared.
+    """
+
+    authoritative = False
+
+    def __init__(self, probe: Callable[[str], Mapping] | None = None):
+        self.probe = probe
+        self.observations: list[dict] = []
+
+    def classify_gap(self, symbol, start, end, timeframe):
+        start, end = normalize_utc(start, "start"), normalize_utc(end, "end")
+        record = {"symbol": symbol, "timeframe": timeframe, "status": "unavailable"}
+        if self.probe is not None:
+            try:
+                result = self.probe(symbol)
+                if isinstance(result, Mapping):
+                    # Keep diagnostics bounded and avoid carrying arbitrary
+                    # bridge objects across the worker boundary.
+                    record["status"] = "observed"
+                    record["source_symbol"] = result.get("source_symbol")
+                    record["revision"] = result.get("revision")
+                    record["utc_windows"] = result.get("utc_windows")
+                else:
+                    record["status"] = "invalid"
+            except Exception:
+                record["status"] = "error"
+        self.observations.append(record)
+        return CalendarObservation(
+            state="unknown", effective_from=start, effective_until=end,
+            source="mt5:observe", revision="observation-only",
+            reason="calendar observe mode is non-authoritative",
+        )
+
+
+def compose_calendar_service(*, mode="enforce", coordinator=None,
+                             session_provider=None, probe=None):
     """Return the history boundary for a configured refresh coordinator.
 
     The composition root may supply a :class:`CalendarRefreshCoordinator`
@@ -78,9 +119,14 @@ def compose_calendar_service(*, coordinator=None, session_provider=None):
     In every other case the returned service is the explicit unknown adapter;
     this keeps production defaults fail-closed and avoids guessed schedules.
     """
+    if mode == "observe":
+        return ObserveCalendarEvidenceService(probe)
+    if mode == "disabled":
+        return None
     if coordinator is None or not callable(session_provider):
         return UnknownCalendar()
     return RefreshBackedCalendarEvidenceService(coordinator, session_provider)
 
 
-__all__ = ["CalendarEvidenceService", "RefreshBackedCalendarEvidenceService", "compose_calendar_service"]
+__all__ = ["CalendarEvidenceService", "ObserveCalendarEvidenceService",
+           "RefreshBackedCalendarEvidenceService", "compose_calendar_service"]

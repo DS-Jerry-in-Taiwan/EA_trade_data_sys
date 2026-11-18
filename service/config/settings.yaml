@@ -27,6 +27,9 @@ history_service:
   # Remains disabled until authoritative MT5 and broker evidence is deployed.
   # Enabling is fail-closed when either source is missing or conflicts.
   calendar_enabled: false
+  # Set to observe to collect MT5 session probes without authorizing gap
+  # classification.  enforce requires both MT5 and broker evidence.
+  calendar_mode: "disabled"
   status_path: "/run/trade-data/history-status.json"
   minimum_bars:
     M5: 500
