@@ -14,6 +14,7 @@ from service.infrastructure.mt5.session import AccountSessionTransition
 from service.infrastructure.status.component_status import (
     atomic_write_status,
 )
+from service.history.calendar_service import CalendarEvidenceService
 
 class HistoryService:
     SUPPORTED_TIMEFRAMES = {
@@ -33,7 +34,8 @@ class HistoryService:
     DEFAULT_FETCH_TIMEOUT_SECONDS = 10
 
     def __init__(self, config_path=None, mt5_client=None,
-                 settings: Settings | None = None):
+                 settings: Settings | None = None,
+                 calendar_service: CalendarEvidenceService | None = None):
         settings = settings or load_settings(config_path)
         cfg = settings.history_service
         self.symbols = [symbol.as_legacy_dict() for symbol in cfg.symbols]
@@ -73,6 +75,11 @@ class HistoryService:
             mt5_client if mt5_client is not None
             else MT5Client(symbol_aliases=settings.symbol_aliases, settings=settings)
         )
+        # Calendar providers, persistence and refresh policy stay behind one
+        # deep interface.  None preserves legacy operation while broker
+        # provenance is not configured; enabling the setting is fail-closed.
+        self.calendar_service = calendar_service
+        self.calendar_observations = {}
         self._resolver_initialized = False
         # MT5Client serializes calls with one lock, so multiple executor workers
         # only accumulate blocked retries. Keep exactly one operation in flight
@@ -249,6 +256,18 @@ class HistoryService:
             signature = tuple((row['time'], *(row[c] for c in ('open', 'high', 'low', 'close')))
                               for row in (left, right))
             active.add(signature)
+            if self.calendar_service is not None:
+                observation = self.calendar_service.classify_gap(
+                    symbol,
+                    left['time'].to_pydatetime(),
+                    right['time'].to_pydatetime(),
+                    timeframe,
+                )
+                self.calendar_observations[(symbol, timeframe, signature)] = observation
+                if observation.state == 'unknown':
+                    raise ValueError(
+                        f'calendar evidence unavailable or conflicting for {symbol} {timeframe}'
+                    )
             if signature in staged:
                 additions.append(staged[signature])
                 continue
@@ -633,7 +652,16 @@ def _handle_shutdown_signal(signum, _frame):
 
 def main():
     """Run the process-owned history worker until it receives a stop signal."""
-    service = HistoryService()
+    settings = load_settings()
+    calendar_service = None
+    if settings.history_service.calendar_enabled:
+        # Provider wiring is intentionally explicit at the composition root.
+        # Until authoritative MT5 + broker adapters are configured this
+        # fail-closed composer yields ``unknown`` rather than guessing a
+        # weekend/DST schedule.
+        from service.infrastructure.mt5.calendar_composer import CalendarEvidenceComposer
+        calendar_service = CalendarEvidenceComposer()
+    service = HistoryService(settings=settings, calendar_service=calendar_service)
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
     signal.signal(signal.SIGINT, _handle_shutdown_signal)
     try:

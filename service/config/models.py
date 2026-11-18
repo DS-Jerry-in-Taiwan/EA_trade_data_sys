@@ -164,6 +164,10 @@ class HistorySymbolSettings:
 @dataclass(frozen=True)
 class HistoryServiceSettings:
     enabled: bool = True
+    # Calendar evidence is opt-in until both MT5 and broker provenance are
+    # configured.  When enabled, HistoryService fails closed on unknown or
+    # conflicting schedule observations.
+    calendar_enabled: bool = False
     status_path: str = "/run/trade-data/history-status.json"
     minimum_bars: dict[str, int] = field(
         default_factory=lambda: {"M5": 500, "M15": 200, "H1": 500, "D1": 200}
@@ -199,6 +203,7 @@ class HistoryServiceSettings:
         retention = raw.get("retention_margin_bars")
         return cls(
             enabled=_bool(raw.get("enabled"), cls.enabled),
+            calendar_enabled=_bool(raw.get("calendar_enabled"), cls.calendar_enabled),
             status_path=environ.get(
                 "HISTORY_STATUS_PATH", _str(raw.get("status_path"), cls.status_path)
             ),

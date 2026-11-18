@@ -24,6 +24,9 @@ tick_service:
 
 history_service:
   enabled: true
+  # Remains disabled until authoritative MT5 and broker evidence is deployed.
+  # Enabling is fail-closed when either source is missing or conflicts.
+  calendar_enabled: false
   status_path: "/run/trade-data/history-status.json"
   minimum_bars:
     M5: 500
