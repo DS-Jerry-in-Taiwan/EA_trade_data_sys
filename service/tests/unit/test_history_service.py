@@ -618,7 +618,7 @@ def test_changed_source_identity_rebuilds_without_mixing_instruments(tmp_path):
     assert (data_path / 'BTC_M5.csv.ready').read_text() == 'broker-BTC'
 
 
-def test_account_switch_before_read_uses_reconciled_alias_for_later_timeframe(tmp_path):
+def test_account_switch_aborts_cycle_then_next_cycle_uses_reconciled_alias(tmp_path):
     class SwitchBeforeReadClient(MT5Client):
         first_read = True
 
@@ -643,17 +643,31 @@ def test_account_switch_before_read_uses_reconciled_alias_for_later_timeframe(tm
     try:
         service.fetch_incremental(now=datetime(2026, 9, 8, 12, tzinfo=timezone.utc))
 
+        # The account switch occurred during the first MT5 read.  The worker
+        # must abort the complete cycle and publish no partial timeframe.
         assert not ready.exists()
         assert not (data_path / 'BTC_M5.csv').exists()
-        saved = pd.read_csv(data_path / 'BTC_M15.csv')
-        assert set(saved['source_symbol']) == {'BTC_USD'}
-        assert set(saved['close']) == {200}
+        assert not (data_path / 'BTC_M15.csv').exists()
+        assert service.get_sync_status()['BTC:M5']['state'] == 'error'
+
+        # The next cycle sees the reconciled account and can publish both
+        # timeframes from one consistent session.
+        service.fetch_incremental(now=datetime(2026, 9, 8, 12, tzinfo=timezone.utc))
+
+        saved_m5 = pd.read_csv(data_path / 'BTC_M5.csv')
+        saved_m15 = pd.read_csv(data_path / 'BTC_M15.csv')
+        assert set(saved_m5['source_symbol']) == {'BTC_USD'}
+        assert set(saved_m15['source_symbol']) == {'BTC_USD'}
+        assert set(saved_m5['close']) == {200}
+        assert set(saved_m15['close']) == {200}
         assert {request[0] for request in terminal.requests} == {'BTC_USD'}
-        assert terminal.read_accounts == [2]
+        assert terminal.read_accounts == [2, 2]
+        assert (data_path / 'BTC_M5.csv.ready').read_text() == 'BTC_USD'
         assert (data_path / 'BTC_M15.csv.ready').read_text() == 'BTC_USD'
-        status = service.get_sync_status()['BTC:M15']
-        assert status['source_symbol'] == 'BTC_USD'
-        assert status['session_generation'] == client.session_guard.generation == 2
+        for timeframe in ('M5', 'M15'):
+            status = service.get_sync_status()[f'BTC:{timeframe}']
+            assert status['source_symbol'] == 'BTC_USD'
+            assert status['session_generation'] == client.session_guard.generation == 2
     finally:
         service.close()
 
