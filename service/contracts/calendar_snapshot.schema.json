@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Calendar evidence snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "snapshot_id", "source", "revision", "captured_at", "valid_from", "valid_until", "session_fingerprint", "session_generation", "session_epoch", "symbols"],
+  "properties": {
+    "schema_version": {"type": "string", "minLength": 1},
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "source": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "minLength": 1},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "valid_from": {"type": "string", "format": "date-time"},
+    "valid_until": {"type": "string", "format": "date-time"},
+    "session_fingerprint": {"type": "string", "minLength": 1},
+    "session_generation": {"type": "integer", "minimum": 1},
+    "session_epoch": {"type": "string", "minLength": 1},
+    "symbols": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/symbol"}
+    }
+  },
+  "$defs": {
+    "symbol": {
+      "type": "object", "additionalProperties": true,
+      "required": ["source_symbol", "utc_windows"],
+      "properties": {
+        "source_symbol": {"type": "string", "minLength": 1},
+        "utc_windows": {
+          "type": "array", "minItems": 1,
+          "items": {"type": "object", "additionalProperties": false, "required": ["from", "until"], "properties": {"from": {"type": "string", "format": "date-time"}, "until": {"type": "string", "format": "date-time"}}
+        }
+      }
+    }
+  }
+}
