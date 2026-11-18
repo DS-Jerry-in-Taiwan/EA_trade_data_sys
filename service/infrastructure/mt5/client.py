@@ -384,6 +384,28 @@ class MT5Client:
                 and logical_name in self._resolver.mapping
             )
 
+    def session_schedule(self, logical_name, *, server_utc_offset_seconds, revision, clock=None, days=7):
+        """Read the account-scoped MT5 session schedule for one logical symbol.
+
+        This is a read-only bridge seam.  Symbol resolution is performed
+        against the current account catalog before invoking
+        ``symbol_info_session_trade``/``symbol_info_session_quote``.  The
+        caller must provide a verified terminal-server-to-UTC offset; this
+        method never guesses a timezone or reuses a schedule across sessions.
+        """
+        from service.infrastructure.mt5.session_schedule import MT5SessionScheduleReader
+
+        broker_symbol = self.resolve(logical_name)
+        return self.call(
+            lambda mt5: MT5SessionScheduleReader(
+                mt5,
+                server_utc_offset_seconds=server_utc_offset_seconds,
+                revision=revision,
+                clock=clock,
+                days=days,
+            ).fetch(broker_symbol)
+        )
+
     def refresh_resolver(self, configured_symbols=None):
         """在 reset() 重連後重新初始化 resolver。"""
         with self._lock:
