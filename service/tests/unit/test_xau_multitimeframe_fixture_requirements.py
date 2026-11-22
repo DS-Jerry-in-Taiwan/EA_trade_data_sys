@@ -8,6 +8,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+from datetime import timedelta
 
 import pandas as pd
 import pytest
@@ -79,6 +80,37 @@ def validate_xau_fixture_set(documents):
     return failures
 
 
+def validate_long_range_fixture_set(documents, minimum_days=90):
+    """Return acceptance failures for a long-range candidate set.
+
+    This validator intentionally reports a short reviewed fixture as a failure.
+    It does not manufacture bars or treat a short representative fixture as a
+    long-range acceptance result.
+    """
+    failures = validate_xau_fixture_set(documents)
+    if not documents:
+        return failures
+    ranges = []
+    for document in documents:
+        coverage = document.get("coverage", {})
+        try:
+            start = pd.Timestamp(coverage["start_utc"])
+            end = pd.Timestamp(coverage["end_utc"])
+        except (KeyError, TypeError, ValueError):
+            failures.append(f"coverage timestamps missing for {document.get('timeframe')}")
+            continue
+        if start.tzinfo is None or end.tzinfo is None or end < start:
+            failures.append(f"coverage timestamps invalid for {document.get('timeframe')}")
+            continue
+        ranges.append((start.tz_convert("UTC"), end.tz_convert("UTC")))
+    if ranges:
+        common_start = max(start for start, _ in ranges)
+        common_end = min(end for _, end in ranges)
+        if common_end - common_start < timedelta(days=minimum_days):
+            failures.append(f"common coverage is shorter than {minimum_days} days")
+    return failures
+
+
 def test_sanitized_xau_fixture_set_meets_multitimeframe_contract():
     documents = _sample_set()
     assert validate_xau_fixture_set(documents) == []
@@ -93,6 +125,15 @@ def test_published_xau_fixture_set_meets_multitimeframe_contract():
     assert {doc["logical_symbol"] for doc in documents} == {"XAUUSDm"}
     assert {doc["source_symbol"] for doc in documents} == {"XAUUSD.sim"}
     assert all(doc["coverage"]["bar_count"] >= 200 for doc in documents)
+
+
+def test_representative_fixture_is_not_accepted_as_long_range():
+    documents = [
+        json.loads((REAL_FIXTURE_DIR / f"xauusd_mtf_{timeframe}.json").read_text(encoding="utf-8"))
+        for timeframe in TIMEFRAMES
+    ]
+    failures = validate_long_range_fixture_set(documents, minimum_days=90)
+    assert "common coverage is shorter than 90 days" in failures
 
 
 @pytest.mark.parametrize("removed", TIMEFRAMES)
