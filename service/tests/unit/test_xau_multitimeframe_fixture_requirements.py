@@ -14,6 +14,7 @@ import pytest
 
 
 CONTRACT = Path(__file__).parents[2] / "contracts" / "archive_dataset_sample.json"
+REAL_FIXTURE_DIR = Path(__file__).parents[2] / "contracts" / "fixtures"
 TIMEFRAMES = ("M5", "M15", "H1")
 
 
@@ -81,6 +82,17 @@ def validate_xau_fixture_set(documents):
 def test_sanitized_xau_fixture_set_meets_multitimeframe_contract():
     documents = _sample_set()
     assert validate_xau_fixture_set(documents) == []
+
+
+def test_published_xau_fixture_set_meets_multitimeframe_contract():
+    documents = [
+        json.loads((REAL_FIXTURE_DIR / f"xauusd_mtf_{timeframe}.json").read_text(encoding="utf-8"))
+        for timeframe in TIMEFRAMES
+    ]
+    assert validate_xau_fixture_set(documents) == []
+    assert {doc["logical_symbol"] for doc in documents} == {"XAUUSDm"}
+    assert {doc["source_symbol"] for doc in documents} == {"XAUUSD.sim"}
+    assert all(doc["coverage"]["bar_count"] >= 200 for doc in documents)
 
 
 @pytest.mark.parametrize("removed", TIMEFRAMES)
