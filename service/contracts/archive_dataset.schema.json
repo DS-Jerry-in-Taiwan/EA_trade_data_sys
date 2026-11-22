@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TradeSystem archive dataset contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_revision", "dataset_id", "logical_symbol", "source_symbol", "timeframe", "coverage", "bars", "archive_digest", "digest_algorithm", "session_evidence", "provenance"],
+  "properties": {
+    "contract_revision": {"type": "string", "const": "archive.dataset.v1"},
+    "dataset_id": {"type": "string", "minLength": 1},
+    "logical_symbol": {"type": "string", "minLength": 1},
+    "source_symbol": {"type": "string", "minLength": 1},
+    "timeframe": {"enum": ["M5", "M15", "H1", "D1"]},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "bars": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/bar"}},
+    "archive_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "digest_algorithm": {"const": "sha256(canonical-json-rows-v1)"},
+    "session_evidence": {"$ref": "#/$defs/session"},
+    "provenance": {"$ref": "#/$defs/provenance"}
+  },
+  "$defs": {
+    "utc": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start_utc", "end_utc", "closed_bars", "bar_count"],
+      "properties": {
+        "start_utc": {"$ref": "#/$defs/utc"}, "end_utc": {"$ref": "#/$defs/utc"},
+        "closed_bars": {"const": true}, "bar_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "bar": {
+      "type": "object", "additionalProperties": false,
+      "required": ["time", "open", "high", "low", "close", "tick_volume"],
+      "properties": {
+        "time": {"$ref": "#/$defs/utc"},
+        "open": {"type": "number"}, "high": {"type": "number"},
+        "low": {"type": "number"}, "close": {"type": "number"},
+        "tick_volume": {"type": "number", "minimum": 0},
+        "spread": {"type": "number", "minimum": 0},
+        "real_volume": {"type": "number", "minimum": 0}
+      }
+    },
+    "session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["session_fingerprint", "session_generation", "session_epoch", "snapshot_schema_revision", "calendar_revision", "snapshot"],
+      "properties": {
+        "session_fingerprint": {"type": "string", "minLength": 1},
+        "session_generation": {"type": "integer", "minimum": 1},
+        "session_epoch": {"type": "string", "minLength": 1},
+        "snapshot_schema_revision": {"type": "string", "minLength": 1},
+        "calendar_revision": {"type": "string", "minLength": 1},
+        "snapshot": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_commit", "deployment_commit", "captured_at"],
+      "properties": {
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "deployment_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "captured_at": {"$ref": "#/$defs/utc"}
+      }
+    }
+  }
+}

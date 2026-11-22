@@ -1,0 +1,78 @@
+{
+  "contract_revision": "archive.dataset.v1",
+  "dataset_id": "dataset-demo-sanitized-001",
+  "logical_symbol": "BTC",
+  "source_symbol": "BTCUSD",
+  "timeframe": "M15",
+  "coverage": {
+    "start_utc": "2026-11-01T00:00:00Z",
+    "end_utc": "2026-11-01T00:30:00Z",
+    "closed_bars": true,
+    "bar_count": 3
+  },
+  "bars": [
+    {
+      "time": "2026-11-01T00:00:00Z",
+      "open": 100.0,
+      "high": 101.0,
+      "low": 99.0,
+      "close": 100.5,
+      "tick_volume": 10,
+      "spread": 0.5,
+      "real_volume": 0
+    },
+    {
+      "time": "2026-11-01T00:15:00Z",
+      "open": 100.5,
+      "high": 102.0,
+      "low": 100.0,
+      "close": 101.5,
+      "tick_volume": 12,
+      "spread": 0.5,
+      "real_volume": 0
+    },
+    {
+      "time": "2026-11-01T00:30:00Z",
+      "open": 101.5,
+      "high": 103.0,
+      "low": 101.0,
+      "close": 102.5,
+      "tick_volume": 11,
+      "spread": 0.5,
+      "real_volume": 0
+    }
+  ],
+  "archive_digest": "sha256:aecfc94f6573c027c00c641d1c85eb03049f7fe5c9bbe6ae1c9939489b981d68",
+  "digest_algorithm": "sha256(canonical-json-rows-v1)",
+  "session_evidence": {
+    "session_fingerprint": "opaque-demo-session-fingerprint",
+    "session_generation": 1,
+    "session_epoch": "opaque-demo-boot-epoch",
+    "snapshot_schema_revision": "calendar.snapshot.v1",
+    "calendar_revision": "unknown",
+    "snapshot": {
+      "source": "mt5-session-observation",
+      "source_symbol": "BTCUSD",
+      "captured_at": "2026-11-01T00:35:00Z",
+      "valid_from": "2026-11-01T00:00:00Z",
+      "valid_until": "2026-11-01T01:00:00Z",
+      "trade_windows_utc": [
+        {
+          "from": "2026-11-01T00:00:00Z",
+          "until": "2026-11-01T01:00:00Z"
+        }
+      ],
+      "quote_windows_utc": [
+        {
+          "from": "2026-11-01T00:00:00Z",
+          "until": "2026-11-01T01:00:00Z"
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "source_commit": "da666e79bed433f5e208e04f492d9b2f6b4b18de",
+    "deployment_commit": "2ac0ad321c6f6f3805d21e0f2702ed79cc357f1e",
+    "captured_at": "2026-11-01T00:35:00Z"
+  }
+}
