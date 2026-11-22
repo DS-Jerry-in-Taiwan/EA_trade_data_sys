@@ -37,5 +37,4 @@ def test_sanitized_archive_contract_fixture_is_reproducible():
 def test_digest_algorithm_is_defined_by_contract():
     document = json.loads(FIXTURE.read_text(encoding="utf-8"))
     digest = _digest(document["bars"])
-    assert digest.startswith("sha256:")
-    assert len(digest) == len("sha256:") + 64
+    assert digest == document["archive_digest"]

@@ -20,7 +20,7 @@ The digest is SHA-256 over the canonical JSON representation of the ordered rows
 
 ## Session evidence
 
-`session_evidence` contains an opaque `session_fingerprint`, integer `session_generation`, opaque `session_epoch`, `snapshot_schema_revision`, `calendar_revision`, and a historical session snapshot. The snapshot records the source and source symbol, captured time, validity window, and UTC trade/quote windows. It contains no account number, password, API key, or private identity.
+`session_evidence` contains an opaque `session_fingerprint`, integer `session_generation`, opaque `session_epoch`, `snapshot_schema_revision`, `calendar_revision`, and a historical session snapshot. The snapshot records the source and source symbol, captured time, validity window, and UTC trade/quote windows. It contains no account number, password, API key, or private identity. `calendar_revision` may be `unknown` for an MT5-only observation. That value is explicit non-authoritative evidence and must fail closed for live calendar decisions.
 
 If evidence is missing, unknown, stale, malformed, or changed during repeated reads, the dataset is rejected. A generation or epoch change before persistence invalidates the complete read. Consumers must not reuse a dataset after its session identity changes.
 
