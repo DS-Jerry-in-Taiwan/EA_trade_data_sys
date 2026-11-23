@@ -275,7 +275,7 @@ class MT5Client:
         if self._resolver_symbols:
             try:
                 candidate = self._create_resolver_unsafe()
-                candidate.initialize(self._mt5, self._resolver_symbols)
+                self._initialize_resolver_unsafe(candidate)
             except Exception:
                 self._session_guard.mark_reconciliation_failed()
                 return self._session_guard.status()
@@ -342,7 +342,34 @@ class MT5Client:
                 raise ConnectionError("MT5 account session is not ready")
             self._resolver_symbols = tuple(configured_symbols)
             self._resolver = self._create_resolver_unsafe()
-            self._resolver.initialize(self._mt5, self._resolver_symbols)
+            self._initialize_resolver_unsafe(self._resolver)
+
+    def _session_binding_unsafe(self):
+        status = self._session_guard.status()
+        fingerprint = status.get("fingerprint") or {}
+        if isinstance(fingerprint, dict):
+            fingerprint = fingerprint.get("id")
+        return fingerprint, status.get("generation")
+
+    def _initialize_resolver_unsafe(self, resolver):
+        """Initialize injected and native resolvers with a session ticket.
+
+        Older lightweight test adapters may implement the two-argument
+        resolver seam. Keep those adapters source-compatible while the native
+        resolver receives the account fingerprint and generation binding.
+        """
+        fingerprint, generation = self._session_binding_unsafe()
+        try:
+            resolver.initialize(
+                self._mt5,
+                self._resolver_symbols,
+                session_fingerprint=fingerprint,
+                session_generation=generation,
+            )
+        except TypeError as exc:
+            if "unexpected keyword" not in str(exc):
+                raise
+            resolver.initialize(self._mt5, self._resolver_symbols)
 
     def _create_resolver_unsafe(self):
         from service.infrastructure.mt5.symbol_resolver import SymbolResolver
@@ -360,6 +387,7 @@ class MT5Client:
         with self._lock:
             if self._mt5 is None or self._resolver is None:
                 raise SymbolResolutionError(logical_name, "resolver_not_initialized")
+            self._assert_resolver_session_unsafe(logical_name)
             return self._resolver.resolve(logical_name)
 
     def logical_symbol(self, broker_name):
@@ -369,11 +397,45 @@ class MT5Client:
         with self._lock:
             if self._mt5 is None or self._resolver is None:
                 raise SymbolResolutionError(broker_name, "resolver_not_initialized")
+            self._assert_resolver_session_unsafe(broker_name)
             return self._resolver.logical_for(broker_name)
+
+    def _assert_resolver_session_unsafe(self, symbol):
+        snapshot = getattr(self._resolver, "snapshot", None)
+        if snapshot is None or not self._session_supported:
+            return
+        fingerprint, generation = self._session_binding_unsafe()
+        if not snapshot.bound_to(fingerprint, generation):
+            from service.infrastructure.mt5.symbol_resolver import SymbolResolutionError
+            raise SymbolResolutionError(symbol, "mapping_session_mismatch")
+
+    @property
+    def mapping_snapshot(self):
+        """Immutable mapping evidence for the active MT5 session."""
+        with self._lock:
+            if self._mt5 is None or self._resolver is None:
+                return None
+            return getattr(self._resolver, "snapshot", None)
+
+    @property
+    def mapping_revision(self):
+        snapshot = self.mapping_snapshot
+        return snapshot.mapping_revision if snapshot is not None else 0
 
     def _refresh_resolver_unsafe(self):
         if self._resolver is not None and self._resolver_symbols is not None:
-            self._resolver.refresh(self._mt5, self._resolver_symbols)
+            fingerprint, generation = self._session_binding_unsafe()
+            try:
+                self._resolver.refresh(
+                    self._mt5,
+                    self._resolver_symbols,
+                    session_fingerprint=fingerprint,
+                    session_generation=generation,
+                )
+            except TypeError as exc:
+                if "unexpected keyword" not in str(exc):
+                    raise
+                self._resolver.refresh(self._mt5, self._resolver_symbols)
 
     def is_resolved(self, logical_name):
         """Return whether resolver initialization produced an explicit mapping."""
