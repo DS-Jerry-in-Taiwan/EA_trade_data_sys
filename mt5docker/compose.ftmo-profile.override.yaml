@@ -1,0 +1,22 @@
+# Profile path is supplied by compose_up.sh from the active profile selector.
+services:
+  mt5-server:
+    volumes:
+      - type: bind
+        source: ${MT5_DATA_DIR:?MT5_DATA_DIR must come from active profile}
+        target: /mt5docker/MT5_Data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MT5_DATA_DIR:?MT5_DATA_DIR must come from active profile}
+        target: /opt/wineprefix/drive_c/users/root/AppData/Roaming/MetaTrader 5
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MT5_CONFIG_FILE:?MT5_CONFIG_FILE must come from active profile}
+        target: /run/mt5/mt5cfg.ini
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      MT5_BOOTSTRAP_REIMPORT: ${MT5_BOOTSTRAP_REIMPORT:-0}

@@ -76,7 +76,10 @@ tint2 -c /root/.config/tint2/tint2rc & TINT2_PID="$!"; remember_child "$TINT2_PI
 # x11vnc is the sole clipboard bridge. Its default selection support handles
 # both PRIMARY and CLIPBOARD updates from noVNC. A second clipboard manager can
 # replay stale CUT_BUFFER0 content over newer browser clipboard events.
-x11vnc -display :100 -forever -shared -dontdisconnect -rfbport 5901 -rfbauth /root/.vnc/passwd & remember_child "$!"
+# Keep one clipboard path. PRIMARY and legacy CUT_BUFFER0 are excluded so
+# stale selections cannot overwrite the current laptop clipboard.
+x11vnc -display :100 -forever -shared -dontdisconnect -noprimary \
+    -sendclipboard -acceptclipboard -rfbport 5901 -rfbauth /root/.vnc/passwd & remember_child "$!"
 websockify --web /usr/share/novnc 6081 localhost:5901 & remember_child "$!"
 DESKTOP_PIDS=("${CHILD_PIDS[@]}")
 sleep 1
