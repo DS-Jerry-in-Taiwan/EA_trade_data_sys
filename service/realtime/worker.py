@@ -1,11 +1,13 @@
 """Exclusive owner of periodic MT5 Tick acquisition."""
 
 import threading
+import uuid
 from datetime import datetime, timezone
 
 from service.config import Settings, load_settings
 from service.infrastructure.ipc.tick_protocol import DEFAULT_SOCKET_PATH, PROTOCOL_VERSION
 from service.infrastructure.mt5.client import MT5Client
+from service.infrastructure.mt5.session import session_identity
 from service.infrastructure.status.component_status import atomic_write_status
 from service.config.time import normalize_mt5_epoch
 from service.realtime.publisher import TickPublisher
@@ -38,6 +40,27 @@ class TickService:
         )
         self.stop_event = stop_event if stop_event is not None else threading.Event()
         self._resolver_initialized = False
+        # Every worker process gets a fresh epoch.  Downstream consumers can
+        # therefore invalidate a snapshot even when the broker account and its
+        # local generation happen to start at the same values after restart.
+        self.session_epoch = uuid.uuid4().hex
+        self._last_session_identity = None
+
+    def _session_identity(self):
+        getter = getattr(self.mt5_client, 'session_status', None)
+        if callable(getter):
+            try:
+                status = getter(refresh=False)
+            except TypeError:
+                status = getter()
+        else:
+            status = None
+        identity = session_identity(status)
+        if identity is None:
+            return None
+        identity['session_epoch'] = self.session_epoch
+        self._last_session_identity = identity
+        return identity
 
     def _publish_status(self, state, **details):
         try:
@@ -59,6 +82,7 @@ class TickService:
             resolver = getattr(self.mt5_client, '_resolver', None)
             if resolver and resolver.unresolved:
                 print(f'[TickService] WARNING: Unresolved symbols: {resolver.unresolved}')
+        identity = self._session_identity()
         result = {}
         for symbol in self.symbols:
             try:
@@ -85,16 +109,33 @@ class TickService:
                         'volume': tick.volume, 'source_time': source_time,
                         'received_at': received_at,
                     }
+                    if identity is not None:
+                        result[symbol].update(identity)
                     print(f'[{datetime.now()}] {symbol}: Bid={tick.bid}, Ask={tick.ask}')
             except Exception as exc:
                 print(f'[{datetime.now()}] Error fetching {symbol}: {exc}')
                 self.mt5_client.reset()
                 self._resolver_initialized = False
                 return result, False
+        # MT5Client performs the same guarded identity check around each read;
+        # retain an explicit boundary for injected clients and future adapters.
+        if identity is not None and self._session_identity() != identity:
+            return {}, False
         return result, True
 
-    def save_ticks(self, ticks):
-        self.snapshot_store.save(ticks)
+    def save_ticks(self, ticks, identity=None):
+        self.snapshot_store.save(ticks, session_identity=identity)
+
+    @staticmethod
+    def _ticks_identity(ticks):
+        first = next(iter(ticks.values()), None)
+        if not isinstance(first, dict):
+            return None
+        return {
+            key: first[key]
+            for key in ('session_fingerprint', 'session_generation', 'session_epoch')
+            if key in first
+        } or None
 
     def run(self):
         print(f'[TickService] Started. Symbols: {self.symbols}, Interval: {self.interval}s')
@@ -105,7 +146,13 @@ class TickService:
             while not self.stop_event.is_set():
                 try:
                     ticks, healthy = self.fetch_ticks()
-                    self.snapshot_store.save(ticks)
+                    snapshot_identity = self._ticks_identity(ticks)
+                    if snapshot_identity is None and not healthy:
+                        snapshot_identity = self._last_session_identity
+                        invalidate = getattr(self.publisher, 'invalidate', None)
+                        if callable(invalidate):
+                            invalidate(snapshot_identity)
+                    self.snapshot_store.save(ticks, session_identity=snapshot_identity)
                     for event in ticks.values():
                         self.publisher.publish(event)
                     self._publish_status(

@@ -52,7 +52,7 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
             # wire contract.  In particular, error records carry ``detail``.
             operational = {
                 "updated_at", "detail", "publication_version",
-                "last_successful_publish", "calendar_gaps",
+                "last_successful_publish", "calendar_gaps", "session_fingerprint",
             }
             if not required <= set(item) or bool(set(item) - required - operational) or not separator:
                 return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
@@ -95,6 +95,12 @@ def create_blueprint(tick_consumer, max_age_seconds, history_query_service,
                 "effective_until": item.get("effective_until"),
                 "gaps": item["gaps"],
             }
+            if item.get("session_fingerprint") is not None:
+                if (not isinstance(item["session_fingerprint"], str)
+                        or not item["session_fingerprint"].strip()):
+                    return jsonify({"schema_version": 1, "status": "unknown", "ready": False,
+                                    "error": "invalid_history_metadata"}), 503
+                history["session_fingerprint"] = item["session_fingerprint"]
             normalized_timeframe = history["timeframe"]
             session_state = "ready" if history["session_state"] == "open" and history["state"] == "ready" else "disconnected"
             envelope = {

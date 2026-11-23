@@ -78,6 +78,12 @@ class HistoryRepository:
             status = self.publication_status()
             if status.get('provenance_id') is not None and manifest.get('provenance_id') != status.get('provenance_id'):
                 raise HistoryNotReadyError
+            if status.get('session_epoch') is not None and manifest.get('session_epoch') != status.get('session_epoch'):
+                raise HistoryNotReadyError
+            if status.get('session_fingerprint') is not None and manifest.get('session_fingerprint') != status.get('session_fingerprint'):
+                raise HistoryNotReadyError
+            if status.get('session_generation') is not None and manifest.get('session_generation') != status.get('session_generation'):
+                raise HistoryNotReadyError
             readiness = status.get('cache_readiness', status.get('sync', {}))
             cache = readiness.get(f'{symbol}:{timeframe}') if isinstance(readiness, dict) else None
             if isinstance(cache, dict) and cache.get('publication_version') is not None:

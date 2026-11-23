@@ -156,6 +156,38 @@ class MT5ExecutionAdapter:
 
         return self._call(logical)
 
+    def _mapping_snapshot(self):
+        """Return the immutable mapping evidence, when the client exposes it."""
+        snapshot = getattr(self.client, "mapping_snapshot", None)
+        return snapshot() if callable(snapshot) else snapshot
+
+    @staticmethod
+    def _mapping_ticket(snapshot):
+        if snapshot is None:
+            return None
+        return (
+            snapshot.mapping_revision,
+            snapshot.catalog_digest,
+            snapshot.mapping_digest,
+            snapshot.session_fingerprint,
+            snapshot.session_generation,
+        )
+
+    def _check_mapping_snapshot(self, snapshot, logical_symbol, native, status):
+        """Ensure a quote is tied to one valid account-scoped symbol mapping."""
+        if snapshot is None:
+            return None
+        fingerprint = (status.get("fingerprint") or {}).get("id")
+        generation = status.get("generation")
+        if (not snapshot.valid or snapshot.mapping.get(logical_symbol) != native
+                or not snapshot.bound_to(fingerprint, generation)):
+            raise ExecutionError(
+                "mapping_session_transition",
+                "Symbol mapping changed during quote/risk observation",
+                status=503,
+            )
+        return self._mapping_ticket(snapshot)
+
     @consistent_read
     def account(self):
         info = self._call(lambda mt5: mt5.account_info())
@@ -372,6 +404,9 @@ class MT5ExecutionAdapter:
             mode_error = self._account_mode_error(before)
             if mode_error:
                 raise mode_error
+            mapping_before = self._check_mapping_snapshot(
+                self._mapping_snapshot(), logical_symbol, native, before
+            )
             info = mt5.symbol_info(native)
             tick = mt5.symbol_info_tick(native)
             if info is None or tick is None:
@@ -442,6 +477,15 @@ class MT5ExecutionAdapter:
             identity = lambda status: (status.get("generation"), (status.get("fingerprint") or {}).get("id"))
             if identity(before) != identity(after):
                 raise ExecutionError("account_session_transition", "Session changed during quote/risk observation", status=503)
+            mapping_after = self._check_mapping_snapshot(
+                self._mapping_snapshot(), logical_symbol, native, after
+            )
+            if mapping_before != mapping_after:
+                raise ExecutionError(
+                    "mapping_session_transition",
+                    "Symbol mapping changed during quote/risk observation",
+                    status=503,
+                )
             completed = datetime.now(timezone.utc)
             final_age = Decimal(str(completed.timestamp())) - Decimal(str(quote_at.timestamp()))
             result.update(observed_at=completed.isoformat().replace("+00:00", "Z"),
@@ -452,6 +496,13 @@ class MT5ExecutionAdapter:
                 "fingerprint": (after.get("fingerprint") or {}).get("id"),
                 "generation": after["generation"], "account_mode": "DEMO", "ready": True,
             }
+            if mapping_after is not None:
+                snapshot = self._mapping_snapshot()
+                result["mapping_snapshot"] = {
+                    "mapping_revision": snapshot.mapping_revision,
+                    "catalog_digest": snapshot.catalog_digest,
+                    "mapping_digest": snapshot.mapping_digest,
+                }
             return result
 
         return self._call(observe)

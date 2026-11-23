@@ -25,6 +25,7 @@ class TickConsumer:
         self._ticks = {}
         self._lock = threading.RLock()
         self._connected = False
+        self._session_identity = None
         self._thread = None
         self._socket = None
 
@@ -133,6 +134,9 @@ class TickConsumer:
         if (not isinstance(event, dict) or not required.issubset(event)
                 or event["version"] != PROTOCOL_VERSION or event["type"] != "tick"):
             return
+        identity = self._event_identity(event)
+        if identity == "__invalid__":
+            return
         if not isinstance(event["symbol"], str) or not event["symbol"]:
             return
         if not isinstance(event["received_at"], str):
@@ -157,12 +161,36 @@ class TickConsumer:
         except ValueError:
             return
         with self._lock:
+            if self._session_identity is not None and identity is None:
+                return
+            if identity is not None and self._session_identity is not None \
+                    and identity != self._session_identity:
+                self._ticks.clear()
+            if identity is not None:
+                self._session_identity = identity
             self._ticks[event["symbol"]] = dict(event)
         if self.on_tick is not None:
             try:
                 self.on_tick(dict(event))
             except Exception:
                 pass
+
+    @staticmethod
+    def _event_identity(event):
+        required = ("session_fingerprint", "session_generation", "session_epoch")
+        present = [key in event for key in required]
+        if not any(present):
+            return None
+        if not all(present):
+            return "__invalid__"
+        fingerprint = event["session_fingerprint"]
+        generation = event["session_generation"]
+        epoch = event["session_epoch"]
+        if (not isinstance(fingerprint, str) or not fingerprint.strip()
+                or isinstance(generation, bool) or not isinstance(generation, int)
+                or generation < 1 or not isinstance(epoch, str) or not epoch.strip()):
+            return "__invalid__"
+        return fingerprint.strip(), generation, epoch.strip()
 
 
 __all__ = ["TickConsumer"]

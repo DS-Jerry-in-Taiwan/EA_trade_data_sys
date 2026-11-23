@@ -391,6 +391,10 @@ components:
         session_generation:
           type: integer
           minimum: 1
+        session_fingerprint:
+          type: string
+          minLength: 1
+          description: Opaque account-session fingerprint; login and credentials are never exposed.
         session_state:
           type: string
           enum: [open, closed, unknown]
