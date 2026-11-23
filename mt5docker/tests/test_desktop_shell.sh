@@ -11,8 +11,10 @@ for package in tint2 pcmanfm; do
 done
 x11vnc_command="$(sed -n '/^[[:space:]]*x11vnc /,/remember_child/ { s/[[:space:]]*&[[:space:]]*remember_child.*$//; s/\\$//; p; }' "$START" | tr '\n' ' ')"
 grep -Eq 'x11vnc .* -noprimary' <<<"$x11vnc_command"
-grep -Eq 'x11vnc .* -sendclipboard' <<<"$x11vnc_command"
-grep -Eq 'x11vnc .* -acceptclipboard' <<<"$x11vnc_command"
+if grep -Eq -- '-(sendclipboard|acceptclipboard)' <<<"$x11vnc_command"; then
+    echo 'x11vnc image does not support explicit clipboard flags' >&2
+    exit 1
+fi
 grep -q 'pcmanfm --desktop --profile MT5' "$START"
 grep -q 'tint2 -c /root/.config/tint2/tint2rc' "$START"
 if grep -q 'autocutsel' "$START"; then
