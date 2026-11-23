@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from service.config import Settings, load_settings
 from service.history.repository import history_storage_id
 from service.infrastructure.mt5.client import MT5Client
-from service.infrastructure.mt5.session import AccountSessionTransition
+from service.infrastructure.mt5.session import AccountSessionTransition, session_identity
 from service.infrastructure.mt5.calendar import CalendarObservation, normalize_utc
 from service.infrastructure.status.component_status import (
     atomic_write_status,
@@ -135,6 +135,9 @@ class HistoryService:
             'updated_at': datetime.now(timezone.utc).isoformat(),
             'provenance_id': self.provenance_id,
         }
+        current_identity = self._session_identity()
+        if current_identity is not None:
+            status['session_fingerprint'] = current_identity['session_fingerprint']
         status.update(details)
         self.sync_status[(symbol, timeframe)] = status
         return status
@@ -146,6 +149,10 @@ class HistoryService:
     def _publish_status(self, state, **details):
         heartbeat_at = datetime.now(timezone.utc).isoformat()
         sync = self.get_sync_status()
+        current_identity = self._session_identity()
+        if current_identity is not None:
+            details.setdefault('session_fingerprint', current_identity['session_fingerprint'])
+            details.setdefault('session_generation', current_identity['session_generation'])
         try:
             return atomic_write_status(
                 self.status_path, 'history_service', state,
@@ -157,6 +164,7 @@ class HistoryService:
                 storage_id=history_storage_id(self.data_path),
                 provenance_id=self.provenance_id,
                 publication_version=self.publication_version,
+                session_epoch=self.provenance_id,
                 last_successful_scan=self.last_successful_scan,
                 last_successful_publish=self.last_successful_publish,
                 **details,
@@ -170,6 +178,18 @@ class HistoryService:
     def _session_generation(self):
         guard = getattr(self.mt5_client, 'session_guard', None)
         return getattr(guard, 'generation', None)
+
+    def _session_identity(self):
+        getter = getattr(self.mt5_client, 'session_status', None)
+        if callable(getter):
+            try:
+                status = getter(refresh=False)
+            except TypeError:
+                status = getter()
+            return session_identity(status)
+        guard = getattr(self.mt5_client, 'session_guard', None)
+        status = guard.status() if callable(getattr(guard, 'status', None)) else None
+        return session_identity(status)
 
     def _history_call_running(self):
         return self._inflight_future is not None and not self._inflight_future.done()
@@ -580,11 +600,23 @@ class HistoryService:
             manifest = {
                 'schema_version': 1,
                 'provenance_id': self.provenance_id,
+                'session_epoch': self.provenance_id,
                 'publication_version': self.publication_version + 1,
                 'source_symbol': broker_symbol,
                 'published_at': datetime.now(timezone.utc).isoformat(),
             }
+            identity = self._session_identity()
+            if identity is not None:
+                manifest.update(identity)
             manifest_path = f'{cls._ready_path(filepath)}.meta'
+            # Remove a prior manifest before publishing the new one.  If the
+            # second atomic replace fails, readers see an unqualified marker
+            # and fail closed instead of pairing new CSV bytes with old
+            # session provenance.
+            try:
+                os.unlink(manifest_path)
+            except FileNotFoundError:
+                pass
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
                                              prefix=f'.{os.path.basename(manifest_path)}.',
                                              suffix='.tmp', dir=directory, delete=False) as manifest_file:

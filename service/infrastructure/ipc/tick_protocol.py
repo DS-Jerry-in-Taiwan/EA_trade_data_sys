@@ -78,6 +78,7 @@ class TickPublisher:
         self._stop_event = threading.Event()
         self._accept_thread = None
         self._socket_identity = None
+        self._session_identity = None
 
     @property
     def latest(self):
@@ -111,9 +112,31 @@ class TickPublisher:
         self._accept_thread.start()
 
     def publish(self, event):
-        payload = self._encode_event(event)
-        symbol = event["symbol"]
+        try:
+            payload = self._encode_event(event)
+            symbol = event["symbol"]
+            identity = self._event_identity(event)
+        except (KeyError, TypeError, ValueError):
+            # Reject malformed input and invalidate replay state together.  A
+            # producer must never leave an earlier account snapshot available
+            # after an identity boundary is malformed.
+            with self._lock:
+                self._latest.clear()
+                self._session_identity = None
+            raise
         with self._lock:
+            if self._session_identity is not None and identity is None:
+                self._latest.clear()
+                self._session_identity = None
+                raise ValueError("Tick event is missing session identity")
+            if identity is not None and self._session_identity is not None \
+                    and identity != self._session_identity:
+                # Never replay an earlier account/session snapshot to a new
+                # consumer after the producer reconnects or the terminal is
+                # switched.
+                self._latest.clear()
+            if identity is not None:
+                self._session_identity = identity
             self._latest[symbol] = dict(event)
             failed = []
             for channel in self._clients:
@@ -134,6 +157,22 @@ class TickPublisher:
             for channel in list(self._clients):
                 self._drop_client(channel)
         self._unlink_owned_socket()
+        with self._lock:
+            self._latest.clear()
+            self._session_identity = None
+
+    def invalidate(self, session_identity=None):
+        """Drop replayable snapshots when the producer loses its session."""
+        with self._lock:
+            self._latest.clear()
+            if session_identity is None:
+                self._session_identity = None
+            else:
+                self._session_identity = self._event_identity({
+                    "session_fingerprint": session_identity["session_fingerprint"],
+                    "session_generation": session_identity["session_generation"],
+                    "session_epoch": session_identity["session_epoch"],
+                })
 
     def _accept_loop(self):
         while not self._stop_event.is_set():
@@ -172,7 +211,24 @@ class TickPublisher:
             raise ValueError(f"Tick event missing fields: {sorted(missing)}")
         if event["version"] != PROTOCOL_VERSION or event["type"] != "tick":
             raise ValueError("Unsupported Tick event protocol")
+        TickPublisher._event_identity(event)
         return (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
+
+    @staticmethod
+    def _event_identity(event):
+        required = ("session_fingerprint", "session_generation", "session_epoch")
+        if not any(key in event for key in required):
+            return None
+        if any(key not in event for key in required):
+            raise ValueError("Tick event has incomplete session identity")
+        fingerprint = event["session_fingerprint"]
+        generation = event["session_generation"]
+        epoch = event["session_epoch"]
+        if (not isinstance(fingerprint, str) or not fingerprint.strip()
+                or isinstance(generation, bool) or not isinstance(generation, int)
+                or generation < 1 or not isinstance(epoch, str) or not epoch.strip()):
+            raise ValueError("Tick event has invalid session identity")
+        return fingerprint.strip(), generation, epoch.strip()
 
     def _remove_stale_socket(self):
         try:

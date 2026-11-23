@@ -15,11 +15,12 @@ class MetadataContractError(ValueError):
 
 
 _ROOT = {"schema_version", "history", "session"}
-_HISTORY = {
+_HISTORY_REQUIRED = {
     "state", "logical_symbol", "source_symbol", "timeframe", "bars", "minimum_bars",
     "source_exhausted", "session_generation", "session_state", "provenance_id",
     "calendar_revision", "effective_from", "effective_until", "gaps",
 }
+_HISTORY = _HISTORY_REQUIRED | {"session_fingerprint"}
 _SESSION = {"state", "ready", "generation"}
 _HISTORY_STATES = {"ready", "insufficient", "error"}
 _SESSION_STATES = {"ready", "disconnected", "switch_detected"}
@@ -29,25 +30,25 @@ _GAP_CLASSES = {"expected_session_break", "cache_backfill_gap", "unknown"}
 
 
 def _object(value, required, allowed, name):
-    if not isinstance(value, Mapping) or set(value) != allowed:
+    if (not isinstance(value, Mapping)
+            or not required <= set(value)
+            or not set(value) <= allowed):
         raise MetadataContractError(f"{name} has unknown or missing fields")
-    if not required <= set(value):
-        raise MetadataContractError(f"{name} has missing fields")
 
 
 def validate_history_session_metadata(payload: Mapping) -> dict:
     """Return a detached, validated payload or fail closed.
 
-    No account/login identifier, credential, broker symbol, or fingerprint is
-    accepted by this boundary.  ``dict`` copies prevent callers mutating the
-    object after validation.
+    Only an opaque session fingerprint is accepted; account login, credentials,
+    and raw broker account objects remain outside this boundary. ``dict``
+    copies prevent callers mutating the object after validation.
     """
     _object(payload, _ROOT, _ROOT, "metadata")
     if payload["schema_version"] != 1 or isinstance(payload["schema_version"], bool):
         raise MetadataContractError("unsupported metadata schema version")
     history = payload["history"]
     session = payload["session"]
-    _object(history, _HISTORY, _HISTORY, "history")
+    _object(history, _HISTORY_REQUIRED, _HISTORY, "history")
     _object(session, _SESSION, _SESSION, "session")
     if history["state"] not in _HISTORY_STATES:
         raise MetadataContractError("unknown history state")
@@ -57,6 +58,10 @@ def validate_history_session_metadata(payload: Mapping) -> dict:
                          ("provenance_id", 256), ("calendar_revision", 256)):
         if not isinstance(history[key], str) or not 0 < len(history[key]) <= maximum:
             raise MetadataContractError(f"invalid history {key}")
+    if "session_fingerprint" in history:
+        value = history["session_fingerprint"]
+        if not isinstance(value, str) or not 0 < len(value) <= 256:
+            raise MetadataContractError("invalid history session_fingerprint")
     if history["timeframe"] not in _TIMEFRAMES:
         raise MetadataContractError("unknown timeframe")
     for key in ("bars", "minimum_bars", "session_generation"):

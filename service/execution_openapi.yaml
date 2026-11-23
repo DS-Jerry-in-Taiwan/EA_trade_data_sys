@@ -217,7 +217,7 @@ components:
           properties:
             data:
               type: object
-              required: [symbol, broker_symbol, bid, ask, quote_at, observed_at, age_seconds, max_age_seconds, fresh, account_session]
+              required: [symbol, broker_symbol, bid, ask, quote_at, observed_at, age_seconds, max_age_seconds, fresh, account_session, mapping_snapshot]
               properties:
                 symbol: {type: string}
                 broker_symbol: {type: string}
@@ -237,6 +237,13 @@ components:
                     epoch: {type: string, minLength: 1}
                     account_mode: {type: string, enum: [DEMO]}
                     ready: {type: boolean, enum: [true]}
+                mapping_snapshot:
+                  type: object
+                  required: [mapping_revision, catalog_digest, mapping_digest]
+                  properties:
+                    mapping_revision: {type: integer, minimum: 1}
+                    catalog_digest: {type: string, minLength: 1}
+                    mapping_digest: {type: string, minLength: 1}
                 loss_tick_value: {$ref: '#/components/schemas/PositiveDecimal'}
                 tick_value_loss: {$ref: '#/components/schemas/PositiveDecimal'}
                 loss_calculation_buy: {$ref: '#/components/schemas/PositiveDecimal'}

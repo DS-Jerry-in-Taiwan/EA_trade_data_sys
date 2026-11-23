@@ -26,6 +26,26 @@ ACCOUNT_RECONCILIATION_FAILED = "account_reconciliation_failed"
 ACCOUNT_SYMBOLS_UNAVAILABLE = "account_symbols_unavailable"
 
 
+def session_identity(status: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return the non-secret ticket used to bind downstream observations.
+
+    A generation without an opaque fingerprint (or vice versa) is not an
+    identity.  Callers should treat that state as unavailable and fail closed
+    instead of accidentally carrying observations across a reconnect.
+    """
+    if not isinstance(status, dict):
+        return None
+    fingerprint = status.get("fingerprint")
+    if isinstance(fingerprint, dict):
+        fingerprint = fingerprint.get("id")
+    if not isinstance(fingerprint, str) or not fingerprint.strip():
+        return None
+    generation = status.get("generation")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        return None
+    return {"session_fingerprint": fingerprint.strip(), "session_generation": generation}
+
+
 class AccountSessionTransition(ConnectionError):
     """Raised when an MT5 read crosses an un-reconciled account transition."""
 
