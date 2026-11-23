@@ -17,7 +17,7 @@ def _regular_file(path: Path, label: str) -> Path:
         raise ProfileSelectionError(f"{label} must be a regular file")
     return resolved
 
-def _data_directory(path: Path, allow_empty: bool) -> tuple[Path, Path | None]:
+def _data_directory(path: Path) -> tuple[Path, Path]:
     resolved = path.expanduser().resolve()
     if not resolved.is_dir():
         raise ProfileSelectionError("MT5 data directory does not exist")
@@ -30,13 +30,11 @@ def _data_directory(path: Path, allow_empty: bool) -> tuple[Path, Path | None]:
         if not account_store.is_file():
             raise ProfileSelectionError("native account store is not a regular file")
         return resolved, account_store
-    if not allow_empty:
-        raise ProfileSelectionError("native account store is missing; log in through VNC or use --allow-empty for bootstrap")
-    return resolved, None
+    raise ProfileSelectionError("native account store is missing; log in through VNC before selecting this profile")
 
-def select_profile(config_file: Path | None, data_dir: Path, allow_empty: bool = False) -> dict[str, str]:
+def select_profile(config_file: Path | None, data_dir: Path) -> dict[str, str]:
     config = _regular_file(config_file, "MT5 config") if config_file is not None else Path(__file__).with_name("native-session-placeholder.ini").resolve()
-    data, account_store = _data_directory(data_dir, allow_empty)
+    data, account_store = _data_directory(data_dir)
     profile_id = config.stem if config_file is not None else data.name
     store_marker = "missing"
     if account_store is not None:
@@ -45,6 +43,39 @@ def select_profile(config_file: Path | None, data_dir: Path, allow_empty: bool =
     fingerprint = hashlib.sha256(f"{profile_id}|{config}|{data}|{store_marker}".encode()).hexdigest()[:16]
     return {"MT5_PROFILE_ID": profile_id, "MT5_CONFIG_FILE": str(config),
             "MT5_DATA_DIR": str(data), "MT5_PROFILE_FINGERPRINT": fingerprint}
+
+def _fingerprint(values: dict[str, str], account_store: Path) -> str:
+    metadata = account_store.stat()
+    raw = f"{values['MT5_PROFILE_ID']}|{values['MT5_CONFIG_FILE']}|{values['MT5_DATA_DIR']}|{metadata.st_size}:{metadata.st_mtime_ns}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+def read_env(path: Path) -> dict[str, str]:
+    resolved = path.expanduser().resolve()
+    metadata = resolved.stat()
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise ProfileSelectionError("active profile must be a regular owner-only file")
+    if metadata.st_uid != os.getuid():
+        raise ProfileSelectionError("active profile owner is invalid")
+    values: dict[str, str] = {}
+    for line in resolved.read_text(encoding="utf-8").splitlines():
+        try:
+            tokens = shlex.split(line, comments=False, posix=True)
+        except ValueError as exc:
+            raise ProfileSelectionError("active profile has invalid quoting") from exc
+        if len(tokens) != 1 or "=" not in tokens[0]:
+            raise ProfileSelectionError("active profile has an invalid assignment")
+        key, value = tokens[0].split("=", 1)
+        values[key] = value
+    allowed = {"MT5_PROFILE_ID", "MT5_CONFIG_FILE", "MT5_DATA_DIR", "MT5_PROFILE_FINGERPRINT"}
+    if set(values) != allowed:
+        raise ProfileSelectionError("active profile contains an unexpected key")
+    config = _regular_file(Path(values["MT5_CONFIG_FILE"]), "MT5 config")
+    data, store = _data_directory(Path(values["MT5_DATA_DIR"]))
+    if values["MT5_CONFIG_FILE"] != str(config) or values["MT5_DATA_DIR"] != str(data):
+        raise ProfileSelectionError("active profile paths must be canonical")
+    if values["MT5_PROFILE_FINGERPRINT"] != _fingerprint(values, store):
+        raise ProfileSelectionError("active profile fingerprint is stale")
+    return values
 
 def write_env(values: dict[str, str], output: Path) -> None:
     allowed = {"MT5_PROFILE_ID", "MT5_CONFIG_FILE", "MT5_DATA_DIR", "MT5_PROFILE_FINGERPRINT"}
@@ -73,20 +104,28 @@ def write_env(values: dict[str, str], output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Select an MT5 profile without reading credentials")
-    parser.add_argument("--config", type=Path, help="optional bootstrap config; native VNC session uses /dev/null")
-    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--output", type=Path, default=Path.home() / ".config/ea-trading/active-profile.env")
-    parser.add_argument("--allow-empty", action="store_true")
+    parser.add_argument("--read-env", type=Path)
     args = parser.parse_args()
     try:
-        values = select_profile(args.config, args.data_dir, args.allow_empty)
+        if args.read_env:
+            values = read_env(args.read_env)
+            for key in ("MT5_PROFILE_ID", "MT5_PROFILE_FINGERPRINT"):
+                print(f"{key}\t{values[key]}")
+            for key in ("MT5_CONFIG_FILE", "MT5_DATA_DIR"):
+                print(f"{key}\t{values[key]}")
+            return 0
+        if not args.data_dir:
+            parser.error("--data-dir is required when selecting a profile")
+        values = select_profile(args.config, args.data_dir)
         write_env(values, args.output)
     except ProfileSelectionError as exc:
         parser.error(str(exc))
     print(f"active profile selected: {values['MT5_PROFILE_ID']}")
     print(f"profile fingerprint: {values['MT5_PROFILE_FINGERPRINT']}")
-    account_store_paths = (args.data_dir / "Config/accounts.dat", args.data_dir / "config/accounts.dat")
-    print(f"native account store: {'present' if any(path.exists() for path in account_store_paths) else 'missing'}")
+    print("native account store: present")
     return 0
 
 if __name__ == "__main__":

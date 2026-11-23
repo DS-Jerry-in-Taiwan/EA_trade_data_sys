@@ -29,13 +29,13 @@ def test_select_profile_writes_non_secret_selection(tmp_path: Path) -> None:
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     assert "opaque" not in output.read_text(encoding="utf-8")
 
-def test_allow_empty_supports_explicit_bootstrap(tmp_path: Path) -> None:
+def test_missing_native_session_is_rejected(tmp_path: Path) -> None:
     config = tmp_path / "demo.ini"
     data = tmp_path / "data"
     config.write_text("[Common]\nKeepPrivate=1\n", encoding="utf-8")
     data.mkdir()
-    values = select_profile(config, data, allow_empty=True)
-    assert values["MT5_DATA_DIR"] == str(data.resolve())
+    with pytest.raises(ProfileSelectionError, match="native account store"):
+        select_profile(config, data)
 
 
 def test_write_env_can_be_sourced_when_paths_contain_spaces(tmp_path: Path) -> None:

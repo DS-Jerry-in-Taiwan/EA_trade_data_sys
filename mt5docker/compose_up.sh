@@ -7,11 +7,20 @@ if [ ! -r "$PROFILE_ENV" ]; then
     echo "run profile_selector.py after confirming the VNC login" >&2
     exit 2
 fi
-set -a
-. "$PROFILE_ENV"
-set +a
+declare -A PROFILE_VALUES=()
+while IFS=$'\t' read -r key value; do
+    [ -n "$key" ] || continue
+    PROFILE_VALUES["$key"]="$value"
+done < <(python3 "$SCRIPT_DIR/profile_selector.py" --read-env "$PROFILE_ENV")
+MT5_PROFILE_ID="${PROFILE_VALUES[MT5_PROFILE_ID]:-}"
+MT5_PROFILE_FINGERPRINT="${PROFILE_VALUES[MT5_PROFILE_FINGERPRINT]:-}"
+MT5_CONFIG_FILE="${PROFILE_VALUES[MT5_CONFIG_FILE]:-}"
+MT5_DATA_DIR="${PROFILE_VALUES[MT5_DATA_DIR]:-}"
+: "${MT5_PROFILE_ID:?active profile has no MT5_PROFILE_ID}"
+: "${MT5_PROFILE_FINGERPRINT:?active profile has no fingerprint}"
 : "${MT5_CONFIG_FILE:?active profile has no MT5_CONFIG_FILE}"
 : "${MT5_DATA_DIR:?active profile has no MT5_DATA_DIR}"
+export MT5_PROFILE_ID MT5_PROFILE_FINGERPRINT MT5_CONFIG_FILE MT5_DATA_DIR
 RUNTIME_OVERRIDE="${MT5_RUNTIME_OVERRIDE:-$SCRIPT_DIR/compose.runtime.override.yaml}"
 if [ ! -r "$RUNTIME_OVERRIDE" ]; then
     echo "required runtime compose override is missing: $RUNTIME_OVERRIDE" >&2
