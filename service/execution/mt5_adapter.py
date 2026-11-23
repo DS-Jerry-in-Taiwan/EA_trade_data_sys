@@ -477,8 +477,9 @@ class MT5ExecutionAdapter:
             identity = lambda status: (status.get("generation"), (status.get("fingerprint") or {}).get("id"))
             if identity(before) != identity(after):
                 raise ExecutionError("account_session_transition", "Session changed during quote/risk observation", status=503)
+            mapping_after_snapshot = self._mapping_snapshot()
             mapping_after = self._check_mapping_snapshot(
-                self._mapping_snapshot(), logical_symbol, native, after
+                mapping_after_snapshot, logical_symbol, native, after
             )
             if mapping_before != mapping_after:
                 raise ExecutionError(
@@ -496,12 +497,24 @@ class MT5ExecutionAdapter:
                 "fingerprint": (after.get("fingerprint") or {}).get("id"),
                 "generation": after["generation"], "account_mode": "DEMO", "ready": True,
             }
-            if mapping_after is not None:
-                snapshot = self._mapping_snapshot()
+            # Re-read and validate the mapping immediately before exposing
+            # the response.  Serialize the exact immutable snapshot that was
+            # checked; never fetch an unchecked snapshot for output fields.
+            mapping_serialized_snapshot = self._mapping_snapshot()
+            mapping_serialized = self._check_mapping_snapshot(
+                mapping_serialized_snapshot, logical_symbol, native, after
+            )
+            if mapping_serialized != mapping_after:
+                raise ExecutionError(
+                    "mapping_session_transition",
+                    "Symbol mapping changed during quote/risk observation",
+                    status=503,
+                )
+            if mapping_serialized is not None:
                 result["mapping_snapshot"] = {
-                    "mapping_revision": snapshot.mapping_revision,
-                    "catalog_digest": snapshot.catalog_digest,
-                    "mapping_digest": snapshot.mapping_digest,
+                    "mapping_revision": mapping_serialized_snapshot.mapping_revision,
+                    "catalog_digest": mapping_serialized_snapshot.catalog_digest,
+                    "mapping_digest": mapping_serialized_snapshot.mapping_digest,
                 }
             return result
 

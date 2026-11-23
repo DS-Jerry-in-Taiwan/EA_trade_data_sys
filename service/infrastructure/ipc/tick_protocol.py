@@ -112,10 +112,23 @@ class TickPublisher:
         self._accept_thread.start()
 
     def publish(self, event):
-        payload = self._encode_event(event)
-        symbol = event["symbol"]
-        identity = self._event_identity(event)
+        try:
+            payload = self._encode_event(event)
+            symbol = event["symbol"]
+            identity = self._event_identity(event)
+        except (KeyError, TypeError, ValueError):
+            # Reject malformed input and invalidate replay state together.  A
+            # producer must never leave an earlier account snapshot available
+            # after an identity boundary is malformed.
+            with self._lock:
+                self._latest.clear()
+                self._session_identity = None
+            raise
         with self._lock:
+            if self._session_identity is not None and identity is None:
+                self._latest.clear()
+                self._session_identity = None
+                raise ValueError("Tick event is missing session identity")
             if identity is not None and self._session_identity is not None \
                     and identity != self._session_identity:
                 # Never replay an earlier account/session snapshot to a new

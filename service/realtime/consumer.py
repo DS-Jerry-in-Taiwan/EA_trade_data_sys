@@ -127,15 +127,29 @@ class TickConsumer:
             event = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return
+        if not isinstance(event, dict):
+            return
+        # Identity is a stream boundary.  A malformed or partial identity
+        # must invalidate the previous snapshot before the event is rejected;
+        # otherwise stale ticks could remain replayable indefinitely.
+        identity = self._event_identity(event)
+        if identity == "__invalid__":
+            with self._lock:
+                self._ticks.clear()
+                self._session_identity = None
+            return
+        if identity is None:
+            with self._lock:
+                if self._session_identity is not None:
+                    self._ticks.clear()
+                    self._session_identity = None
+                    return
         required = {
             "version", "type", "symbol", "bid", "ask", "last", "volume",
             "source_time", "received_at",
         }
-        if (not isinstance(event, dict) or not required.issubset(event)
+        if (not required.issubset(event)
                 or event["version"] != PROTOCOL_VERSION or event["type"] != "tick"):
-            return
-        identity = self._event_identity(event)
-        if identity == "__invalid__":
             return
         if not isinstance(event["symbol"], str) or not event["symbol"]:
             return
@@ -161,8 +175,6 @@ class TickConsumer:
         except ValueError:
             return
         with self._lock:
-            if self._session_identity is not None and identity is None:
-                return
             if identity is not None and self._session_identity is not None \
                     and identity != self._session_identity:
                 self._ticks.clear()

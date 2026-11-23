@@ -21,7 +21,13 @@ class TickSnapshotStore:
         tooling.  The adjacent metadata file carries the opaque session ticket
         so a restarted worker cannot leave a prior account snapshot readable.
         """
-        identity = self._normalize_identity(session_identity)
+        if session_identity is None:
+            identity = None
+        else:
+            identity = self._normalize_identity(session_identity)
+            if identity is None:
+                self._remove_snapshot()
+                raise ValueError("Invalid session identity")
         previous = self._read_identity()
         if identity is not None and previous is not None and previous != identity:
             self._remove_snapshot()
@@ -29,6 +35,9 @@ class TickSnapshotStore:
             if identity is not None:
                 self._remove_snapshot()
             return
+        if identity is not None and not self._ticks_match_identity(ticks, identity):
+            self._remove_snapshot()
+            raise ValueError("Tick snapshot has invalid or mismatched session identity")
         fd, temporary_path = tempfile.mkstemp(
             prefix=".latest-", suffix=".json", dir=self.output_dir
         )
@@ -78,9 +87,27 @@ class TickSnapshotStore:
     def _read_identity(self):
         try:
             with open(self.metadata_path, encoding='utf-8') as source:
-                return self._normalize_identity(json.load(source))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                identity = self._normalize_identity(json.load(source))
+        except FileNotFoundError:
             return None
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            self._remove_snapshot()
+            return None
+        if identity is None:
+            # A metadata file that is present but malformed cannot authorize
+            # the adjacent data file.  Remove both before continuing.
+            self._remove_snapshot()
+            return None
+        return identity
+
+    @classmethod
+    def _ticks_match_identity(cls, ticks, identity):
+        if not isinstance(ticks, dict):
+            return False
+        for event in ticks.values():
+            if cls._normalize_identity(event) != identity:
+                return False
+        return True
 
     def _remove_snapshot(self):
         for path in (self.path, self.metadata_path):
